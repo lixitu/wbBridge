@@ -1,0 +1,23 @@
+{
+  "name": "wbbridge-core",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "description": "WB Bridge 核心代理 — 让 WorkBuddy 使用 OpenCode 免费模型",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "node src/main.js",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "tar": "7.5.22",
+    "undici": "^7.30.0"
+  },
+  "devDependencies": {
+    "@yao-pkg/pkg": "^6.23.0",
+    "esbuild": "^0.28.2"
+  }
+}

@@ -1,0 +1,54 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "WB Bridge",
+  "version": "1.0.0",
+  "identifier": "app.wbbridge.desktop",
+  "build": {
+    "frontendDist": "../src/ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "WB Bridge",
+        "width": 980,
+        "height": 680,
+        "minWidth": 860,
+        "minHeight": 560,
+        "resizable": true,
+        "visible": true,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": [],
+    "externalBin": ["binaries/wbbridge-core"],
+    "copyright": "© 2026 WB Bridge",
+    "category": "DeveloperTool",
+    "shortDescription": "让 WorkBuddy 使用 OpenCode 免费模型",
+    "longDescription": "WB Bridge 通过隔离的 OpenCode 运行时为 WorkBuddy 提供免费模型：自动发现与检测免费模型、转换为标准 OpenAI 接口、并把可用模型同步进 WorkBuddy 配置。关闭窗口后常驻托盘。",
+    "macOS": {
+      "minimumSystemVersion": "10.15",
+      "signingIdentity": "-"
+    },
+    "linux": {
+      "appimage": {
+        "bundleMediaFramework": false
+      }
+    }
+  },
+  "plugins": {}
+}

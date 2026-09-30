@@ -1,0 +1,17 @@
+{
+  "name": "wb-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WB Bridge — 基于 Tauri 的跨平台桌面应用，通过隔离的 OpenCode 为 WorkBuddy 提供免费模型",
+  "scripts": {
+    "test": "npm test --prefix src/core",
+    "sidecar": "node scripts/build-sidecar.mjs",
+    "sidecar:all": "node scripts/build-sidecar.mjs --targets=all",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "icons": "node docs/brand/build-icons.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.0"
+  }
+}

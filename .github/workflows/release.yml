@@ -1,0 +1,285 @@
+# ═══════════════════════════════════════════════════════════════════
+# WB Bridge — 发布自动打包工作流
+# ───────────────────────────────────────────────────────────────────
+# 触发：推送 v* 标签（如 v1.0.1）或手动 workflow_dispatch
+#   • 手动触发（workflow_dispatch）：默认【仅测试构建】——只上传 Actions
+#     Artifact 不创建 Release，可下载安装包在本地测试；
+#     勾选 create_release 后才创建 Draft Release（与推 tag 行为一致）
+# 产物：
+#   • Windows:  NSIS 安装包(.exe) + MSI 安装包(.msi)
+#   • macOS:   .dmg + .app（ad-hoc 签名）
+#   • Linux:   .AppImage + .deb
+# 说明：
+#   • macOS 产物为 ad-hoc 签名（无 Developer ID 证书），首次打开需在
+#     系统设置中放行。
+#   • Windows 产物未签名，SmartScreen 会提示"更多信息 → 仍要运行"。
+#   • 所有产物先上传为 Actions Artifact，再汇总到 Draft Release，
+#     人工确认后点"Publish release"正式发布。
+# 自动更新：
+#   • bundle.createUpdaterArtifacts 生成更新产物与 .sig 签名
+#   • 签名私钥存 GitHub Variables：TAURI_SIGNING_PRIVATE_KEY
+#     （本地私钥 ~/.tauri/wbBridge-updater.key）
+#   • 注意：Draft Release 未 Publish 前 latest.json 下载 404，属预期
+# ═══════════════════════════════════════════════════════════════════
+
+name: Release Build (Tauri)
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: '构建后创建 Draft Release（不勾选则仅上传 Artifact 供测试）'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  # ── 核心测试 ──────────────────────────────────────────────────────
+  test:
+    name: 核心测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 安装核心依赖
+        working-directory: src/core
+        run: npm ci
+
+      - name: 运行核心测试
+        working-directory: src/core
+        run: npm test
+
+  # ── macOS：.app + .dmg（ad-hoc 签名）────────────────────────────
+  build-macos:
+    name: macOS (${{ matrix.arch }})
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            arch: aarch64-apple-darwin
+          - os: macos-15
+            arch: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 启用 cargo 缓存
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 安装核心依赖
+        working-directory: src/core
+        run: npm ci
+
+      - name: 构建核心 sidecar
+        run: node scripts/build-sidecar.mjs --targets=${{ matrix.arch }}
+
+      - name: 安装 Tauri 依赖
+        run: npm ci
+
+      - name: 构建 Tauri 应用
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ vars.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ vars.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: v__VERSION__
+          releaseName: 'WB Bridge v__VERSION__'
+          releaseBody: 'WB Bridge — 让 WorkBuddy 使用 OpenCode 免费模型。'
+          releaseDraft: true
+          prerelease: false
+
+      - name: 上传产物到 Actions Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}-bundles
+          if-no-files-found: warn
+          path: |
+            src-tauri/target/release/bundle/**/*.dmg
+            src-tauri/target/release/bundle/**/*.app
+            src-tauri/target/release/bundle/**/*.tar.gz
+            src-tauri/target/release/bundle/**/*.sig
+
+      - name: 上传到 GitHub Release（仅推 tag 或勾选 create_release 时）
+        if: github.event_name == 'push' || inputs.create_release == true
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            src-tauri/target/release/bundle/**/*.dmg
+            src-tauri/target/release/bundle/**/*.app
+            src-tauri/target/release/bundle/**/*.tar.gz
+            src-tauri/target/release/bundle/**/*.sig
+
+  # ── Windows：NSIS + MSI ──────────────────────────────────────────
+  build-windows:
+    name: Windows (${{ matrix.arch }})
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            arch: x86_64-pc-windows-msvc
+          - os: windows-11-arm
+            arch: aarch64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 启用 cargo 缓存
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 安装核心依赖
+        working-directory: src/core
+        run: npm ci
+
+      - name: 构建核心 sidecar
+        run: node scripts/build-sidecar.mjs --targets=${{ matrix.arch }}
+
+      - name: 安装 Tauri 依赖
+        run: npm ci
+
+      - name: 构建 Tauri 应用
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ vars.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ vars.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: v__VERSION__
+          releaseName: 'WB Bridge v__VERSION__'
+          releaseBody: 'WB Bridge — 让 WorkBuddy 使用 OpenCode 免费模型。'
+          releaseDraft: true
+          prerelease: false
+
+      - name: 上传产物到 Actions Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.arch }}-bundles
+          if-no-files-found: warn
+          path: |
+            src-tauri/target/release/bundle/**/*.exe
+            src-tauri/target/release/bundle/**/*.msi
+            src-tauri/target/release/bundle/**/*.sig
+
+      - name: 上传到 GitHub Release（仅推 tag 或勾选 create_release 时）
+        if: github.event_name == 'push' || inputs.create_release == true
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            src-tauri/target/release/bundle/**/*.exe
+            src-tauri/target/release/bundle/**/*.msi
+            src-tauri/target/release/bundle/**/*.sig
+
+  # ── Linux：.AppImage + .deb ──────────────────────────────────────
+  build-linux:
+    name: Linux (${{ matrix.arch }})
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            arch: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            arch: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 启用 cargo 缓存
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 安装 Linux 系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
+
+      - name: 安装核心依赖
+        working-directory: src/core
+        run: npm ci
+
+      - name: 构建核心 sidecar
+        run: node scripts/build-sidecar.mjs --targets=${{ matrix.arch }}
+
+      - name: 安装 Tauri 依赖
+        run: npm ci
+
+      - name: 构建 Tauri 应用
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ vars.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ vars.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: v__VERSION__
+          releaseName: 'WB Bridge v__VERSION__'
+          releaseBody: 'WB Bridge — 让 WorkBuddy 使用 OpenCode 免费模型。'
+          releaseDraft: true
+          prerelease: false
+
+      - name: 上传产物到 Actions Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}-bundles
+          if-no-files-found: warn
+          path: |
+            src-tauri/target/release/bundle/**/*.AppImage
+            src-tauri/target/release/bundle/**/*.deb
+            src-tauri/target/release/bundle/**/*.sig
+
+      - name: 上传到 GitHub Release（仅推 tag 或勾选 create_release 时）
+        if: github.event_name == 'push' || inputs.create_release == true
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            src-tauri/target/release/bundle/**/*.AppImage
+            src-tauri/target/release/bundle/**/*.deb
+            src-tauri/target/release/bundle/**/*.sig

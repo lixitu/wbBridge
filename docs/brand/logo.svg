@@ -1,0 +1,21 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4F46E5"/>
+      <stop offset="1" stop-color="#7C3AED"/>
+    </linearGradient>
+    <linearGradient id="cable" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#C7D2FE"/>
+      <stop offset="1" stop-color="#E0E7FF"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="116" fill="url(#bg)"/>
+  <rect x="26" y="26" width="460" height="460" rx="94" fill="none" stroke="#FFFFFF" stroke-opacity="0.10" stroke-width="4"/>
+  <path d="M96 190 C 150 336, 202 336, 256 266 C 310 336, 362 336, 416 190"
+        fill="none" stroke="url(#cable)" stroke-width="30" stroke-linecap="round"/>
+  <line x1="96" y1="176" x2="96" y2="352" stroke="#EEF2FF" stroke-width="24" stroke-linecap="round"/>
+  <line x1="416" y1="176" x2="416" y2="352" stroke="#EEF2FF" stroke-width="24" stroke-linecap="round"/>
+  <line x1="78" y1="352" x2="434" y2="352" stroke="#EEF2FF" stroke-width="24" stroke-linecap="round"/>
+  <circle cx="256" cy="266" r="36" fill="#EEF2FF"/>
+  <circle cx="256" cy="266" r="16" fill="#6D28D9"/>
+</svg>
