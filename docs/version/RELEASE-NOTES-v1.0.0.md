@@ -44,7 +44,7 @@
 - **模型详情改为右侧常驻分栏**：不再是"点开模型行就地展开"，选中模型后**列表与详情并排显示**；详情宽 `clamp(300px, 45%, 360px)`，**可收起**（`Esc` / 详情头部「收起详情」按钮 / 窗口失焦**三条等价路径**），**无遮罩层、不覆盖列表**。
 - **删除窄屏上下堆叠降级**：`App.vue` 移除 `<900px` 堆叠逻辑，**任何窗口宽度都不降级为上下堆叠**。
 - **默认窗口尺寸调整**：由 980×680 调整为 **1120×720**，最小尺寸 **860×560**（不变）。
-- **侧栏改为分组导航**：宽度 `--sidebar-w` 由 224px 调整为 **208px**，按「模型 / 运行 / 集成 / 其他」分组，底部为运行设置；其中 **4 个入口仅为禁用态 + 「规划中」标签**（见"已知限制"）。
+- **侧栏改为分组导航**：宽度 `--sidebar-w` 由 224px 调整为 **208px**，按「模型 / 运行 / 集成 / 其他」分组，底部为运行设置。（布局改造当时另有 4 个入口是禁用占位，同日稍后的「侧栏 4 入口实现」轮已把它们做成可点的只读视图，见下节「界面与交互」。）
 - `styles/variables.css` 新增 `--muted-strong` 变量。
 
 > 以上界面改造属同一未发布版本的界面调整，按版本纪律**不推进版本号**，产品版本保持 **1.0.0**。验证证据见 `docs/validation.md`「面板布局改造」——**仅在浏览器引擎内经 CDP 实测**（1120×720 / 860×560 两档无横向溢出、键盘可达、收起路径生效、深浅色对比度达标），**非 Tauri GUI 实机**。
@@ -59,7 +59,7 @@
 
 ## 界面与交互
 
-- **左侧栏（208px）**：分组导航「模型 / 运行 / 集成 / 其他」，底部为运行设置。当前**只有「模型与服务」可用**；运行日志、用量与额度、WorkBuddy 集成、关于与更新 4 个入口标注「规划中」、处于**禁用态、点击无响应**。
+- **左侧栏（208px）**：分组导航「模型 / 运行 / 集成 / 其他」，底部为运行设置。**5 个入口都已实现**：模型与服务（主从两栏）、运行日志、用量与额度、WorkBuddy 集成、关于与更新；后 4 个是**只读视图**（不新增写动作，面板内唯一写动作仍是既有 `import`），无「规划中」标签与禁用占位。
 - **主区**：默认单列展示模型列表（含服务状态、指标条与反馈条）。选中模型后主区变为两栏 `minmax(0, 1fr) var(--details-w)`，右侧为**常驻详情分栏**。
 - **详情分栏收起**：按 `Esc`、点击详情头部「收起详情」按钮、或窗口失焦，三者等价；收起后回到单列。
 - **窗口**：默认 1120×720，最小 860×560；支持深色 / 浅色主题。
@@ -102,7 +102,7 @@ xattr -dr com.apple.quarantine "/Applications/WB Bridge.app"
 
 ```sh
 npm install
-npm test             # 核心测试：cargo test（197 项 = 179 单测 + 11 JS 对拍 + 7 红线）
+npm test             # 核心测试：cargo test（207 项 = 187 单测 + 11 JS 对拍 + 9 红线）
 npm run rust:check   # cargo check 核心
 npm run lint         # eslint .（面板）
 npm run dev          # 开发运行（tauri dev）
@@ -148,7 +148,7 @@ cargo run --manifest-path src-tauri/core/Cargo.toml
 
 **功能限制**
 
-7. **4 个侧栏入口未实现**：运行日志 / 用量与额度 / WorkBuddy 集成 / 关于与更新当前只是**禁用占位**，标注「规划中」，点击无响应。
+7. **侧栏 5 个入口均已实现**（模型与服务 / 运行日志 / 用量与额度 / WorkBuddy 集成 / 关于与更新），后 4 个是**只读视图**：运行日志经壳的 `read_log` 只读取日志尾部、用量与额度只渲染 `status.json` 顶层 `usage`、集成视图的唯一写动作仍是既有 `import`；**「关于与更新」未接入自动更新**，升级需重新下载安装包。这些视图**尚未在 Tauri GUI 内实机点击验证**（同"未验证项"第 1 条），面板中不再出现「规划中」标签或禁用占位。
 8. **浅色主题对比度遗留问题**：仍有 3 处次要文字（副标题、页脚说明、耗时行）沿用 `--muted`，对比度**低于 WCAG AA 的 4.5:1**；属既有问题，尚未处理。
 9. **免费模型名单、额度与可用性由上游 OpenCode 决定**，本应用不控制也不缓存额度。
 10. **仅 PAC / SOCKS 代理暂不支持**（与上游原版一致）。
@@ -167,7 +167,7 @@ cargo run --manifest-path src-tauri/core/Cargo.toml
 | 核心 crate 内部版本 | `0.1.0` | `src-tauri/core/Cargo.toml`（与产品版本有意解耦，不参与 `version:check`） |
 | 状态内置版本 | `0.2.0` | `src-tauri/core/src/orchestration.rs` 写入 `status.json` 的历史沿革值，界面上可见 |
 | 版本一致性核验 | 5 处落点 | `npm run version:check`（`scripts/check-version.mjs`），本次复验通过 |
-| **测试基线** | **197 通过 / 0 失败** | `src-tauri/core/` 下 `cargo test`：lib 单测 **179** + `tests/js_parity.rs` **11** + `tests/red_lines.rs` **7** |
+| **测试基线** | **207 通过 / 0 失败** | `src-tauri/core/` 下 `cargo test`：lib 单测 **187** + `tests/js_parity.rs` **11** + `tests/red_lines.rs` **9**；壳 `src-tauri/` 下 `cargo test --lib` 5 通过 |
 | Lint 门禁 | 核心 `cargo clippy --all-targets`、壳 `cargo clippy --no-deps` 均 **0 warning** | 本次实跑 |
 | 对拍基线 | JS 真相快照 **271 例 / 11 个 fixture 模块**（atomic、handoff、json、model_status、platform、protocol、reasoning、repair、sync、system_proxy、workbuddy_config） | `src-tauri/core/tests/fixtures/*.json`，不再需要 Node |
 | 运行时要求 | Rust stable（壳 1.77 / 核心 1.75）；Node >= 24（仅面板构建与版本脚本）；OpenCode 运行时版本由 registry 最新版决定（不固定） | 各 `Cargo.toml`、根 `package.json` |

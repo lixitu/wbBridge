@@ -45,7 +45,7 @@ xattr -dr com.apple.quarantine "/Applications/WB Bridge.app"
 
 ```sh
 npm install
-npm test             # 核心测试：cargo test --manifest-path src-tauri/core/Cargo.toml（202 项 = 184 单测 + 11 JS 对拍 + 7 红线）
+npm test             # 核心测试：cargo test --manifest-path src-tauri/core/Cargo.toml（207 项 = 187 单测 + 11 JS 对拍 + 9 红线）
 npm run rust:check   # cargo check 核心
 npm run lint         # eslint .（面板）
 cargo clippy --all-targets --manifest-path src-tauri/core/Cargo.toml   # 核心门禁：0 warning

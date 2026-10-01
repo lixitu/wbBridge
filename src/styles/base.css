@@ -1,3 +1,6 @@
+/* 全局基础层：reset、按钮、加载与过渡原子件、无障碍工具类。
+   颜色 / 时长一律取自 variables.css，组件内不得再写死数值。 */
+
 * { box-sizing: border-box; }
 
 body {
@@ -8,6 +11,23 @@ body {
   overflow: hidden;
 }
 
+::selection { background: color-mix(in srgb, var(--green) 24%, transparent); }
+
+/* 滚动条：轨道透明、滑块内缩，窄栏里不抢视线 */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--muted) 36%, transparent);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--muted) 58%, transparent); background-clip: content-box; }
+::-webkit-scrollbar-corner { background: transparent; }
+
+/* ── 按钮 ──────────────────────────────────────────────────────────
+   hover 只改背景 / 边框（不做位移，避免密集列表里抖动）；
+   active 按压回弹；disabled 明确降透明度并去掉指针语义。 */
 button {
   font: inherit;
   color: var(--text);
@@ -17,29 +37,104 @@ button {
   padding: 8px 12px;
   cursor: pointer;
   white-space: nowrap;
-  transition: background .15s, border-color .15s, transform .06s;
+  transition: background var(--dur-1) var(--ease-standard),
+              border-color var(--dur-1) var(--ease-standard),
+              color var(--dur-1) var(--ease-standard),
+              box-shadow var(--dur-2) var(--ease-standard),
+              transform var(--dur-1) var(--ease-standard);
 }
-button:hover:not(:disabled) { background: var(--green-bg); }
+button:hover:not(:disabled) {
+  background: var(--green-bg);
+  border-color: color-mix(in srgb, var(--green) 40%, var(--line));
+}
 button:active:not(:disabled) { transform: scale(.98); }
-button:focus-visible, input:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
-button:disabled { opacity: .48; cursor: default; }
+button:focus-visible, input:focus-visible, [tabindex]:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+button:disabled { opacity: .48; cursor: not-allowed; }
 
-.primary { background: var(--green); color: #fff; border-color: var(--green); font-weight: 550; }
-.primary:hover:not(:disabled) { background: var(--green-hover); }
+.primary { background: var(--green); color: var(--on-primary); border-color: var(--green); font-weight: 550; }
+.primary:hover:not(:disabled) { background: var(--green-hover); border-color: var(--green-hover); }
+.primary:focus-visible { outline-color: var(--green); }
 
+/* 次要动作（收起 / 取消 / 重试）：静默按钮，hover 才显形 */
+.ghost { background: transparent; border-color: transparent; color: var(--muted-strong); }
+.ghost:hover:not(:disabled) { background: var(--row); border-color: var(--line); color: var(--text); }
+
+/* ── 加载指示 ────────────────────────────────────────────────────── */
 .spinner {
   display: inline-block;
   width: 14px;
   height: 14px;
-  border: 2px solid currentColor;
-  border-right-color: transparent;
+  border: 2px solid color-mix(in srgb, currentColor 26%, transparent);
+  border-top-color: currentColor;
   border-radius: 50%;
-  animation: spin .8s linear infinite;
+  animation: spin .7s linear infinite;
   vertical-align: -2px;
   margin-right: 5px;
+  flex-shrink: 0;
 }
+.spinner.sm { width: 11px; height: 11px; border-width: 1.5px; margin-right: 0; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* 骨架屏：数据的占位形状，用于日志 / 目录等异步读取 */
+.skeleton {
+  border-radius: var(--radius-s);
+  background: linear-gradient(90deg, var(--skeleton-1) 25%, var(--skeleton-2) 37%, var(--skeleton-1) 63%);
+  background-size: 400% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+@keyframes shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
+
+/* 不确定进度条：只表达「进行中」，不谎报百分比 */
+.busy-bar {
+  position: relative;
+  height: 3px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--green) 14%, transparent);
+  overflow: hidden;
+}
+.busy-bar::after {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  width: 38%;
+  border-radius: 999px;
+  background: var(--green);
+  animation: busy-slide 1.2s ease-in-out infinite;
+}
+@keyframes busy-slide {
+  from { transform: translateX(-105%); }
+  to { transform: translateX(275%); }
+}
+
+/* ── 动效降级 ──────────────────────────────────────────────────────
+   用户要求减少动态效果时，位移 / 淡入一律取消且不重播；
+   仅保留 spinner / 骨架 / 进度条的循环——它们是「正在加载」的唯一信息载体，
+   停掉会让人误判为卡死。 */
 @media (prefers-reduced-motion: reduce) {
-  * { transition: none !important; animation-duration: 1.6s !important; }
+  *, *::before, *::after {
+    transition-duration: 1ms !important;
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+  }
+  .spinner, .skeleton, .busy-bar::after {
+    animation-duration: 1.6s !important;
+    animation-iteration-count: infinite !important;
+  }
+}
+
+/* 仅供屏幕阅读器的文本（不占视觉空间） */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }

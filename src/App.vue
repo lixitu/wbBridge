@@ -2,7 +2,7 @@
 // 根组件：布局壳 + 全局状态持有者。
 // 状态经 src/core/bridge.js 订阅（与 Electron 版 window.buddy 契约一致），
 // 下发给视图组件；跨组件动作也统一走 bridge.action()。
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { action, onState, onDismiss } from './core/bridge.js'
 import SideBar from './views/SideBar.vue'
 import ModelList from './views/ModelList.vue'
@@ -50,6 +50,36 @@ async function run(name, value) {
   }
 }
 
+// 检测进度：待检队列是壳推送的真实数据，已完成 = 当前模型总数 − 仍在待检的数量。
+// 只反映这一帧的快照，不做外推；拿不到总数或待检数时返回空串，宁可不显示也不猜数字。
+const probeProgress = computed(() => {
+  const probe = state.value.probe
+  const total = (state.value.models || []).length
+  const pending = probe?.pending?.length
+  if (!probe?.running || !total || !Number.isFinite(pending)) return ''
+  return `${Math.max(0, Math.min(total, total - pending))}/${total}`
+})
+
+// 进行中提示：把「哪个动作在跑」翻成一句人话，纯 CSS spinner 之外再给一行文字交代。
+// 除检测外都不写进度数字 —— 其余动作前端拿不到真实进度，写数字就是编造。
+const pendingText = computed(() => {
+  if (busyAction.value === 'refresh') return '正在读取免费模型，请稍候…'
+  if (busyAction.value === 'import') return '正在写入 WorkBuddy 配置…'
+  if (busyAction.value === 'restart') return '正在重启核心服务…'
+  if (busyAction.value === 'system-proxy') return '正在应用系统代理设置…'
+  if (busyAction.value === 'probe' || state.value.probe?.running) {
+    const progress = probeProgress.value ? `（${probeProgress.value}）` : ''
+    return `正在逐个检测模型${progress}，会向每个模型发送一次简短请求（消耗少量免费额度）…`
+  }
+  return ''
+})
+// 反馈条只保留一个来源：进行中压过上一次结果，避免「还在跑」和「上次的结果」上下叠着互相打架。
+const banner = computed(() => {
+  if (pendingText.value) return { text: pendingText.value, pending: true, error: false }
+  if (feedback.value) return { text: feedback.value.text, error: !!feedback.value.error, pending: false }
+  return null
+})
+
 // 收起详情 = 清空选中：详情列随之消失，模型列表立刻占满可用宽度。
 // Esc、详情面板右上角的「收起」按钮、Tauri 失焦事件，三者走同一条路径。
 function dismiss() {
@@ -90,14 +120,30 @@ onUnmounted(() => {
             <p class="subtitle">自动发现，保留每一个模型的状态。</p>
           </div>
           <div class="actions">
-            <button id="refresh" :disabled="!!busyAction || !!state.probe?.running || state.phase !== 'ready'" @click="run('refresh')">
+            <button
+              id="refresh"
+              :disabled="!!busyAction || !!state.probe?.running || state.phase !== 'ready'"
+              :aria-busy="String(busyAction === 'refresh')"
+              @click="run('refresh')"
+            >
               <span v-if="busyAction === 'refresh'" class="spinner" />读取免费模型
             </button>
-            <button id="probe" :disabled="!!busyAction || !!state.probe?.running || state.phase !== 'ready'" @click="run('probe')">
-              <span v-if="state.probe?.running" class="spinner" />检测全部
+            <!-- 检测是长任务：按钮上带真实进度（取自壳推送的待检队列），不是估算出来的
+                 —— 进度是唯一的提醒来源，把它放在触发点上比只在底部飘一行文字更容易被看到 -->
+            <button
+              id="probe"
+              :disabled="!!busyAction || !!state.probe?.running || state.phase !== 'ready'"
+              :aria-busy="String(!!state.probe?.running)"
+              @click="run('probe')"
+            >
+              <span v-if="state.probe?.running" class="spinner" />检测全部<template v-if="probeProgress"> {{ probeProgress }}</template>
             </button>
           </div>
         </header>
+
+        <!-- 检测是长任务，按钮里的计数负责「还剩多少」，这条不确定进度条负责「还在动」：
+             两者都是真实信号的呈现，进度条不谎报百分比 -->
+        <div v-if="state.probe?.running" class="busy-bar" role="progressbar" aria-label="正在检测模型" />
 
         <ServiceStatus
           :activity="state.activity"
@@ -117,7 +163,14 @@ onUnmounted(() => {
           </button>
         </MetricsBar>
 
-        <FeedbackBar v-if="feedback" :error="feedback.error" :text="feedback.text" />
+        <FeedbackBar
+          v-if="banner"
+          :key="banner.text"
+          :text="banner.text"
+          :error="banner.error"
+          :pending="banner.pending"
+          @dismiss="feedback = null"
+        />
       </div>
 
       <!-- 主从两栏：详情是右侧常驻列（不是浮层/遮罩），任何窗口宽度都不降级为上下堆叠 -->
@@ -148,7 +201,14 @@ onUnmounted(() => {
       <LogsView v-if="view === 'logs'" />
       <UsageView v-if="view === 'usage'" :usage="state.usage" />
       <!-- 该视图内的「导入 WorkBuddy」也走同一个 run()，反馈必须在本视图可见（只换位置，不复制状态） -->
-      <FeedbackBar v-if="view === 'workbuddy' && feedback" :error="feedback.error" :text="feedback.text" />
+      <FeedbackBar
+        v-if="view === 'workbuddy' && banner"
+        :key="banner.text"
+        :text="banner.text"
+        :error="banner.error"
+        :pending="banner.pending"
+        @dismiss="feedback = null"
+      />
       <IntegrationView
         v-if="view === 'workbuddy'"
         :state="state"
@@ -204,4 +264,15 @@ h2 { font-size: 27px; letter-spacing: -.8px; margin: 0 0 6px; font-weight: 650; 
 footer { font-size: 11px; color: var(--muted); line-height: 1.7; flex-shrink: 0; }
 footer p { margin: 0; }
 .note { margin-top: 6px !important; }
+
+/* ── 视图进入动效 ──────────────────────────────────────────────────
+   视图靠 v-if 挂载 / 卸载，把动画写在挂载元素上即可得到「淡入 + 轻微上浮」，
+   无需引入 <Transition> 去改视图链结构。位移只给 6px：面板窗口窄，
+   大幅滑动会迫使视线重新定位；切换视图的动作本身已经在侧栏给了高亮反馈。 */
+.top, .content { animation: rise-in var(--dur-3) var(--ease-enter) both; }
+.content { animation-delay: 30ms; }
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
 </style>

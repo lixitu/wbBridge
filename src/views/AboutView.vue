@@ -81,18 +81,22 @@ header { display: flex; justify-content: space-between; gap: var(--sp-3); align-
   margin: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--sp-3);
   padding: var(--sp-4);
   background: var(--row);
   border: 1px solid var(--line);
   border-radius: var(--radius-m);
 }
-.facts div { display: flex; gap: var(--sp-3); align-items: baseline; }
+/* 行间极淡分隔线，与「WorkBuddy 集成」的键值区保持同一套阅读节奏 */
+.facts div { display: flex; gap: var(--sp-3); align-items: baseline; padding: 7px 0; }
+.facts div + div { border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent); }
+.facts div:first-child { padding-top: 0; }
+.facts div:last-child { padding-bottom: 0; }
 .facts dt { flex-shrink: 0; width: 112px; font-size: var(--fs-xs); color: var(--muted-strong); }
 .facts dd { margin: 0; font-size: var(--fs-sm); color: var(--text); overflow-wrap: anywhere; min-width: 0; }
 .mono { font-family: ui-monospace, monospace; }
 .panel { padding: var(--sp-4); background: var(--row); border: 1px solid var(--line); border-radius: var(--radius-m); }
-.panel h3 { margin: 0 0 var(--sp-2); font-size: var(--fs-base); font-weight: 600; }
+.panel h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 var(--sp-2); font-size: var(--fs-base); font-weight: 600; }
+.panel h3::before { content: ""; width: 3px; height: 13px; border-radius: 2px; background: var(--green); }
 .panel p { margin: 0; font-size: var(--fs-sm); color: var(--muted-strong); line-height: var(--lh-loose); }
 .error-text { color: var(--orange); }
 .note { margin: 0; font-size: var(--fs-xs); color: var(--muted-strong); line-height: var(--lh-loose); }

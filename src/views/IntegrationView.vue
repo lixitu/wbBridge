@@ -23,7 +23,15 @@ const canImport = computed(
         <h2>WorkBuddy 集成</h2>
         <p class="subtitle">本服务如何接入 WorkBuddy，以及当前发布结果。</p>
       </div>
-      <button id="integration-import" class="primary" :disabled="!canImport" @click="$emit('import')">
+      <!-- 灰按钮旁边补一条 title：可视的原因在下方「核心阶段」一栏，这里只做就近提示 -->
+      <button
+        id="integration-import"
+        class="primary"
+        :disabled="!canImport"
+        :aria-busy="String(busy)"
+        :title="canImport ? '把本服务的可用模型写入 WorkBuddy 配置' : '核心未就绪或正在检测，暂时无法导入'"
+        @click="$emit('import')"
+      >
         <span v-if="busy" class="spinner" />导入 WorkBuddy
       </button>
     </header>
@@ -35,7 +43,7 @@ const canImport = computed(
       </div>
       <div>
         <dt>核心阶段</dt>
-        <dd>{{ state.phase || '未知' }}</dd>
+        <dd class="phase" :class="{ ok: state.phase === 'ready', err: state.phase === 'error' }">{{ state.phase || '未知' }}</dd>
       </div>
       <div>
         <dt>WorkBuddy 配置</dt>
@@ -75,24 +83,31 @@ header { display: flex; justify-content: space-between; gap: var(--sp-3); align-
   margin: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--sp-3);
   padding: var(--sp-4);
   background: var(--row);
   border: 1px solid var(--line);
   border-radius: var(--radius-m);
 }
-.facts div { display: flex; gap: var(--sp-3); align-items: baseline; }
+/* 行间极淡分隔线：键值对读起来像表格，而不是一叠段落 */
+.facts div { display: flex; gap: var(--sp-3); align-items: baseline; padding: 7px 0; }
+.facts div + div { border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent); }
+.facts div:first-child { padding-top: 0; }
+.facts div:last-child { padding-bottom: 0; }
 .facts dt { flex-shrink: 0; width: 112px; font-size: var(--fs-xs); color: var(--muted-strong); }
 .facts dd { margin: 0; font-size: var(--fs-sm); color: var(--text); overflow-wrap: anywhere; min-width: 0; }
+.facts dd.phase.ok { color: var(--green); }
+.facts dd.phase.err { color: var(--orange); }
 .chip-list { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
 .chip {
   font-size: var(--fs-xs);
-  padding: 2px 8px;
+  padding: 3px 9px;
   border: 1px solid var(--line);
   border-radius: 999px;
   background: var(--bg);
   color: var(--muted-strong);
+  transition: border-color var(--dur-1) var(--ease-standard), color var(--dur-1) var(--ease-standard);
 }
+.chip:hover { border-color: color-mix(in srgb, var(--green) 45%, var(--line)); color: var(--text); }
 .mono { font-family: ui-monospace, monospace; }
 .error-text { color: var(--orange); }
 .note { margin: 0; font-size: var(--fs-xs); color: var(--muted-strong); line-height: var(--lh-loose); }

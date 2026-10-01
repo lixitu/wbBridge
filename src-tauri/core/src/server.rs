@@ -2,8 +2,8 @@
 //!
 //! 逐条对齐 Node 版的可见行为：
 //! - 路由集合：`GET /health`、`GET /v1/models`、`POST /v1/chat/completions`、
-//!   5 条 `POST /admin/*`（动作表见 [`ACTION_ROUTES`]，与 `core/src/server.js` 的
-//!   `ACTION_ROUTES`、`src-tauri/src/lib.rs` 的 `ADMIN_ROUTES`、`docs/contract.md` 一致）；
+//!   5 条 `POST /admin/*`（动作表见 [`ACTION_ROUTES`]，是这张表的唯一真相；壳的
+//!   `src-tauri/src/lib.rs::ADMIN_ROUTES` 由壳侧契约测试逐项对齐，`docs/contract.md` 记录对外口径）；
 //! - 鉴权：`Authorization: Bearer <key>`，缺失/不匹配 → 401 `{message, type}`；
 //! - 浏览器 Origin 一律 403 `{message}`；
 //! - 请求体上限 8 MB → 413，非法 JSON → 400，文案与 Node 版逐字一致；
@@ -56,7 +56,9 @@ pub const STREAM_BUFFER: usize = 1024;
 /// 接收请求体的超时（对应 Node 的 `requestTimeout = 20000ms`）。
 pub const REQUEST_BODY_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// 动作表：`(动作, 方法, 路由)`，与 `core/src/server.js` 的 `ACTION_ROUTES` 逐项对应。
+/// 动作表：`(动作, 方法, 路由)`，唯一真相；壳侧 `ADMIN_ROUTES` 由
+/// `src-tauri/src/lib.rs` 的 `shell_action_routes_match_the_core_contract` 逐项对齐，
+/// 红线用例（`tests/red_lines.rs::routes()`）也直接从这张表取管理路由，不再各写一份。
 ///
 /// 顺序亦与 Node 版一致（Node 的 Map 保持插入序）。
 pub const ACTION_ROUTES: [(&str, &str, &str); 5] = [
@@ -1080,7 +1082,13 @@ fn record(
 // ---------------------------------------------------------------------------
 
 /// `authorized(req)`：`timingSafeEqual(Buffer.from(header || ''), Buffer.from('Bearer ' + key))`。
+///
+/// 空密钥一律拒绝：否则期望值退化成 `"Bearer "`，任何本地进程都能匹配（安全红线 1）。
+/// 正常链路里 `orchestration::resolve_api_key` 已保证密钥非空，这里是防止其他调用方绕过引导。
 fn authorized(headers: &axum::http::HeaderMap, key: &str) -> bool {
+    if key.is_empty() {
+        return false;
+    }
     let Some(header) = headers.get(header::AUTHORIZATION) else {
         return false;
     };

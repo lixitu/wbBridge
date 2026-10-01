@@ -2,7 +2,7 @@
 
 ## ⚠ 强制规范（所有 Agent 必须遵守）
 
-**本项目是「Tauri 桌面壳 + 同进程内嵌 Rust 核心」的桥接工具。核心（`src-tauri/core/`，crate 名 `wbbridge-core`）作为 `path` 依赖静态编进壳（`src-tauri/`）里，跑在壳专用 tokio 多线程运行时上，仍在 `127.0.0.1:41980`（端口被占则由壳另择端口）提供 OpenAI 兼容 API，把**隔离托管**的 OpenCode 免费模型发布给 WorkBuddy；控制面板 `src/`（Vue 3 SFC + Vite 构建，产物 `dist/`）由 Tauri WebView 加载，经 `invoke('core_action' | 'restart_core' | 'core_running' | 'data_dir_path')` 与 `core-status` / `core-activity` / `core-failed` 事件驱动。**
+**本项目是「Tauri 桌面壳 + 同进程内嵌 Rust 核心」的桥接工具。核心（`src-tauri/core/`，crate 名 `wbbridge-core`）作为 `path` 依赖静态编进壳（`src-tauri/`）里，跑在壳专用 tokio 多线程运行时上，仍在 `127.0.0.1:41980`（端口被占则由壳另择端口）提供 OpenAI 兼容 API，把**隔离托管**的 OpenCode 免费模型发布给 WorkBuddy；控制面板 `src/`（Vue 3 SFC + Vite 构建，产物 `dist/`）由 Tauri WebView 加载，经 `invoke('core_action' | 'restart_core' | 'core_running' | 'data_dir_path' | 'read_log')` 与 `core-status` / `core-activity` / `core-failed` 事件驱动。**
 
 > 🔴 **已彻底移除 Node 运行环境**：不再有 Node sidecar、`@yao-pkg/pkg`、esbuild 预打包，不再有 `src-tauri/binaries/`（`externalBin` 为空数组）。Node 仅用于前端构建（Vite）与 `scripts/*.mjs`。原 JS 核心与其测试已归档到仓库**之外**：
 > `/Users/wbtrex/website/localServer/node/trexwb/backup/wbBridge-node-20261001/`（详见该目录 README）。
@@ -29,6 +29,7 @@
 | `src-tauri/core` 独立进程冒烟（真实下载 OpenCode → 隔离启动 → `/agent` 校验 → 刷新 8 个免费模型 → 探测通过 → 鉴权 401/403 → `/v1/models` → 优雅关停） | ✅ 已在一次性数据目录实测通过 |
 | `cargo clippy --all-targets`（src-tauri/core）/ `cargo clippy --no-deps`（src-tauri） | ✅ 0 warning |
 | 实际启动 GUI（`npm run tauri:dev` / 打包后的 .app）并操作托盘与面板 | ❌ **未实测**。壳改动只能以「编译通过 + 核心独立运行行为」为证据，必须显式告知用户未做 GUI 验证 |
+| 本轮壳侧改动（async 命令 + `spawn_blocking`、启动失败反复播报 `core-failed`、`startup_error`） | ❌ **同样未做 GUI 实测**，证据只有 `cargo clippy --no-deps --all-targets` 0 warning 与 `cargo test --lib`（`src-tauri/`）5 通过 |
 | `.github/workflows/release.yml`（cargo 化后） | ❌ **未在 CI 上跑通**，仅静态校验过 YAML 结构 |
 | `cargo fmt --check` 全绿 | ❌ 未达成（本仓库不以 fmt 为准，勿在无关文件上顺手格式化） |
 
@@ -64,7 +65,7 @@ WB Bridge 是一个**跨平台托盘工具**，通过**隔离的 OpenCode 技术
 | 目的 | 命令 | 执行目录 | 说明 |
 |---|---|---|---|
 | 安装前端依赖 | `npm install` | 仓库根 | 根 `package.json`（devDeps：`@tauri-apps/cli`、`vite`、`@vitejs/plugin-vue`、`eslint`、`@eslint/js`；deps：`vue`） |
-| 运行全部核心测试 | `cargo test`（或 `npm run test`） | `src-tauri/core/` | 基准 **202 通过 / 0 失败**：lib 184 + `js_parity` 11 + `red_lines` 7（约 0.3s，另有 bin/doc-test 0 用例） |
+| 运行全部核心测试 | `cargo test`（或 `npm run test`） | `src-tauri/core/` | 基准 **207 通过 / 0 失败**：lib 187 + `js_parity` 11 + `red_lines` 9（约 0.3s，另有 bin/doc-test 0 用例）；壳侧另有 `cargo test --lib`（`src-tauri/`）**5 通过 / 0 失败** |
 | 静态检查 | `cargo clippy --all-targets` | `src-tauri/core/` | 必须保持 0 warning |
 | 启动核心（独立进程，调试用） | `cargo run --manifest-path src-tauri/core/Cargo.toml --bin wbbridge-core` | 仓库根 | 监听 `127.0.0.1:41980`（`BUDDY_PORT` 覆盖），数据目录走平台默认值 |
 | 开发桌面应用 | `npm run tauri:dev` | 仓库根 | `beforeDevCommand = npm run vite:dev`（`http://localhost:41990`），壳内嵌启动核心 |
@@ -173,7 +174,7 @@ wbBridge/
 ```
 
 > **为什么核心是 `src-tauri/core/` 而不是并进壳的单个 crate**：核心仍是独立 crate（`wbbridge-core`，
-> 且是**独立 workspace**），壳通过 `path = "core"` 依赖把它静态编进同一进程。这样核心的 202 个测试
+> 且是**独立 workspace**），壳通过 `path = "core"` 依赖把它静态编进同一进程。这样核心的 207 个测试
 > 不必编译 tauri/webkit 依赖图（CI 的 Linux 测试任务因此无需装 libwebkit2gtk），`wbbridge-core`
 > 也能单独构建出可执行文件做进程级冒烟；同时全部 Rust 代码物理位置都在 `src-tauri/` 下。
 > 合并成单 crate 会把这三点全部丢掉，故不采用。
@@ -265,9 +266,9 @@ start_backend
 
 | 模块 | 关键公开项 | 职责 |
 |---|---|---|
-| `orchestration.rs` | `run(StartOptions)`、`StartOptions{data_dir,port,handle_signals}`、`set_exit_hook`、`HELP`、`ALREADY_RUNNING`；内部 `update_and_persist`、`sync_published`、`drain_sync`、`record`、`usable_models`、`published_models`、`attach_translator`、`start_probes`、`refresh`、`read_models`、`import_models`、`shutdown`、`startup_sequence`、`bootstrap`、`watch_runtime`、`spawn_parent_watchdog`、`note_activity`、`update_with_usage`、`accumulate_usage`、`fresh_usage` | 编排与生命周期（对应旧 `main.js`；`record` 经 `update_with_usage` 串行写盘，并累加 `status.json` 顶层 `usage`） |
+| `orchestration.rs` | `run(StartOptions)`、`StartOptions{data_dir,port,handle_signals}`、`set_exit_hook`、`HELP`、`ALREADY_RUNNING`；内部 `update_and_persist`、`sync_published`、`drain_sync`、`record`、`usable_models`、`attach_translator`、`start_probes`、`drop_pending`、`refresh`、`read_models`、`import_models`、`shutdown`、`startup_sequence`、`bootstrap`、`watch_runtime`、`spawn_parent_watchdog`、`note_activity`、`update_with_usage`、`accumulate_usage`、`fresh_usage`、`resolve_api_key`、`write_secret_file` | 编排与生命周期（对应旧 `main.js`；`record` 经 `update_with_usage` 串行写盘，并累加 `status.json` 顶层 `usage`） |
 | `server.rs` | `Server::new(key)` 链式注入 → `build() -> (Router, ServerControl)`、`serve`、`ACTION_ROUTES`、`route_for`/`method_for`、`MAX_BODY_BYTES`、`MAX_CONCURRENT_REQUESTS`、`DEFAULT_HEARTBEAT`、`REQUEST_BODY_TIMEOUT`、`AbortController/AbortSignal`、`ResultRecord`、`Handlers`、`BoxFuture`、类型别名 `CompleteFn/ModelsFn/AdminFn/…` | HTTP 路由与鉴权：`GET /health`、`GET /v1/models`、`POST /admin/{probe,system-proxy,import,refresh,shutdown}`、`POST /v1/chat/completions` |
-| `protocol.rs` | `BridgeError`（`with`/`status`/`code`）、`prepare`、`PreparedRequest`、`decode`、`completion`/`completion_with`、`send_sse`、`random_hex`/`random_uuid`、`parse_image_data_url` | OpenAI 兼容入参校验、信封解码、响应组装、SSE |
+| `protocol.rs` | `BridgeError`（`with`/`status`/`code`）、`prepare`、`PreparedRequest`、`decode`、`completion`/`completion_with`、`send_sse`、`random_hex_id`/`random_uuid`、`parse_image_data_url` | OpenAI 兼容入参校验、信封解码、响应组装、SSE |
 | `backend.rs` | `Backend`（`complete`、`set_translator`）、`native_permissions()`、`free_models`、`shrink_permission`、`to_bridge_error` | OpenCode HTTP 客户端、事件流、原生审批拦截、免费模型发现 |
 | `runtime.rs` | `find_runtime`、`isolated_config()`、`isolated_environment`、`ENV_ALLOW`、`start_backend`/`Started`、`stop_backend`、`runtime_candidates`、`compare_versions`、`generate_password`、`RuntimeOptions`、`FetchFn/LatestFn/…` | 运行时定位/下载/校验/启动与隔离配置 |
 | `probe.rs` | `PROBE_TIMEOUT_MS`、`probe_tools`、`probe_body`、`judge_probe`、`format_unsupported`、`retryable_probe_codes`、`probe_model`、`probe_failure`、`should_retry` | 模型探测协议与判定 |
@@ -277,11 +278,11 @@ start_backend
 | `workbuddy_config.rs` | `validate_models_file`、`resolve_models_file`、`resolve_models_path`、`ConfigError`、`INVALID_PATH_MESSAGE` | models.json 定位与校验 |
 | `system_proxy.rs` | `parse_system_proxy`、`system_proxy_environment`、`environment_from_output`、`parse_windows_proxy`、`js_number`、`ProxyError` | 系统代理发现与子进程 env 映射 |
 | `reasoning.rs` | `EFFORT_LEVELS`、`reasoning_efforts`、`work_buddy_reasoning` | 推理档位与回退策略 |
-| `model_status.rs` | `model_result`/`model_result_at`、`with_request_meta`、`client_model_id`、`CATEGORY_*`、`now_iso` | 状态记录与客户端展示 ID |
+| `model_status.rs` | `model_result`/`model_result_at`、`with_request_meta`、`client_model_id`、`CATEGORY_*`、`now_iso8601` | 状态记录与客户端展示 ID |
 | `platform.rs` | `data_directory`/`data_directory_with`、`DATA_DIR_NAME`、`runtime_package`、`host_platform`/`host_arch`、路径原语 | 平台路径与运行时包名 |
 | `atomic.rs` | `replace_with_retry`/`replace_with_retry_with`、`ReplaceError`、`DELAYS`、`TRANSIENT_CODES`、`node_code_for_io` | 原子替换（Windows 共享冲突重试） |
-| `json.rs` | `parse_json`、`Env`、`truthy`、`strict_eq`、`js_stringify`/`js_stringify_pretty`、`number_from_f`、`type_of` 等 | 容错 JSON + JS 语义等价原语 |
-| `src-tauri/src/lib.rs` | `core_action`、`restart_core`、`core_running`、`data_dir_path`、`read_log`（`generate_handler` 五命令；`read_log` 无参数、只读数据目录内运行日志的尾部，返回 `{text, truncated, bytes}`）、事件 `core-status`（轻量快照）/ `core-activity`（activity + modelResults）/ `core-failed`、`start_core`/`stop_core`/`watch_status`/`build_tray`/`admin_call` | 托盘壳：生命周期、IPC、状态轮询、退出预算 |
+| `json.rs` | `parse_json`、`Env`、`truthy`、`strict_eq`、`js_stringify`/`js_stringify_pretty`、`number_from_f64`、`type_of` 等 | 容错 JSON + JS 语义等价原语 |
+| `src-tauri/src/lib.rs` | `core_action`、`restart_core`、`core_running`、`data_dir_path`、`read_log`（`generate_handler` 五命令；前两个是 **async 命令**，阻塞的 key 轮询与回环 HTTP 走 `spawn_blocking`；`read_log` 无参数、只读数据目录内运行日志的尾部，返回 `{text, truncated, bytes}`）、事件 `core-status`（轻量快照）/ `core-activity`（activity + modelResults）/ `core-failed`（**故障期间每 ~4s 重播**，面板晚注册监听也能收到）、`start_core`/`stop_core`/`watch_status`/`service_down`/`restart_core_with`/`build_tray`/`admin_call` | 托盘壳：生命周期、IPC、状态轮询、退出预算 |
 | `src/core/bridge.js` | `action(name, value)`、`onState(cb)`、`onDismiss(cb)`、`readLog()`、`dataDir()` | 面板与壳的唯一边界（invoke + listen）；后两个是**只读**调用（新增视图用），不接受路径入参、不写文件 |
 | `src/core/activity.js` | `activityText(...)` | 活动文案统一（托盘与面板共用） |
 | `scripts/*.mjs` | `bump-version.mjs`、`check-version.mjs` | 版本单一来源同步与校验 |
@@ -336,10 +337,12 @@ start_backend
 
 ### 测试规范
 
-- 核心测试全部用 Rust：`cargo test`（`src-tauri/core/`）。基线 **202 通过 / 0 失败**：
-  - lib 单元测试 184（含 `src/*.rs` 内 `#[cfg(test)]`）；
+- 核心测试全部用 Rust：`cargo test`（`src-tauri/core/`）。基线 **207 通过 / 0 失败**：
+  - lib 单元测试 187（含 `src/*.rs` 内 `#[cfg(test)]`）；
   - `tests/js_parity.rs` 11（每模块一组，比较 `tests/fixtures/*.json` 冻结的 `expected`）；
-  - `tests/red_lines.rs` 7（运行期红线守卫）。
+  - `tests/red_lines.rs` 9（运行期红线守卫）。
+  壳（`src-tauri/`）另有 `cargo test --lib` **5 通过**：日志尾部读取 4 项 + `shell_action_routes_match_the_core_contract`
+  （断言 `ADMIN_ROUTES` 与核心 `ACTION_ROUTES` 逐项一致）。
 - **JS↔Rust 对拍已快照化**：`tests/fixtures/*.json` 每个用例带 `expected`（迁移前由 JS 实现录制、已抹平随机 id / `created` / `ms` / sync 文案；沙箱绝对路径在比较前还原成 `$BASE` 占位符，快照因此不绑定机器与目录布局）。默认不启动 Node。需要重新录制时，把仓库外归档 `backup/wbBridge-node-20261001/` 的 `core/` 与 `core-rs-tests-js/`（归档内的目录名，放回后即 `tests/js/`）放回原位，再 `WB_PARITY_RECORD=1 cargo test --test js_parity`；**禁止**在没有 JS 真相的情况下手工编辑 `expected` 来"让测试通过"。
 - **测试严禁真实联网、真实下载**：网络与运行时行为必须通过注入点（`RuntimeOptions` 的 `FetchFn`/`LatestFn`/`ProbeFn`、`SyncIo`、`atomic::replace_with_retry_with`）替换。
 - 新增/修改行为必须补测试；测试名要描述被保护的行为。触碰安全/供应链/数据红线时，优先在 `tests/red_lines.rs` 补断言而不是只写文档。
@@ -351,6 +354,9 @@ start_backend
 - 与壳的通信只走既有契约：`src/core/bridge.js` 的 `action(name, value)` / `onState(cb)` / `onDismiss(cb)`，底层是 `invoke('core_action' | 'restart_core' | 'core_running' | 'data_dir_path' | 'read_log')` + 事件 `core-status`（轻量快照，含顶层 `usage`）/ `core-activity`（`activity` + `modelResults` 明细，面板必须与最近一次轻量快照合并后再下发，否则逐模型状态永远为空）/ `core-failed`。新增只读命令时须同步 `src-tauri/src/lib.rs` 的 `generate_handler`；`capabilities/default.json` **无需改动**——自有命令不经 capability 授权。**不得新增或改名 IPC 命令/事件**，除非同步更新 `src-tauri/src/lib.rs` 与 `src-tauri/capabilities/default.json`。
 - 面板为只读展示 + 动作触发：不得在面板内直接读写文件、直接访问网络、直接调用 OpenCode。
 - 动作执行期间必须置忙（按钮禁用 + spinner + 结果反馈），失败必须显示原因。
+- **交互反馈分层（2026-10-01 UI 优化后固化）**：等待用 `spinner` / `.skeleton` / `.busy-bar`，结果用 `FeedbackBar`（pending / error / success 三态；pending 态**不给关闭按钮**，防误判操作已结束）。**进度只许来自壳推送的真实数据**：`probe` 可显示「已完成/总数」（由 `probe.pending` 队列长度与当前模型数推算，只反映当帧快照，缺任一项即不显示），其余动作前端拿不到真实进度，一律只给文字、**不写数字**。
+- **图标一律内联 SVG**（`stroke="currentColor"`）：禁止字符符号（▦▤◔⇄ⓘ 之类随系统字体变化、基线不齐、无法统一线宽），也禁止外部图标资源或图标字体（CSP `default-src 'self'`）。
+- **样式硬约束**：颜色 / 时长 / 阴影一律取 `src/styles/variables.css` 的 token（交互层含 `--dur-*`、`--ease-*`、`--focus-ring`、`--on-primary`、`--shadow-s/m`、`--nav-hover-bg` / `--nav-active-bg` / `--nav-active-ring`），组件内不得写死数值；`prefers-reduced-motion` 下位移与淡入必须取消，但 `spinner` / `.skeleton` / `.busy-bar` 的循环**必须保留**（否则「正在加载」失去唯一载体）；所有可点元素必须有 hover、`focus-visible` 焦点环与 `disabled` 态。
 
 #### 布局与窗口（2026-10-01 面板改造后的当前实现）
 
@@ -412,13 +418,13 @@ start_backend
 - 提交前必须运行 `cargo test`（`src-tauri/core/`）；测试失败禁止提交。
 - 一次提交只包含一类改动，禁止把源码改动与大批二进制/图标混在一起。
 - **严禁提交**：`api-key`、`.env.local`、`status.json`、`settings.json`、`node_modules/`、`dist/`、`src-tauri/target/`、`src-tauri/core/target/`、`src-tauri/gen/`、`.zwork/`、任何私钥文件、以及仓库外的 Node 归档目录。
-- 仓库现状：分支 `dev`，远端 `origin = https://github.com/trexwb/wbBridge.git`（另有 `main`）。历史上只有 `README.md` 被跟踪，**其余文件全部处于未跟踪/修改态**；`git status` 里的 `D src/core/*`、`D docs/brand/*` 等是目录重组的结果，删除记录不等于丢数据（数据在仓库外归档）。提交前务必 `git status` 复核实际纳入内容。
+- 仓库现状（2026-10-01 实读）：分支 `dev`，远端 `origin = https://github.com/trexwb/wbBridge.git`（另有 `main`），`git ls-files` 有 **103** 个被跟踪文件（早期「只有 README.md 被跟踪」的说法已过时）；工作区仍有目录重组留下的删除记录，删除不等于丢数据（原 JS 核心在仓库外归档）。提交前务必 `git status` 复核实际纳入内容。
 
 ## 红线与限制
 
 ### 安全红线（不得移除、不得放松、不得绕过；由 `tests/red_lines.rs` 部分钉死）
 
-1. **鉴权**：所有路由（含 `/health`）必须校验 `Authorization: Bearer <api-key>`，比较走 `server.rs::constant_time_eq`（与 Node `timingSafeEqual` 同语义：定长逐字节异或累加，长度不等直接 false）；`api-key` 文件权限 `0600`，缺失时随机生成；裸 key / 非 Bearer 方案一律 401。
+1. **鉴权**：所有路由（含 `/health`）必须校验 `Authorization: Bearer <api-key>`，比较走 `server.rs::constant_time_eq`（长度不等直接 false，等长时用 `subtle::ConstantTimeEq`；**不得**换成手写异或累加，后者可能被优化成提前短路）；`api-key` 文件权限 `0600`，**缺失或内容为空白时随机生成并强制 `0600`**（沿用空白文件等于把期望头退化成 `"Bearer "`）；`authorized` 对空密钥一律拒绝；裸 key / 非 Bearer 方案一律 401。
 2. **拒绝浏览器来源**：请求带任何非空 `Origin` 头一律 403。WorkBuddy 只经其原生运行时访问本服务。
 3. **仅监听回环地址**：`TcpListener::bind(("127.0.0.1", port))`（`orchestration.rs`），禁止改为 `0.0.0.0` 或对外开放。
 4. **限流与体积**：并发 ≤4、请求体 ≤8MB，不得放宽。
@@ -462,7 +468,7 @@ start_backend
 | 核心 crate 内部版本 | **0.1.0** | `src-tauri/core/Cargo.toml`（`wbbridge-core --version` 输出，与产品版本解耦，**不得"顺手对齐"**） |
 | 状态内置版本 | `0.2.0` | `src-tauri/core/src/orchestration.rs` 写入 `status.json` 的 `version`（沿自上游参考实现，界面上可见） |
 | 上游调研基线 | `0.2.5` | `docs/research/upstream-architecture.md` |
-| 测试基线 | **202 通过 / 0 失败**（lib 184 + js_parity 11 + red_lines 7，约 0.3s） | `src-tauri/core/` 下 `cargo test` |
+| 测试基线 | **207 通过 / 0 失败**（lib 187 + js_parity 11 + red_lines 9，约 0.3s）；壳 `cargo test --lib` 5 通过 | `src-tauri/core/` 下 `cargo test`、`src-tauri/` 下 `cargo test --lib` |
 | 迁移前 JS 基线 | 97 通过 / 0 失败（node v24.21.0） | 仓库外归档 `backup/wbBridge-node-20261001/core/test/` |
 | 运行时基线 | OpenCode 版本由 registry 最新版决定（不固定）；核心不再需要 Node | `src-tauri/core/src/runtime.rs` |
 

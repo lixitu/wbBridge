@@ -55,6 +55,39 @@
   --switch-off: #aab2ae;
   --switch-knob: #ffffff;
   --status-ring: rgb(38 110 92 / .06);
+
+  /* ── 交互与动效（UI 打磨新增）────────────────────────────
+     时长 / 缓动统一登记在此，组件不得自造数值：
+       --dur-1 即时反馈（hover、按压）
+       --dur-2 常规过渡（导航、按钮、徽章、反馈条）
+       --dur-3 容器级（视图切换、详情栏进出） */
+  --dur-1: 120ms;
+  --dur-2: 180ms;
+  --dur-3: 260ms;
+  --ease-standard: cubic-bezier(.2, 0, 0, 1);
+  --ease-enter: cubic-bezier(.22, .61, .36, 1);
+  --ease-emphasis: cubic-bezier(.32, .72, 0, 1);
+
+  /* 键盘焦点：全站 focus-visible 统一取它（鼠标点击不触发） */
+  --focus-ring: 2px solid var(--green);
+  --focus-offset: 2px;
+
+  /* 实心主按钮上的文字色：浅色模式为白字，暗色模式必须改为深色（浅绿底 + 白字不足 4.5:1） */
+  --on-primary: #fff;
+
+  /* 表面层次：--panel（侧栏）/ --row（行、卡片）之外的第三层与两级投影 */
+  --surface-raised: #fff;
+  --shadow-s: 0 1px 2px rgb(32 40 38 / .05);
+  --shadow-m: 0 1px 2px rgb(32 40 38 / .05), 0 8px 24px rgb(32 40 38 / .07);
+
+  /* 侧栏导航：hover / 当前项底色（由主色派生，暗色模式另调） */
+  --nav-hover-bg: color-mix(in srgb, var(--green) 7%, transparent);
+  --nav-active-bg: color-mix(in srgb, var(--green) 11%, transparent);
+  --nav-active-ring: color-mix(in srgb, var(--green) 22%, transparent);
+
+  /* 骨架屏 / 进行中提示 */
+  --skeleton-1: color-mix(in srgb, var(--muted) 9%, transparent);
+  --skeleton-2: color-mix(in srgb, var(--muted) 20%, transparent);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -77,5 +110,13 @@
     --badge-image-fg: #a4c9ec;
     --badge-image-bg: #293e52;
     --badge-unavailable-fg: #e9ad70;
+    /* 暗色下的交互层：浅绿主色上白字对比不足，主按钮文字改深色；投影加深、导航底色提高不透明度 */
+    --on-primary: #17211c;
+    --surface-raised: #2b312e;
+    --shadow-s: 0 1px 2px rgb(0 0 0 / .3);
+    --shadow-m: 0 1px 2px rgb(0 0 0 / .3), 0 10px 28px rgb(0 0 0 / .26);
+    --nav-hover-bg: color-mix(in srgb, var(--green) 12%, transparent);
+    --nav-active-bg: color-mix(in srgb, var(--green) 18%, transparent);
+    --nav-active-ring: color-mix(in srgb, var(--green) 30%, transparent);
   }
 }

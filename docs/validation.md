@@ -6,6 +6,128 @@
 
 日期：2026-10-01（本机 macOS，Apple Silicon；Rust 核心 + Vue 面板）
 
+## 安全与并发修复（2026-10-01，同日第七轮：审计后的逐项落地）
+
+范围：审计出的 3 个 P0 与 4 个 P1 逐项修复。**对外契约未变**（路由、错误码、`status.json` 字段、IPC 命令名与事件名全部保持原样），
+版本号仍为 **1.0.0**（本轮属同一批安全修复的多轮往返，按 `AGENTS.md` 版本号规则不推进）。
+改动文件：`src-tauri/core/src/runtime.rs`、`src-tauri/core/src/orchestration.rs`、`src-tauri/core/src/server.rs`、
+`src-tauri/core/tests/red_lines.rs`、`src-tauri/src/lib.rs`、`AGENTS.md`、`README.md`、`docs/contract.md`、`docs/wiki/*`、
+`docs/version/*`；`.github/workflows/release.yml` **只改了顶部一行注释里的测试数量**（179/7 → 187/9），jobs/steps 与 Node 版本均未动。
+
+### 改了什么
+
+- **P0 供应链（`runtime.rs::valid_metadata`）**：原实现只校验 tarball 的**路径前缀** `/包名/-/` 与「registry 字符串自身的 origin」，
+  从未把 `metadata.tarball` 的 origin 与白名单比对，而下载循环恰恰先取 `metadata.tarball`。被篡改的元数据因此可以把 tarball
+  指向任意主机，`sha512` 形同虚设（哈希与 tarball 同源）。现在按 `Url::origin()` 逐字节比对白名单 registry，并补三条对抗用例
+  （路径形状合规但站外的 URL、`registry.npmjs.org@evil.example` 的 userinfo 伪装、镜像源 URL 必须仍通过）。
+- **P0 鉴权（`orchestration.rs::resolve_api_key` + `server.rs::authorized`）**：先前存在但内容为空白的 `api-key` 文件会被 `trim()` 后沿用，
+  期望头退化成 `"Bearer "`，任何本机进程都能匹配。现在空白内容一律重新生成 32 字节 hex，覆盖写入时**强制** `0600`
+  （`OpenOptions::mode` 只在新建时生效，故额外 `set_permissions`，失败即上报、不静默降级），并在 `opencode.log` 记录「已重新生成」但不写值；
+  `authorized` 另加「空密钥一律拒绝」的兜底。
+- **P0 生命周期（`src-tauri/src/lib.rs`）**：`setup` 里的 `core-failed` 必然早于面板注册监听（事件丢失），随后 `watch_status` 无条件把磁盘上
+  上一轮的 `status.json` 当 `core-status` 推出去 ⇒ 面板显示「就绪」却没有核心在跑、重试入口消失。现在壳把启动失败原因记进
+  `startup_error`，`watch_status` 在故障态**不再推送残影状态**，改为按原因去重并每 ~4s 重播 `core-failed`（晚挂载的监听器仍能收到），
+  恢复运行时清空去重标记**并作废内容缓存**（重启后的 status.json 可能与故障前逐字节相同，不重置就永远不再推送）。
+- **P1 阻塞 IPC**：`core_action` / `restart_core` 改为 async 命令，阻塞段（最长 15s 的 key 轮询 + 60s 回环 HTTP + 最坏十余秒的停止等待）
+  下沉 `tauri::async_runtime::spawn_blocking`，不再占住主线程；前端 `invoke` 契约不变。
+- **P1 panic / 并发**：`run_probe_batch` 的三处 `pending.remove(0)` 改为按 id 移除的 `drop_pending`（`pending` 只收录带字符串 id 的模型，
+  按位置弹出会在提前耗尽时 panic，`probing` 永久为真、后续 refresh/import 全被「请等待检测完成」挡死）；`start_probes` 的占用声明由
+  `load` + `store` 改为 `swap`（两个并发 `/admin/probe` 可双双通过检查、各起一批探测）；`refresh()` 把「代理解析 + 清空为 reading」
+  移到链位登记之后（登记前的 await 让两个并发刷新都判定「无人刷新」，隔离运行时被重启两次、模型结果互相覆盖）。
+- **P1 静默 chmod**：`runtime.rs` 3 处（安装后的二进制 0755、复制候选的临时文件 0755、隔离 XDG 目录 0700）与 `orchestration.rs`
+  数据目录 0700 一处，`let _ = set_permissions(...)` 改为传播错误——隔离目录里放着 `OPENCODE_SERVER_PASSWORD` 与配置副本，
+  chmod 失败必须终止启动而不是留下一个组/其他用户可读的「隔离」目录。
+- **测试与文档**：红线守卫 **7 → 9**（`runtime_downloads_never_leave_the_registry_allow_list` 断言「一次都没向白名单外发过请求」，
+  `an_empty_api_key_authorizes_nothing` 逐路由断言空 key 下 `"Bearer "` 也拿不到放行）；新增 tar 单成员解包、空白密钥再生、
+  `drop_pending` 三个核心单测；新增壳侧 `shell_action_routes_match_the_core_contract`（`ADMIN_ROUTES` ↔ 核心 `ACTION_ROUTES` 逐项一致），
+  并把 `tests/red_lines.rs::routes()` 里手写的 5 条 `POST /admin/*` 改为**直接从 `server::ACTION_ROUTES` 派生**（此前管理路由共有
+  三份手写副本：`red_lines.rs`、`server.rs`、`src-tauri/src/lib.rs`；现在只剩核心那张表 + 一处壳侧映射，且由契约测试互相对齐，
+  新增动作不会再被红线清单漏掉）；据此把 `lib.rs` 里「三处集合是否一致由契约测试断言」这句**并不存在的保证**改为事实描述，
+  同步 `server.rs` 模块注释中指向已归档 `core/src/server.js` 的过期表述，并同步 `docs/contract.md`、
+  `docs/wiki/架构设计.md`、`docs/wiki/已知限制与未验证项.md`；基线数字在 `AGENTS.md`（4 处）、`README.md`、`docs/wiki/{Home,版本与发布,开发指南,已知限制与未验证项,架构设计}` 统一为 207。
+- **文档口径纠偏（除数字外，均已实读代码核对）**：`docs/version/RELEASE-v1.0.md` 与 `RELEASE-NOTES-v1.0.0.md` 仍把侧栏写成「只有模型与服务可用、4 个入口是「规划中」禁用占位」，
+  与同日第四轮之后的真实面板不符（`grep -rn "规划中" src/` 已无命中，`src/views/` 含 `LogsView/UsageView/IntegrationView/AboutView`）——已改为「5 个入口均已实现、后 4 个只读」，
+  并把 `views/` 文件清单与 `bridge.js` 导出（补 `readLog()` / `dataDir()`）补齐；`docs/version/README.md` 里同一句遗留说明同步改写。保留未改的一条是**仍然成立**的：
+  浅色主题下 `App.vue:262` 副标题、`App.vue:264` 页脚、`ModelRow.vue:110` 耗时行仍用 `--muted`，对比度低于 4.5:1。
+
+### 本轮实测（数字来自真实执行）
+
+- `cargo test`（`src-tauri/core/`）→ **207 通过 / 0 失败**：lib **187** + `js_parity` **11** + `red_lines` **9**。
+- `cargo clippy --all-targets`（`src-tauri/core/`）→ **0 warning**。
+- `cargo test --lib`（`src-tauri/`）→ **5 通过 / 0 失败**；`cargo clippy --no-deps --all-targets`（`src-tauri/`）→ **0 warning**。
+- `npx eslint .` → 0 problems；`npm run version:check` → 5 处一致（1.0.0）；`node -v` → v24.19.0。
+- **反向验证**（临时改动、已回滚并复测全绿）：关掉 tarball origin 比对后，新红线确实失败且下载器第一个请求就是
+  `https://evil.example.com/...` 的 tarball；删掉 `if key.is_empty()` 后 `an_empty_api_key_authorizes_nothing` 在 `GET /health` +
+  `Authorization: Bearer ` 上失败。两处洞都是活的，不是理论风险。
+
+### 未验证与遗留（如实标注，不得当作已完成）
+
+- ❌ **GUI 未实测**：`npm run tauri:dev` 与打包 .app 均未启动过。上述壳侧改动（async 命令不再冻结面板、`core-failed` 重播、
+  恢复时重推状态）的证据只有「编译通过 + 核心独立运行行为 + `cargo test --lib`」，没有任何实机交互验证。
+- ❌ `release.yml` 仍未在 CI 跑通；其 `node-version: 22` 与根 `package.json` 的 `engines.node >= 24` **仍不一致**（本轮未动，属配置改动）。
+- ⚠️ 无确定性单测的项：`refresh()` 并发去重（依赖 await 交错，难以稳定构造）、`service.pid` 单实例、探测路径禁用转写、
+  转写排除刚失败模型、格式类失败不撤发布、仅回环绑定、目录 0700 的失败分支（正常文件系统上 chmod 不会失败，构造不出稳定用例）。
+- ⚠️ `AGENTS.md` 的两处绝对路径在本机**不存在**，且本轮未改：`🔴 文件操作根目录 = /Users/wbtrex/website/localServer/node/trexwb/git/wbBridge`
+  （实际工作副本是 `/Users/wbtrex/AI助手/node/trexwb/wbBridge`），以及仓库外 JS 归档
+  `/Users/wbtrex/website/localServer/node/trexwb/backup/wbBridge-node-20261001/`（`js_parity` 因此目前无法用 `WB_PARITY_RECORD=1` 重录）。
+  这两条是用户写的规则，是否改写由用户决定。
+
+## 侧栏 4 入口实现（2026-10-01，同日第四轮）
+
+范围：核心 `usage` 计数 + 壳只读命令 `read_log` + 面板 4 个新视图；既有管理动作、路由、红线均未变。
+改动文件：`src-tauri/core/src/orchestration.rs`、`src-tauri/src/lib.rs`、`src/App.vue`、`src/views/SideBar.vue`、`src/views/LogsView.vue`、`src/views/UsageView.vue`、`src/views/IntegrationView.vue`、`src/views/AboutView.vue`、`src/core/bridge.js`、`AGENTS.md`、`README.md`。
+
+### 改了什么
+
+- **核心**：`status.json` 新增顶层 `usage`（`since` + `total{requests,ok,failed}` + 逐模型 `lastMs/avgMs`）；只累计 `source == "request"` 的真实客户端请求，**探测不计**，**客户端取消（连接断开）整条不计入**（`requests` 也不 +1）；启动时从上一份 `status.json` 读回，与 `modelResults` 同法跨重启延续。
+- **壳**：新增**只读**命令 `read_log`（无参数，读数据目录 `opencode.log` 的尾部，尾部截断 256KB / 最多 1200 行，返回 `{ text, truncated, bytes }`；不读 `.previous`、不写任何文件、不接受路径入参），并登记进 `generate_handler`（合计五命令）。
+- **面板**：侧栏 **5 个入口全部可点**（去掉「规划中」禁用占位），新增运行日志 / 用量与额度 / WorkBuddy 集成 / 关于与更新 4 个**只读**视图；面板内唯一写动作仍是既有的 `import`。「关于与更新」**未接入自动更新**。
+- **版本口径**：`STATUS_SCHEMA_VERSION` 两侧保持 `1`（兼容加法式字段不递增，见 `AGENTS.md` 与两处常量注释）。
+
+### 已验证（本轮实读执行）
+
+- `cargo test`（`src-tauri/core/`）→ **202 通过 / 0 失败**：lib 单测 **184** + `js_parity` **11** + `red_lines` **7**。
+- `cargo clippy --all-targets`（核心）→ **0 warning**。
+- `npx eslint .` → **0 problems**；`npm run vite:build` → 成功（`dist/` 已更新）。
+- ⚠️ 新增视图与 `read_log` / `usage` 仍**未在 Tauri GUI 中实机点击验证**（同「已知限制」限制 5）。
+
+## 面板 UI 风格优化与交互反馈补全（2026-10-01，同日第六轮）
+
+范围：只动面板样式与交互反馈（`src/styles/`、`src/App.vue`、`src/views/*`），**不改任何 IPC 契约、命令表与核心逻辑**。
+改动文件：`src/styles/variables.css`、`src/styles/base.css`、`src/App.vue`、`src/views/` 下 `SideBar.vue`、`FeedbackBar.vue`、`ModelList.vue`、`ModelDetails.vue`、`ServiceStatus.vue`、`MetricsBar.vue`、`LogsView.vue`、`UsageView.vue`、`IntegrationView.vue`、`AboutView.vue`，以及 `src/components/ModelRow.vue`、`AGENTS.md`、本文件；**未触碰 `src-tauri/`（Rust 侧零改动）**。
+
+### 改了什么
+
+- **token 层补齐交互与动效**：`variables.css` 亮/暗两套各补 `--dur-*`、`--ease-*`、`--focus-ring`/`--focus-offset`、`--on-primary`、`--surface-raised`、`--shadow-s/m`、`--nav-hover-bg`/`--nav-active-bg`/`--nav-active-ring`；组件内仍不写死颜色与时长。
+- **全局层（`base.css`）**：`button` 统一 hover（只改背景/边框，不做位移，避免密集列表抖动）、`active` 按压、`focus-visible` 焦点环、`disabled` 降透明度；新增 `.ghost` 静默按钮、`.spinner.sm`、`.skeleton`、`.busy-bar`（不确定进度条）、滚动条瘦身、`.visually-hidden`。`prefers-reduced-motion` 下位移/淡入一律取消，**但 spinner / 骨架 / 进度条保留循环**——它们是「正在加载」的唯一信息载体，停掉会被误读为卡死。
+- **侧栏美化**：字符图标（▦▤◔⇄ⓘ）全部换成内联 SVG（不产生外部请求，符合 `CSP default-src 'self'`）；当前视图指示轨由 0 展开成 18px 主色竖条，分组标题加短竖标，logo 加描边与投影，代理开关补 hover 态并在禁用时抑制可点暗示。
+- **等待 / 加载反馈**：`FeedbackBar` 增加 pending 态（spinner + 中性底色，**不提供关闭按钮**，防误判操作已结束）；`LogsView` 首次读取给错落骨架屏，错误态改为告警条 + 重试按钮（重试期间按钮转 spinner）；`ModelList` 空态给虚线框 + spinner + `role=status`；`ServiceStatus` 重试期间按钮转 spinner，出错时整条状态条随灯一起转橙。
+- **真实进度，不编造**：`probe` 为长任务，按钮上显示「已完成/总数」（`App.vue::probeProgress`，由壳推送的 `probe.pending` 队列长度与当前模型数推算，只反映这一帧快照，缺任一项即不显示），另在状态条上方补一条不确定进度条；**其余动作前端拿不到真实进度，一律只给文字、不写数字**（沿用既有「不编造进度」纪律）。
+- **弹层与视图动效**：详情仍为右侧常驻分栏（无遮罩、不 `fixed`/`absolute`、任何宽度不降级），入场为从右轻推淡入；主区视图切换淡入上浮；反馈条自上淡入。
+- **数据语义表达**：`MetricsBar` / `UsageView` 指标条改为「一格一数 + 细竖线分组」，可用/成功走绿、待检测与无值走灰、失败与 0% 成功率走橙（颜色仅作辅助，文案独立表意）；用量表表头吸顶、行 hover 高亮、空态虚线框；`IntegrationView` / `AboutView` 键值区补分隔线，`核心阶段` 按状态着色，不可导入时按钮 title 说明原因（可视原因仍在「核心阶段」一栏）。
+
+### 已验证（本轮实跑）
+
+- `npx eslint src` → **0 problems**（exit 0）；`npm run vite:build` → **成功**（39 模块，`dist/` 更新，css 25.85 kB）。
+- `cargo test`（`src-tauri/core/`）→ **205 通过 / 0 失败**（lib 单测 **185** + `js_parity` **11** + `red_lines` **9**）。
+- 本轮为纯前端改动、未触碰 Rust 代码，**未跑** `cargo clippy` 与桌面打包（`npm run build`）。
+
+### 未验证 / 已知遗留（如实标注）
+
+- **仍未在 Tauri GUI 实机点击验证**：改动的动效、进度条、骨架屏、焦点环只经 eslint + vite 构建 + 源码复核，未在真实 WKWebView 中点击复验（「已知限制」限制 5 本轮不解除）。
+- 焦点环与键盘可达性沿用第三轮结论（侧栏导航与模型行可 Tab 到达）；本轮新增的 `aria-busy` 与状态条 `role=status` 未做屏幕阅读器实测。
+- 浅色主题下 3 处次要文字对比度低于 4.5:1 的既有问题（见第三轮条目）本轮**未处理**。
+- **文档基线数字漂移（本轮发现，未修正）**：本轮实测核心测试为 **205 通过 / 0 失败**（lib 185 + `js_parity` 11 + `red_lines` 9），而 `AGENTS.md`（命令表 / 迁移说明 / 测试规范 / 一览表 共 4 处）与 `README.md`（`npm test` 说明）仍写 **202**（lib 184 + 11 + 7）。差异来自本轮之前某次新增的 lib 单测与 2 条红线断言；本轮未触碰 Rust 代码，故**未擅自改动这些口径**，是否同步由用户决定。
+
+## 契约与文档同步（2026-10-01，同日第五轮）
+
+范围：仅文档与代码注释，**无任何行为改动**（不改常量值、不改命令表）。
+
+- **R1 `docs/contract.md`**：壳命令由「两个」更正为三个，补 `read_log` 行（无参数、只读日志尾部、返回 `{ text, truncated, bytes }`、不吃路径入参、不写文件），并注明 `core-status` 轻量快照**仍含顶层 `usage`**、新增只读命令须同步 `generate_handler`（`capabilities/default.json` 无需改动）。
+- **R2 文档口径统一为「5 入口均已实现」**：使用指南（新增 5 视图对照表、主区标题改称「模型与服务视图主区」、动作表补 `read_log`）、开发指南（测试基线 202 / lib 184、侧栏规范改写并补只读边界）、FAQ（「规划中入口」条目改写为入口说明 + 新增「运行日志为空」条目）、已知限制与未验证项（基线 202、限制 5 改为「4 个新视图未经 GUI 实机验证」、红线条目改写、未验证项 7 补证）、架构设计（IPC 表补 `read_log`、`core-status` 说明补 `usage`、`status.json` 行补 `usage` 与 `schemaVersion` 口径、测试数 202）、版本与发布 / Home / research 的基线数字同步为 202。
+- **R3 `schemaVersion` 升级口径**：`AGENTS.md` 写明「向后兼容的加法式顶层字段不递增，本次保持 1；删除 / 改名或改变既有字段语义才两侧同步 +1」，并在 `src-tauri/src/lib.rs` 与 `src-tauri/core/src/orchestration.rs` 的版本常量注释中写入同一口径（仅注释）。
+- **本轮复验**：`cargo test`（`src-tauri/core/`）→ **202 通过 / 0 失败**；`npx eslint .` → 0 problems；`npm run vite:build` → 成功。
+
 ## 面板布局改造（2026-10-01，同日第三轮）
 
 范围：只动面板（`src/`）与壳的窗口配置（`src-tauri/tauri.conf.json`），不涉及核心逻辑、路由、错误码与 IPC 契约。
@@ -23,7 +145,7 @@
 - **默认窗口 980×680 → 1120×720**，最小尺寸保持 `860 × 560`（`src-tauri/tauri.conf.json` → `app.windows[0]`）。
 - **侧栏宽 `--sidebar-w` 224px → 208px**；侧栏改为**分组导航**（模型 / 运行 / 集成 / 其他 + 运行设置），
   当前只有「模型与服务」为激活视图，运行日志、用量与额度、WorkBuddy 集成、关于与更新 4 个入口为
-  `state: 'planned'` 禁用态 + 「规划中」标签（不做可点击却无响应的假入口）。
+  `state: 'planned'` 禁用态 + 「规划中」标签（不做可点击却无响应的假入口）。**该状态已于同日第四轮变更——5 入口全部实现，见上方最新条目。**
 - **新增 `--muted-strong` token**（亮/暗色成对），用于副标题、页脚说明、耗时行等小字号说明文字；
   普通次要文字仍用 `--muted`。
 

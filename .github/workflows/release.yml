@@ -43,7 +43,7 @@ permissions:
   contents: write
 
 jobs:
-  # ── 核心测试（Rust：179 单测 + 11 组 JS↔Rust 对拍快照 + 7 条红线）────
+  # ── 核心测试（Rust：187 单测 + 11 组 JS↔Rust 对拍快照 + 9 条红线）────
   test:
     name: 核心测试
     runs-on: ubuntu-latest

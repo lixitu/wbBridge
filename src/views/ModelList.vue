@@ -56,7 +56,10 @@ function move(event, step) {
       :selected="selected?.id === model.id"
       @toggle="selected = selected?.id === model.id ? null : model"
     />
-    <p v-if="!models.length" class="empty">正在安装或扫描模型，完成后将在这里显示。</p>
+    <!-- 空列表：模型还没扫出来。配 spinner 明确「正在进行」，避免被读成「就是没有模型」。 -->
+    <p v-if="!models.length" class="empty" role="status">
+      <span class="spinner" aria-hidden="true" />正在安装或扫描模型，完成后将在这里显示。
+    </p>
   </section>
 </template>
 
@@ -67,7 +70,20 @@ function move(event, step) {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 2px;
+  padding: 2px 4px 2px 2px;
 }
-.empty { margin: auto; color: var(--muted); font-size: 13px; }
+/* 空态：虚线框居中 + spinner，读起来是「还在进行」而不是「就是没有」 */
+.empty {
+  margin: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-m);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.empty .spinner { margin-right: 0; color: var(--muted-strong); }
 </style>

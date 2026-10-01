@@ -35,7 +35,10 @@ const lines = computed(() => {
 <template>
   <section class="details" aria-label="模型详情">
     <div class="details-head">
-      <strong>{{ model.id }}</strong>
+      <div class="details-title">
+        <span class="details-kicker">模型详情</span>
+        <strong>{{ model.id }}</strong>
+      </div>
       <button
         type="button"
         class="collapse"
@@ -43,7 +46,9 @@ const lines = computed(() => {
         aria-label="收起详情"
         @click="$emit('collapse')"
       >
-        <span aria-hidden="true">›</span>收起
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M9.5 6l6 6-6 6" />
+        </svg>收起
       </button>
     </div>
     <div class="details-body">
@@ -67,6 +72,13 @@ const lines = computed(() => {
   line-height: 1.8;
   user-select: text;
   box-shadow: var(--shadow);
+  animation: details-in var(--dur-2) var(--ease-enter) both;
+}
+/* 详情是右侧常驻分栏而非浮层：选中模型时从右轻推 + 淡入，
+   把「面板是新出现的」这件事讲清楚，而不是让右列凭空刷新。 */
+@keyframes details-in {
+  from { opacity: 0; transform: translateX(8px); }
+  to { opacity: 1; transform: none; }
 }
 .details-head {
   display: flex;
@@ -74,31 +86,44 @@ const lines = computed(() => {
   justify-content: space-between;
   gap: 8px;
   flex-shrink: 0;
-  padding-bottom: 8px;
+  padding-bottom: 10px;
   border-bottom: 1px solid var(--line);
-  margin-bottom: 8px;
+  margin-bottom: 10px;
+}
+.details-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.details-kicker {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .1em;
+  color: var(--muted);
 }
 strong {
   font-family: ui-monospace, monospace;
+  font-size: 12.5px;
   color: var(--text);
   overflow-wrap: anywhere;
   min-width: 0;
-  padding-top: 3px;
 }
 .collapse {
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  padding: 3px 8px;
+  padding: 4px 9px;
   font-size: 12px;
   color: var(--muted-strong);
   background: transparent;
   border-color: var(--line);
+  border-radius: 999px;
 }
-.collapse:hover:not(:disabled) { background: var(--green-bg); color: var(--green); }
-.collapse span { font-size: 14px; line-height: 1; }
-.details-body { overflow: auto; min-height: 0; }
+.collapse svg { width: 12px; height: 12px; }
+.collapse:hover:not(:disabled) {
+  background: var(--green-bg);
+  border-color: color-mix(in srgb, var(--green) 40%, var(--line));
+  color: var(--green);
+}
+.details-body { overflow: auto; min-height: 0; padding-right: 2px; }
 p { margin: 0; }
-.error-text { color: var(--orange); overflow-wrap: anywhere; }
+p + p { margin-top: 7px; }
+.error-text { color: var(--orange); font-weight: 500; overflow-wrap: anywhere; }
 </style>

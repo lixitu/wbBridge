@@ -37,9 +37,9 @@ function ms(value) {
 
     <div class="metrics">
       <div><b>{{ total.requests }}</b><span>真实请求</span></div>
-      <div><b>{{ total.ok }}</b><span>成功</span></div>
-      <div><b>{{ total.failed }}</b><span>失败</span></div>
-      <div><b>{{ percent(total.ok, total.requests) }}</b><span>成功率</span></div>
+      <div><b class="ok">{{ total.ok }}</b><span>成功</span></div>
+      <div><b :class="{ bad: total.failed > 0 }">{{ total.failed }}</b><span>失败</span></div>
+      <div><b :class="{ idle: !total.requests }">{{ percent(total.ok, total.requests) }}</b><span>成功率</span></div>
     </div>
 
     <p class="meta">
@@ -80,9 +80,21 @@ function ms(value) {
 <style scoped>
 header { display: flex; justify-content: space-between; gap: var(--sp-3); align-items: center; }
 .subtitle { margin: 0; color: var(--muted-strong); font-size: var(--fs-sm); }
-.metrics { display: flex; gap: var(--sp-7); }
-.metrics div { display: flex; flex-direction: column; gap: var(--sp-1); }
-.metrics b { font-size: 25px; font-weight: 600; font-variant-numeric: tabular-nums; }
+/* 指标条：一格一数，格间用极淡竖线分组 */
+.metrics {
+  display: flex;
+  align-items: stretch;
+  background: var(--row);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  overflow: hidden;
+}
+.metrics div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--sp-1); padding: 10px var(--sp-4); }
+.metrics div + div { border-left: 1px solid var(--line); }
+.metrics b { font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.15; }
+.metrics b.ok { color: var(--green); }
+.metrics b.bad { color: var(--orange); }
+.metrics b.idle { color: var(--muted); }
 .metrics span { font-size: var(--fs-xs); color: var(--muted-strong); }
 .meta { margin: 0; font-size: var(--fs-xs); color: var(--muted-strong); }
 .usage {
@@ -95,10 +107,30 @@ header { display: flex; justify-content: space-between; gap: var(--sp-3); align-
   overflow: hidden;
 }
 .usage th, .usage td { padding: var(--sp-2) var(--sp-3); text-align: left; border-bottom: 1px solid var(--line); }
-.usage th { font-size: var(--fs-xs); font-weight: 600; color: var(--muted-strong); }
+/* 表头吸顶：行数多时滚动仍能对上列名 */
+.usage th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--muted-strong);
+  background: var(--row);
+}
+.usage tbody tr { transition: background var(--dur-1) var(--ease-standard); }
+.usage tbody tr:hover { background: color-mix(in srgb, var(--row) 88%, var(--green) 12%); }
 .usage tr:last-child td { border-bottom: none; }
 .num { text-align: right; font-variant-numeric: tabular-nums; }
 .mono { font-family: ui-monospace, monospace; color: var(--text); overflow-wrap: anywhere; }
-.notice { margin: 0; font-size: var(--fs-sm); color: var(--muted-strong); }
+/* 无数据：虚线框居中，与列表空态同一套语言 */
+.notice {
+  margin: 0;
+  padding: 14px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-m);
+  font-size: var(--fs-sm);
+  color: var(--muted-strong);
+  text-align: center;
+}
 .note { margin: 0; font-size: var(--fs-xs); color: var(--muted-strong); line-height: var(--lh-loose); }
 </style>

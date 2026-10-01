@@ -41,6 +41,9 @@ struct AppState {
     /// 核心 API key 的进程内缓存：首次从 `api-key` 文件读到后记在这里，避免每次管理调用都
     /// 重新走一遍最长 15s 的轮询等待（key 由核心写盘后不再变化，重启核心不影响该缓存）。
     api_key: Mutex<Option<String>>,
+    /// 最近一次「核心没能起来」的原因（setup 或 restart_core 失败）。此刻磁盘上的
+    /// status.json 只是上一轮的残影，不能当成实时状态推给面板。
+    startup_error: Mutex<Option<String>>,
 }
 
 /// 壳只注册一次 exit hook（核心侧用 OnceLock 存），因此 app handle 也只需保存一份。
@@ -245,6 +248,26 @@ fn core_exit(state: &AppState) -> Option<String> {
 /// 只有删除 / 改名顶层字段或改变既有字段语义（非兼容变更）时才同步 +1。
 const STATUS_SCHEMA_VERSION: u64 = 1;
 
+/// 核心当前是否处于「没有服务可看」的故障态，返回（面向面板的原因文案，是否因核心退出）。
+///
+/// 两个来源：exit hook 报告核心已结束；或壳自己启动失败（setup / restart_core）后没有核心在跑。
+/// 用户主动重启/退出（`stopping_by_request`）不算故障，否则重启窗口里会误报「未运行」。
+fn service_down(state: &AppState) -> Option<(String, bool)> {
+    if let Some(reason) = core_exit(state) {
+        return Some((
+            format!("核心服务已退出（{reason}），可在面板点“重试”重启"),
+            true,
+        ));
+    }
+    let running = state.core.lock().unwrap().is_some();
+    if !running {
+        if let Some(message) = state.startup_error.lock().unwrap().clone() {
+            return Some((message, false));
+        }
+    }
+    None
+}
+
 /// 轮询核心写的 status.json：内容变化即推送事件、同步托盘勾选态，并监督核心任务是否已结束。
 fn watch_status(app: AppHandle) {
     thread::spawn(move || {
@@ -252,24 +275,34 @@ fn watch_status(app: AppHandle) {
         let file = state.data_dir.join("status.json");
         let mut last = String::new();
         let mut warned = false;
-        let mut reported = false;
+        // 已向面板播报的故障原因：原因变化或攒满一个重播窗口才再发，避免每 500ms 刷屏。
+        let mut announced: Option<String> = None;
+        let mut ticks = 0usize;
         // 退出后不再轮询、不再向已关闭的窗口 emit。
         while !state.quitting.load(Ordering::SeqCst) {
             thread::sleep(Duration::from_millis(500));
-            // 核心内部异常（运行时/下载/OpenCode 子进程意外退出）时 status.json 会停在最后的
-            // ready，只有靠 exit hook 的置位才能发现；发现后立刻通知面板（露出「重试」）并改托盘 tooltip。
-            if !reported {
-                if let Some(reason) = core_exit(&state) {
-                    reported = true;
+            ticks = ticks.wrapping_add(1);
+            // 故障态下 status.json 停在上一轮的 ready（甚至更早），把它当实时状态推出去就等于
+            // 让面板显示「就绪」却没有核心在跑、连重试入口都不见；改为持续播报失败原因，
+            // 直到晚挂载的面板监听器收到（setup 里那一次 emit 必然早于监听注册）。
+            if let Some((message, by_exit)) = service_down(&state) {
+                if announced.as_deref() != Some(message.as_str()) || ticks % 8 == 0 {
+                    announced = Some(message.clone());
                     if let Some(tray) = state.tray.lock().unwrap().as_ref() {
-                        let _ = tray.set_tooltip(Some("WB Bridge — 核心服务已退出，可在面板重启"));
+                        let _ = tray.set_tooltip(Some(if by_exit {
+                            "WB Bridge — 核心服务已退出，可在面板重启"
+                        } else {
+                            "WB Bridge — 核心服务未运行，可在面板重启"
+                        }));
                     }
-                    let _ = app.emit("core-failed", serde_json::json!({ "message": format!("核心服务已退出（{reason}），可在面板点“重试”重启") }));
+                    let _ = app.emit("core-failed", serde_json::json!({ "message": message }));
                 }
+                continue;
             }
-            // 重启后恢复监听：核心再次在跑时清掉本轮故障上报标记。
-            if reported && state.core.lock().unwrap().is_some() && !state.core_stopped.load(Ordering::SeqCst) {
-                reported = false;
+            // 恢复运行：清掉故障播报标记并还原托盘 tooltip，同时作废「上一份内容」缓存 ——
+            // 重启后写出的 status.json 可能与故障前逐字节相同，不重置就永远不会再推送。
+            if announced.take().is_some() {
+                last.clear();
                 if let Some(tray) = state.tray.lock().unwrap().as_ref() {
                     let _ = tray.set_tooltip(Some("WB Bridge"));
                 }
@@ -401,8 +434,9 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-/// 面板动作 → 核心路由的映射表。与 src-tauri/core/src/server.rs 的 ACTION_ROUTES 及 docs/contract.md
-/// 的契约表一一对应；三处集合是否一致由契约测试断言。
+/// 面板动作 → 核心路由的映射表。与 src-tauri/core/src/server.rs 的 ACTION_ROUTES 逐项一致
+/// （由本文件的 `shell_action_routes_match_the_core_contract` 断言）；docs/contract.md 的契约表
+/// 是同一份内容的文字版，改动时仍需人工同步。
 const ADMIN_ROUTES: [(&str, &str); 5] = [
     ("refresh", "/admin/refresh"),
     ("probe", "/admin/probe"),
@@ -420,30 +454,55 @@ fn admin_route(action: &str) -> Result<&'static str, String> {
 }
 
 #[tauri::command]
-fn core_action(action: String, payload: Option<Value>, state: State<AppState>) -> Result<Value, String> {
+async fn core_action(app: AppHandle, state: State<'_, AppState>, action: String, payload: Option<Value>) -> Result<Value, String> {
     let route = admin_route(&action)?;
-    // 先把端口拷出来再释放锁：api_key 最多轮询 15s、admin_call 超时 60s，持锁做网络调用会把
-    // restart_core、core_running、graceful_stop（含退出流程）串行阻塞数十秒到分钟级。
+    // 锁的作用域只到「取出端口」为止：真正的阻塞调用（api_key 最多轮询 15s、admin_call 超时 60s）
+    // 下沉到 spawn_blocking。留在同步命令里会占住主线程，期间 restart_core、core_running、
+    // graceful_stop（含退出流程）全部串行卡死，面板与托盘一起无响应。
     let port = {
         let guard = state.core.lock().unwrap();
         guard.as_ref().map(|core| core.port)
     };
     let Some(port) = port else { return Err("核心服务未运行".into()) };
-    let key = core_key(&state)?;
-    admin_call(port, &key, route, payload.as_ref())
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let key = core_key(&state)?;
+        admin_call(port, &key, route, payload.as_ref())
+    })
+    .await
+    .map_err(|e| format!("动作线程已崩溃：{e}"))?
 }
 
 #[tauri::command]
-fn restart_core(app: AppHandle, state: State<AppState>) -> Result<(), String> {
+async fn restart_core(app: AppHandle) -> Result<(), String> {
+    // 同上：stop_core 最坏等十余秒，必须离开主线程；AppHandle 是 'static，可在闭包内重新取状态。
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        restart_core_with(&app, &state)
+    })
+    .await
+    .map_err(|e| format!("重启线程已崩溃：{e}"))?
+}
+
+/// 重启主体的既有逻辑（不含线程调度）：停旧实例 → 启新实例 → 记录/清除失败原因。
+fn restart_core_with(app: &AppHandle, state: &State<AppState>) -> Result<(), String> {
     // 锁的作用域只到「取出句柄」为止：stop_core 会走 HTTP 优雅退出并等待编排任务收摊，最坏
     // 十余秒，持锁期间 core_running、core_action 与退出流程都会被一并阻塞。
     let existing = state.core.lock().unwrap().take();
     if let Some(core) = existing {
-        let key = core_key(&state).ok();
-        stop_core(core, key.as_deref(), &state);
+        let key = core_key(state).ok();
+        stop_core(core, key.as_deref(), state);
     }
     state.stopping_by_request.store(false, Ordering::SeqCst);
-    let core = start_core(&app)?;
+    let core = match start_core(app) {
+        Ok(core) => core,
+        Err(message) => {
+            *state.startup_error.lock().unwrap() = Some(message.clone());
+            let _ = app.emit("core-failed", serde_json::json!({ "message": message }));
+            return Err(message);
+        }
+    };
+    *state.startup_error.lock().unwrap() = None;
     *state.core.lock().unwrap() = Some(core);
     Ok(())
 }
@@ -551,6 +610,7 @@ pub fn run() {
                 tray_proxy: Mutex::new(None),
                 tray: Mutex::new(None),
                 api_key: Mutex::new(None),
+                startup_error: Mutex::new(None),
             });
             // 核心的「退出进程」动作在壳内必须换成「报告已停止」：进程归壳所有，
             // 核心不得单方面 app.exit（用户点托盘退出才会真正退出）。
@@ -564,9 +624,14 @@ pub fn run() {
             build_tray(&handle)?;
             match start_core(&handle) {
                 Ok(core) => {
-                    *handle.state::<AppState>().core.lock().unwrap() = Some(core);
+                    let state = handle.state::<AppState>();
+                    *state.startup_error.lock().unwrap() = None;
+                    *state.core.lock().unwrap() = Some(core);
                 }
                 Err(message) => {
+                    // setup 里这次 emit 必然早于面板注册监听，事件必定丢失；把原因记下来交给
+                    // watch_status 反复播报，面板挂载后才能看到失败原因和重试入口。
+                    *handle.state::<AppState>().startup_error.lock().unwrap() = Some(message.clone());
                     let _ = handle.emit("core-failed", serde_json::json!({ "message": message }));
                 }
             }
@@ -669,5 +734,18 @@ mod tests {
         let value = read_log_tail(&log.0, 1024, 2).expect("读取多行日志");
         assert_eq!(value["truncated"], true);
         assert_eq!(value["text"], "c\nd");
+    }
+
+    /// 壳的动作表必须与核心的契约表逐项一致：任一侧改名或漏项，面板动作会在回环 HTTP 上 404，
+    /// 而面板只会显示一句「请求失败」。
+    #[test]
+    fn shell_action_routes_match_the_core_contract() {
+        use wbbridge_core::server::ACTION_ROUTES;
+        let mut shell: Vec<(&str, &str, &str)> =
+            ADMIN_ROUTES.iter().map(|(name, route)| (*name, "POST", *route)).collect();
+        let mut core: Vec<(&str, &str, &str)> = ACTION_ROUTES.to_vec();
+        shell.sort_unstable();
+        core.sort_unstable();
+        assert_eq!(shell, core);
     }
 }
