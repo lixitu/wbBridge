@@ -55,13 +55,20 @@ export async function action(name, value) {
       return { ok: true, result: {} }
     }
     if (name === 'import' && !value) {
-      const selected = await window.__TAURI__.dialog.open({
-        multiple: false,
-        directory: false,
-        filters: [{ name: 'WorkBuddy models.json', extensions: ['json'] }],
-      })
-      if (!selected) return { ok: true, result: { canceled: true } }
-      value = { modelsFile: selected }
+      // 核心的 /admin/import 在不传 modelsFile 时就是「同步到已解析配置」（与归档 JS 核心的
+      // importModels() 语义一致）；只有定位不到配置时才需要用户手选文件。因此弹框是兜底，
+      // 不是无条件的前置步骤——否则每次点「导入 WorkBuddy」都会被要求选目录。
+      // 能走到这里按钮必然处于可用态（phase=ready），lastState 已由 core-status 填好。
+      const resolved = typeof lastState.modelsFile === 'string' && lastState.modelsFile
+      if (!resolved) {
+        const selected = await window.__TAURI__.dialog.open({
+          multiple: false,
+          directory: false,
+          filters: [{ name: 'WorkBuddy models.json', extensions: ['json'] }],
+        })
+        if (!selected) return { ok: true, result: { canceled: true } }
+        value = { modelsFile: selected }
+      }
     }
     const result = await invoke('core_action', { action: name, payload: value ?? null })
     return { ok: true, result }
