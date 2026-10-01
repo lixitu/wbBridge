@@ -39,10 +39,11 @@
     ],
     "resources": [],
     "externalBin": [],
+    "createUpdaterArtifacts": true,
     "copyright": "© 2026 WB Bridge",
     "category": "DeveloperTool",
     "shortDescription": "让 WorkBuddy 使用 OpenCode 免费模型",
-    "longDescription": "WB Bridge 通过隔离的 OpenCode 运行时为 WorkBuddy 提供免费模型：自动发现与检测免费模型、转换为标准 OpenAI 接口、并把可用模型同步进 WorkBuddy 配置。关闭窗口后常驻托盘。",
+    "longDescription": "WB Bridge 通过隔离的 OpenCode 运行时为 WorkBuddy 提供免费模型：自动发现与检测免费模型、转换为标准 OpenAI 接口、并把可用模型同步进 WorkBuddy 配置。关闭窗口即退出应用并停止后台服务。",
     "macOS": {
       "minimumSystemVersion": "10.15",
       "signingIdentity": "-"
@@ -53,5 +54,12 @@
       }
     }
   },
-  "plugins": {}
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDEyNkQ0RTIwOEUwRjE3QkEKUldTNkZ3K09JRTV0RXJPYktVTjZzdFFRc1R3eisyUnBMN0lyTFFXMlVTbUFRekMzMFFreXA1Q0UK",
+      "endpoints": [
+        "https://github.com/trexwb/wbBridge/releases/latest/download/latest.json"
+      ]
+    }
+  }
 }

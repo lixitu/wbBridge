@@ -19,7 +19,8 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "version:set": "node scripts/bump-version.mjs",
-    "version:check": "node scripts/check-version.mjs"
+    "version:check": "node scripts/check-version.mjs",
+    "gen:latest": "node scripts/gen-latest-json.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

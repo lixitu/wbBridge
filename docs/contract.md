@@ -39,6 +39,19 @@
 新增 / 改名只读命令必须同步 `src-tauri/src/lib.rs` 的 `generate_handler`；自有命令不经 capability 授权，
 `capabilities/default.json` 无需改动。
 
+**面板的第二条边界：Tauri 官方插件命令（自动更新）**，它**不经** `core_action` / `/admin/*`，因此不在上面的动作表里：
+
+| 面板调用（`src/core/bridge.js`） | 底层插件命令 | 说明 |
+|---|---|---|
+| `checkUpdate()` | `plugin:updater|check` | 返回可序列化快照 `{ version, notes }` 或 `{ ok:false, error }`；`Update` 句柄只留在 `bridge.js` 模块内，不下传给视图 |
+| `downloadUpdate(onProgress)` | `plugin:updater|download` / `|install` | 进度事件 `{ received, total }`；**只有上游给出 `contentLength` 时才有百分比**，否则只报已收字节；失败保留句柄以便重试 |
+| `relaunchApp()` | `plugin:process|restart` | 走 `ExitRequested` → 壳的**有界**停止（`stop_core_bounded`）→ `cleanup_before_exit`，不是硬杀进程 |
+
+- 这三个调用是面板**唯一**的联网入口，联网发生在 Rust 侧（插件命令），不经 WebView `fetch`，故 CSP `default-src 'self'` 不必放宽。
+- 插件命令**必须**在 `src-tauri/capabilities/default.json` 声明：现为 `updater:default` + `process:allow-restart`；刻意不使用 `process:default`（含 `allow-exit`，会让 WebView 绕过 `quit_app` 的优雅关停链）。
+- 更新状态机集中在 `src/core/update.js`（`idle|checking|available|downloading|ready|uptodate|error`），视图只渲染与触发，不得自行持有状态。
+- `plugins.updater.pubkey` 必须是**内联公钥字符串**（不能写文件路径），端点强制 HTTPS。
+
 状态由壳轮询 `status.json` 后推给面板：`core-status` 是**剥掉 `activity` 与 `modelResults` 的轻量快照**（顶层 `usage` 仍随该快照下发），
 这两个字段单独走 `core-activity`（每 500ms 轮询只在内容变化时发），失败走 `core-failed`——**壳判定核心不可用（启动失败或任务已结束）期间不再推送残影 `status.json`，改为每 ~4s 重播一次 `core-failed`**，因此面板监听器必须对同一原因的重复投递幂等；核心恢复后壳会作废「上一份内容」缓存并重新推送一次完整状态。面板
 `src/core/bridge.js` 必须把两路合并成完整状态再交给订阅者，否则逐模型明细与活动文案永远为空。

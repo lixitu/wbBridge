@@ -599,6 +599,11 @@ pub fn run() {
             show_main(app);
         }))
         .plugin(tauri_plugin_dialog::init())
+        // 自动更新：检查/下载走 updater 插件，装完重启走 process::relaunch。
+        // 两端都只在 tauri.conf.json 的 plugins.updater 配上端点后才真正可用；
+        // 未配置时前端调用会得到明确错误，不会静默成功。
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             let handle = app.handle().clone();
             let data_dir = handle.path().app_data_dir()?;
@@ -670,7 +675,11 @@ pub fn run() {
         .run(|app, event| {
             match event {
                 RunEvent::ExitRequested { .. } => {
-                    graceful_stop(app.state::<AppState>().inner());
+                    // 必须是**有界**停止：自动更新的「重启」也走这条分支
+                    // （process.relaunch → ExitRequested(RESTART_EXIT_CODE)），
+                    // 在事件循环线程上直接跑 graceful_stop 会让窗口冻到停止序列走完（最坏十几秒），
+                    // 用户看到的就不是「重启」而是「卡死」。
+                    stop_core_bounded(app);
                     app.cleanup_before_exit();
                 }
                 #[cfg(target_os = "macos")]

@@ -18,12 +18,33 @@
 #   • Windows 产物未签名，SmartScreen 会提示"更多信息 → 仍要运行"。
 #   • 所有产物先上传为 Actions Artifact，再汇总到 Draft Release，
 #     人工确认后点"Publish release"正式发布。
-# 自动更新：
-#   • **尚未接线**：tauri.conf.json 既没有 bundle.createUpdaterArtifacts，也没有
-#     plugins.updater / tauri-plugin-updater 依赖，因此产物里不会出现 .sig 与 latest.json，
-#     本工作流也不再上传或引用它们。将来要接自动更新时，需要同时补：配置项、插件依赖、
-#     更新端点（pubDate/url）、GitHub Variables 里的 TAURI_SIGNING_PRIVATE_KEY(_PASSWORD)，
-#     并把 .sig 的 glob 加回来。
+#   • test 作业里有一道「触发标签 ↔ src-tauri/tauri.conf.json 版本」闸门：标签名与源码版本
+#     不一致时直接失败。v1.0.1 曾把标签打在不含版本推进的提交上，于是安静地产出了
+#     WB Bridge_1.0.0_* 且功能落后 4 个提交的安装包；check-version.mjs 只校验同一提交内
+#     各处落点互相一致，抓不到这类错，所以必须单独设闸。
+#   • 发布顺序铁律：先 `npm run version:set -- <x.y.z>` 并提交，**再**在那一个提交上打标签。
+# 自动更新（v1.0.2 起接线）：
+#   • bundle.createUpdaterArtifacts=true → 每个平台额外产出更新包与 .sig：
+#       macOS tauri 实测产出「WB Bridge.app.tar.gz(.sig)」——**既不带版本也不带架构**，
+#            两个 mac runner 会往同一 Release 传同名资产、后者静默覆盖前者，
+#            所以本工作流在上传前把它改名为「WB Bridge_<arch>.app.tar.gz(.sig)」
+#            （minisign 签的是内容不是文件名，改名不影响验签）。
+#       Windows *-setup.exe(.sig)（MSI 不参与更新）
+#       Linux   官方文档写 *.AppImage(.sig)；bundler 是否额外打一层 *.AppImage.tar.gz
+#               只能等首次 CI 跑出来核对，生成脚本对两种形态都接受（同时带签名时取 .tar.gz 并告警）。
+#   • 签名私钥走 GitHub Secrets：TAURI_SIGNING_PRIVATE_KEY（**内联私钥全文**）
+#     与 TAURI_SIGNING_PRIVATE_KEY_PASSWORD；公钥内嵌 src-tauri/tauri.conf.json 的
+#     plugins.updater.pubkey（当前 key ID 126D4E208E0F17BA，2026-10-01 新生成的 wbBridge 专用钥）。
+#     **私钥绝不入库、不进日志。**
+#     ⚠ 实测（本机 1.0.1 / tauri-cli 2.12）：`tauri build` **只读 TAURI_SIGNING_PRIVATE_KEY**
+#     （值可以是私钥全文，也可以是私钥文件路径）；TAURI_SIGNING_PRIVATE_KEY_PATH 只对
+#     `tauri signer sign` 生效。未配置该 Secret 时 createUpdaterArtifacts 会让构建直接失败，
+#     而不是静默产出一批没有 .sig 的更新包。
+#   • latest.json 由末尾的 update-manifest 作业单点生成（scripts/gen-latest-json.mjs）。
+#     tauri-action 自己也会有感生成一份（includeUpdaterJson），但那是 6 个并发作业各写一次，
+#     两台 macOS runner 几乎同时收尾时清单会静默漏掉一个平台，故显式关掉。
+#   • Draft 未 Publish 前 releases/latest/download/latest.json 返回 404 属预期：
+#     更新通道只在人工点完「Publish release」之后生效。
 #   • ⚠ 本工作流自「移除 Node 核心」改造后尚未在 CI 上实际跑通，描述以脚本内容为准。
 # ═══════════════════════════════════════════════════════════════════
 
@@ -50,10 +71,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装 Node.js 22
+      - name: 安装 Node.js 24
+        # 与根 package.json 的 engines.node >= 24 对齐（此前是 22，低于本仓声明的下限）。
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
 
       - name: 安装 Rust 工具链
         uses: dtolnay/rust-toolchain@stable
@@ -71,6 +93,23 @@ jobs:
         # package.json / tauri.conf.json / Cargo.toml / AGENTS.md 必须同一版本。
         run: node scripts/check-version.mjs
 
+      - name: 校验触发标签与源码版本一致
+        # 上一项只比对「同一提交内 5 处落点互相一致」，因此标签指向一份全体为旧版本的
+        # 提交时它照样通过 —— v1.0.1 就是这样产出了 WB Bridge_1.0.0_aarch64.dmg，而且那个
+        # 安装包不含最近 4 个提交。这里补上唯一能抓住该错误的闸门。
+        # 版本还会决定 tauri-action 的 tagName: v__VERSION__，不一致就会同时开出两个 Release。
+        # workflow_dispatch 时 GITHUB_REF_NAME 是分支名，不参与比较，故只在推标签时运行。
+        if: github.event_name == 'push'
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          conf="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          echo "触发标签 = ${GITHUB_REF_NAME}，src-tauri/tauri.conf.json 版本 = ${conf}"
+          if [ "${tag}" != "${conf}" ]; then
+            echo "::error::标签 ${GITHUB_REF_NAME} 与源码版本 ${conf} 不一致：产物会被命名为 ${conf}，且该标签提交很可能不含本次版本推进。请先提交版本推进，再在那一个提交上重新打标签。"
+            exit 1
+          fi
+          echo "标签与源码版本一致，可继续构建。"
+
   # ── macOS：.app + .dmg（ad-hoc 签名）────────────────────────────
   build-macos:
     name: macOS (${{ matrix.arch }})
@@ -87,10 +126,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装 Node.js 22
+      - name: 安装 Node.js 24
+        # 与根 package.json 的 engines.node >= 24 对齐（此前是 22，低于本仓声明的下限）。
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
 
       - name: 安装 Rust 工具链
         uses: dtolnay/rust-toolchain@stable
@@ -109,6 +149,10 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # updater 私钥（内联全文）；未配置时 createUpdaterArtifacts 会让构建直接失败，
+          # 而不是静默产出一批没有签名的产物。
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           args: --target ${{ matrix.arch }}
           tagName: v__VERSION__
@@ -116,6 +160,37 @@ jobs:
           releaseBody: 'WB Bridge — 让 WorkBuddy 使用 OpenCode 免费模型。'
           releaseDraft: true
           prerelease: false
+          # 清单交给末尾的 update-manifest 作业单点写，避免 6 个并发作业互相覆盖。
+          includeUpdaterJson: false
+
+      - name: 给 macOS 更新包补架构后缀
+        # 实测：tauri 产出的 updater 包叫「WB Bridge.app.tar.gz」，既不带版本也不带架构，
+        # 于是两个 mac runner 会往同一个 Release 传**同名**资产、后者静默覆盖前者，
+        # latest.json 也无法靠文件名区分 darwin-aarch64 / darwin-x86_64。
+        # 统一补成「WB Bridge_<arch>.app.tar.gz」；.sig 同步改名——minisign 签的是内容不是文件名，
+        # 因此改名不影响 updater 验签。
+        run: |
+          set -euo pipefail
+          arch="${{ matrix.arch }}"
+          arch="${arch%%-*}"
+          renamed=0
+          for bundle_dir in "src-tauri/target/${arch}-apple-darwin/release/bundle/macos" src-tauri/target/release/bundle/macos; do
+            [ -d "${bundle_dir}" ] || continue
+            for pkg in "${bundle_dir}"/*.app.tar.gz; do
+              [ -e "${pkg}" ] || continue
+              case "$(basename "${pkg}")" in *"_${arch}.app.tar.gz") continue ;; esac
+              target="${pkg%.app.tar.gz}_${arch}.app.tar.gz"
+              mv "${pkg}" "${target}"
+              if [ -f "${pkg}.sig" ]; then
+                mv "${pkg}.sig" "${target}.sig"
+              else
+                echo "::warning::${pkg} 没有配对 .sig，该平台产物不会进入更新清单"
+              fi
+              echo "重命名：$(basename "${pkg}") → $(basename "${target}")"
+              renamed=$((renamed + 1))
+            done
+          done
+          echo "本次补架构后缀（arch=${arch}）的 updater 包：${renamed} 个。"
 
       - name: 上传产物到 Actions Artifact
         uses: actions/upload-artifact@v4
@@ -125,8 +200,12 @@ jobs:
           path: |
             src-tauri/target/${{ matrix.arch }}/release/bundle/**/*.dmg
             src-tauri/target/${{ matrix.arch }}/release/bundle/**/*.app
+            src-tauri/target/${{ matrix.arch }}/release/bundle/**/*.app.tar.gz
+            src-tauri/target/${{ matrix.arch }}/release/bundle/**/*.sig
             src-tauri/target/release/bundle/**/*.dmg
             src-tauri/target/release/bundle/**/*.app
+            src-tauri/target/release/bundle/**/*.app.tar.gz
+            src-tauri/target/release/bundle/**/*.sig
 
       - name: 上传到 GitHub Release（仅推 tag 或勾选 create_release 时）
         if: github.event_name == 'push' || inputs.create_release == true
@@ -134,9 +213,12 @@ jobs:
         with:
           draft: true
           generate_release_notes: true
+          # 更新包与 .sig 必须进 Release：latest.json 里的 url 指的就是这些资产。
           files: |
             src-tauri/target/**/release/bundle/**/*.dmg
             src-tauri/target/**/release/bundle/**/*.app
+            src-tauri/target/**/release/bundle/**/*.app.tar.gz
+            src-tauri/target/**/release/bundle/**/*.sig
 
   # ── Windows：NSIS + MSI ──────────────────────────────────────────
   build-windows:
@@ -154,10 +236,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装 Node.js 22
+      - name: 安装 Node.js 24
+        # 与根 package.json 的 engines.node >= 24 对齐（此前是 22，低于本仓声明的下限）。
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
 
       - name: 安装 Rust 工具链
         uses: dtolnay/rust-toolchain@stable
@@ -176,6 +259,10 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # updater 私钥（内联全文）；未配置时 createUpdaterArtifacts 会让构建直接失败，
+          # 而不是静默产出一批没有签名的产物。
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           args: --target ${{ matrix.arch }}
           tagName: v__VERSION__
@@ -183,6 +270,8 @@ jobs:
           releaseBody: 'WB Bridge — 让 WorkBuddy 使用 OpenCode 免费模型。'
           releaseDraft: true
           prerelease: false
+          # 清单交给末尾的 update-manifest 作业单点写，避免 6 个并发作业互相覆盖。
+          includeUpdaterJson: false
 
       - name: 上传产物到 Actions Artifact
         uses: actions/upload-artifact@v4
@@ -192,6 +281,7 @@ jobs:
           path: |
             src-tauri/target/**/release/bundle/**/*.exe
             src-tauri/target/**/release/bundle/**/*.msi
+            src-tauri/target/**/release/bundle/**/*.sig
 
       - name: 上传到 GitHub Release（仅推 tag 或勾选 create_release 时）
         if: github.event_name == 'push' || inputs.create_release == true
@@ -199,9 +289,11 @@ jobs:
         with:
           draft: true
           generate_release_notes: true
+          # NSIS 安装包 + .sig 是更新链路的资产；MSI 只给人工安装用，不参与 updater。
           files: |
             src-tauri/target/**/release/bundle/**/*.exe
             src-tauri/target/**/release/bundle/**/*.msi
+            src-tauri/target/**/release/bundle/**/*.sig
 
   # ── Linux：.AppImage + .deb ──────────────────────────────────────
   build-linux:
@@ -219,10 +311,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装 Node.js 22
+      - name: 安装 Node.js 24
+        # 与根 package.json 的 engines.node >= 24 对齐（此前是 22，低于本仓声明的下限）。
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
 
       - name: 安装 Rust 工具链
         uses: dtolnay/rust-toolchain@stable
@@ -246,6 +339,10 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # updater 私钥（内联全文）；未配置时 createUpdaterArtifacts 会让构建直接失败，
+          # 而不是静默产出一批没有签名的产物。
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           args: --target ${{ matrix.arch }}
           tagName: v__VERSION__
@@ -253,6 +350,8 @@ jobs:
           releaseBody: 'WB Bridge — 让 WorkBuddy 使用 OpenCode 免费模型。'
           releaseDraft: true
           prerelease: false
+          # 清单交给末尾的 update-manifest 作业单点写，避免 6 个并发作业互相覆盖。
+          includeUpdaterJson: false
 
       - name: 上传产物到 Actions Artifact
         uses: actions/upload-artifact@v4
@@ -262,6 +361,8 @@ jobs:
           path: |
             src-tauri/target/**/release/bundle/**/*.AppImage
             src-tauri/target/**/release/bundle/**/*.deb
+            src-tauri/target/**/release/bundle/**/*.AppImage.tar.gz
+            src-tauri/target/**/release/bundle/**/*.sig
 
       - name: 上传到 GitHub Release（仅推 tag 或勾选 create_release 时）
         if: github.event_name == 'push' || inputs.create_release == true
@@ -272,4 +373,38 @@ jobs:
           files: |
             src-tauri/target/**/release/bundle/**/*.AppImage
             src-tauri/target/**/release/bundle/**/*.deb
+            src-tauri/target/**/release/bundle/**/*.AppImage.tar.gz
+            src-tauri/target/**/release/bundle/**/*.sig
+
+  # ── 更新清单：六平台产物的唯一汇总写者 ────────────────────────────
+  # 客户端 plugins.updater.endpoints 读 releases/latest/download/latest.json。
+  # 放在最后一个作业 = 单一写者，不会出现「某平台静默缺席」；
+  # gen-latest-json.mjs 默认要求六平台齐全，缺任何一个都退出 1 让本次发布失败。
+  update-manifest:
+    name: 生成更新清单 (latest.json)
+    needs: [build-macos, build-windows, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: 下载六平台产物
+        uses: actions/download-artifact@v4
+        with:
+          pattern: '*-bundles'
+          path: artifacts
+
+      - name: 生成 latest.json
+        run: node scripts/gen-latest-json.mjs --dir artifacts --out latest.json
+
+      - name: 上传到 GitHub Release（仅推 tag 或勾选 create_release 时）
+        if: github.event_name == 'push' || inputs.create_release == true
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: latest.json
 

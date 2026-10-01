@@ -6,6 +6,44 @@
 
 日期：2026-10-01（本机 macOS，Apple Silicon；Rust 核心 + Vue 面板）
 
+## updater 接线、真实签名构建与更新清单（2026-10-01，同日第十轮）
+
+### 落地的改动
+
+- **Rust 侧**：`src-tauri/Cargo.toml` 新增 `tauri-plugin-updater = "2"`、`tauri-plugin-process = "2"`（Cargo.lock +298 行 / **24 个新传递 crate**；理由：官方 Tauri 插件、与既有 tauri 同一维护方，是应用内更新的唯一正规路径）。`lib.rs` builder 链注册两者。
+- **配置**：`tauri.conf.json` 加 `bundle.createUpdaterArtifacts: true` 与 `plugins.updater`（内联 `pubkey`，端点 `https://github.com/trexwb/wbBridge/releases/latest/download/latest.json`）。
+- **权限**：`capabilities/default.json` 加 `updater:default` + **`process:allow-restart`**（不是 `process:default`：后者含 `allow-exit`，会让 WebView 绕过 `quit_app` 的优雅关停链直接杀进程）。
+- **前端**：`src/core/bridge.js` 加 `checkUpdate/downloadUpdate/relaunchApp`（`Update` 句柄只留在模块内，视图拿可序列化快照）；新增 `src/core/update.js` 状态机（`idle|checking|available|downloading|ready|uptodate|error`，冷启动 5s 后静默检查、静默失败不打扰）；`App.vue` 挂载时启动静默检查；`AboutView.vue` 换成真实更新区；`base.css` 新增确定型进度条 `.progress`（`prefers-reduced-motion` 允许清单同步补 `.progress.is-active > i::after`）。
+- **脚本 / CI**：新增 `scripts/gen-latest-json.mjs`（`npm run gen:latest`）；`release.yml` 三个构建作业补 `.sig` / `.app.tar.gz` / `.AppImage.tar.gz` glob 与签名环境变量、`includeUpdaterJson: false`、**macOS 补架构后缀**步骤，末尾新增 `update-manifest` 作业单点写 `latest.json`。
+- **依赖判断更正**：**不需要**任何 `@tauri-apps/plugin-*` npm 包 —— `app.withGlobalTauri` 会把插件 API 注入 `window.__TAURI__.updater` / `.process`（读 `@tauri-apps/cli` 内的 `api-iife.js` 证实）。面板因此仍无外部请求、CSP 不变。
+
+### 实测证据（本轮真实执行）
+
+| 步骤 | 结果 |
+|---|---|
+| `cargo test`（`src-tauri/core/`） | ✅ **207 通过 / 0 失败**（lib 187 + js_parity 11 + red_lines 9） |
+| `cargo test --lib`（`src-tauri/`） | ✅ **8 通过 / 0 失败** |
+| `cargo clippy --all-targets`（核心）/ `--no-deps --all-targets`（壳） | ✅ **0 warning**（两者） |
+| `npx eslint .` | ✅ 0 problems（`.vue` 不在 `eslint.config.js` 匹配范围内，仍是既有缺口） |
+| `npm run vite:build` | ✅ 通过 |
+| `node scripts/gen-latest-json.mjs` 合成产物测试 | ✅ 正例 4 项：六平台齐全、linux 裸 `.AppImage` 与 `.tar.gz` 并存（取 `.tar.gz` 并告警）、只有裸 `.AppImage`、`--expect` 收窄 + `--tag` 覆盖；负例 5 项全部退出 1：mac 资产缺架构后缀、某平台缺 `.sig`、同目录互不相干的两个已签名包、平台目录缺失、产物目录不存在 |
+| 真实签名构建 `tauri build --bundles app` | ✅ 产出 `WB Bridge.app.tar.gz`（3,595,514 B）+ `WB Bridge.app.tar.gz.sig`（428 B）；解析签名包体得 key ID **`126D4E208E0F17BA`**，与 `tauri.conf.json` 内嵌公钥一致；trusted comment 含 `version:1.0.1` |
+| `tauri build --bundles dmg` | ✅ 产出 `WB Bridge_1.0.1_aarch64.dmg`（3,720,766 B / 3.55 MiB）；只读挂载后核对：`WB Bridge.app` + `Applications` 软链，Mach-O **arm64**、`CFBundleShortVersionString=1.0.1`、id `app.wbbridge.desktop`；`codesign` 显示 `flags=0x10002(adhoc,runtime)`、`Signature=adhoc`、无 TeamID；`codesign --verify --deep --strict` = valid on disk + satisfies DR；核对后已 `hdiutil detach` |
+
+### 本轮推翻了四条此前写进文档的结论
+
+1. **`latest.json` 不能交给 tauri-action**：官方文档那句 "Tauri Action generates a static JSON file" 在**单平台**成立；本工作流是 6 个并发作业往同一个 tag 上传，各写一次清单会互相覆盖并静默漏平台。因此改为 `includeUpdaterJson: false` + 末尾单一 `update-manifest` 作业。
+2. **平台键不能靠产物文件名推**：macOS 的 updater 包实测就叫 `WB Bridge.app.tar.gz` —— 既无版本也无架构，两个 mac runner 的名字完全相同（会互覆盖 Release 资产）。故键名改由 artifact **目录名**（含 target triple）推导，并在 mac 作业补一道改名。
+3. **签名变量的分工**：`tauri build|bundle` 只读 `TAURI_SIGNING_PRIVATE_KEY`（值可为私钥全文**或私钥文件绝对路径**，本机用路径形式实测通过）；`TAURI_SIGNING_PRIVATE_KEY_PATH` 只对 `tauri signer sign` 生效（等价 `-f`），`signer sign -k` 要的是**私钥字符串**，误传路径报 `failed to decode base64 secret key: Invalid symbol 46`。
+4. **前端 npm 插件包并非必需**（见上「依赖判断更正」）。
+
+### 密钥事实与遗留风险（不得对外宣称已闭环）
+
+- 历史文件 `~/.tauri/wbBridge-updater.key`（key ID `2B11F78BEA8A43F`）**不可用**：带密码且 `~/.tauri/wbBridge.env` 里那个口令解不开，且与现配置公钥不配对。按用户决定新生成 wbBridge 专用钥 `~/.tauri/wbBridge-updater-20261001.key`（`0600`、无密码），`pubkey` 已同步换成新公钥；旧文件**未删除、未改写**。
+- ⚠ 本机权限隐患（`ls -l` 实测，2026-10-01）：两把私钥本体都是 `0600`（含旧钥），**真正 0644 的是配套的凭据文件**——`~/.tauri/wbBridge.env` 与仓库本地 `.env`（各含非空 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`，只核对过变量名与是否有值，未读取内容）。仓库侧安全：`.gitignore:71` 忽略 `.env`、`git ls-files` 只有 `.env.example`，两者均未入库。收紧这两个文件的权限属**本机操作、留给用户决定**，Agent 不改 `~/.tauri` 与仓库外的凭据文件。
+- 任何打 tag 的 CI 运行之前，必须先在 GitHub **Secrets** 写入 `TAURI_SIGNING_PRIVATE_KEY`（私钥全文）与 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`（当前为空）；缺任一项，`createUpdaterArtifacts` 会让三个平台的构建作业**全部失败**（这是有意的 fail-closed，不静默产出无签名包）。
+- **仍未验证**：Windows / Linux 产物的真实文件名与签名、`latest.json` 上传后客户端能否真的完成一次「检查 → 下载 → 安装 → 重启」、`relaunch()` 与 `service.pid` 单实例锁 / 托盘的时序，以及 **GUI 实机启动**（本轮只做挂载与静态核对，未运行 `.app`——真跑会写用户真实的 `~/.workbuddy/models.json`）。更新链路的端到端验证只能从 **v1.0.2 → v1.0.3** 起做。
+
 ## 关窗即退出应用（2026-10-01，同日第九轮）
 
 用户诉求：**无论哪个系统的桌面端，关闭窗口就要把后台服务一起停掉**，不允许出现「窗口关了、核心还在跑，

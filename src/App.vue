@@ -4,6 +4,7 @@
 // 下发给视图组件；跨组件动作也统一走 bridge.action()。
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { action, onState, onDismiss } from './core/bridge.js'
+import { startSilentCheck } from './core/update.js'
 import SideBar from './views/SideBar.vue'
 import ModelList from './views/ModelList.vue'
 import ModelDetails from './views/ModelDetails.vue'
@@ -96,6 +97,8 @@ onMounted(() => {
   onState(apply)
   onDismiss(dismiss)
   window.addEventListener('keydown', onKeydown)
+  // 更新检查与核心状态无关，可以并行；延迟交给 update.js，避免和启动探测抢带宽。
+  startSilentCheck()
 })
 
 onUnmounted(() => {

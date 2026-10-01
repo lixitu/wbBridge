@@ -1,14 +1,3 @@
----
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: 75cf1e850e5668c557334a2fa39f707b_bb484d25bd8e11f197eb525400393706
-    ReservedCode1: xZlpuAQrYZgGgfJC7ZJV9MWbbRfXd/9SzusGmGxCejbeWM/5rkGHG/FbJY5quSG/sP9Yb6K3U1e4bVgRNixsCBK4tmqbXF239ekw7JGf0HhfdNwPc3KW2HCj4DFVkmNTKb8iPS5SLt2BF9Wn9UZLebquXwtQi8XaJeuZBvyVbwZbZTBtWSjihehqnNQ=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: 75cf1e850e5668c557334a2fa39f707b_bb484d25bd8e11f197eb525400393706
-    ReservedCode2: xZlpuAQrYZgGgfJC7ZJV9MWbbRfXd/9SzusGmGxCejbeWM/5rkGHG/FbJY5quSG/sP9Yb6K3U1e4bVgRNixsCBK4tmqbXF239ekw7JGf0HhfdNwPc3KW2HCj4DFVkmNTKb8iPS5SLt2BF9Wn9UZLebquXwtQi8XaJeuZBvyVbwZbZTBtWSjihehqnNQ=
----
-
 # WB Bridge v1.0.1
 
 > **GitHub Release 正文**（推送 `v1.0.1` 标签或手动运行 `release.yml` 时，可直接复制本文件内容作为 Release body）。

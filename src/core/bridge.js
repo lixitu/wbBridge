@@ -101,3 +101,74 @@ export async function dataDir() {
     return { ok: false, error: String(error) }
   }
 }
+
+// ── 自动更新：updater / process 插件的封装 ─────────────────────────
+// 两个插件的 JS 绑定由 withGlobalTauri 注入到 window.__TAURI__（见 tauri-plugin-*
+// 的 api-iife.js），所以不需要任何 @tauri-apps/plugin-* npm 依赖；组件依旧不得直触全局对象。
+// check() 返回的 Update 句柄只在模块内持有：交给组件就没法再调 downloadAndInstall，
+// 且它带有一整组不可序列化的方法。
+
+let pendingUpdate = null
+
+function updateError(error) {
+  return String(error?.message ?? error)
+}
+
+// 发现新版本时返回 { version, notes }；已是最新返回 result = null。
+export async function checkUpdate() {
+  ensureBridge()
+  const updater = window.__TAURI__?.updater
+  if (!updater?.check) return { ok: false, error: '此构建不含更新通道' }
+  try {
+    const update = await updater.check()
+    pendingUpdate = update ?? null
+    if (!update) return { ok: true, result: null }
+    return {
+      ok: true,
+      result: { version: String(update.version ?? ''), notes: String(update.body ?? '') },
+    }
+  } catch (error) {
+    pendingUpdate = null
+    return { ok: false, error: updateError(error) }
+  }
+}
+
+// onProgress({ received, total })：三个数都来自 updater 事件的真实字节数，
+// 拿不到 contentLength 时 total 为 0，由调用方降级为「不显示百分比」。
+export async function downloadUpdate(onProgress) {
+  if (!pendingUpdate) return { ok: false, error: '没有待安装的更新，请先检查更新' }
+  let received = 0
+  let total = 0
+  try {
+    await pendingUpdate.downloadAndInstall(event => {
+      const data = event?.data || {}
+      if (event?.event === 'Started') {
+        total = Number(data.contentLength) || 0
+        received = 0
+      } else if (event?.event === 'Progress') {
+        received += Number(data.chunkLength) || 0
+      }
+      if (onProgress) onProgress({ received, total })
+    })
+    pendingUpdate = null
+    return { ok: true, result: {} }
+  } catch (error) {
+    // 安装失败时句柄仍要留着，用户可以直接重试；只有明确成功才清空。
+    return { ok: false, error: updateError(error) }
+  }
+}
+
+// 装完重启才会用上新版本。relaunch 触发 ExitRequested(RESTART_EXIT_CODE)，
+// 壳的 RunEvent::ExitRequested 分支里已有 graceful_stop + cleanup_before_exit，
+// 所以这条路径同样会先停核心、收掉 OpenCode 子进程，不为更新另开一条退出链路。
+export async function relaunchApp() {
+  ensureBridge()
+  const process = window.__TAURI__?.process
+  if (!process?.relaunch) return { ok: false, error: '此构建不支持重启' }
+  try {
+    await process.relaunch()
+    return { ok: true, result: {} }
+  } catch (error) {
+    return { ok: false, error: updateError(error) }
+  }
+}

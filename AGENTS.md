@@ -30,6 +30,9 @@
 | `cargo clippy --all-targets`（src-tauri/core）/ `cargo clippy --no-deps`（src-tauri） | ✅ 0 warning |
 | 实际启动 GUI（`npm run tauri:dev` / 打包后的 .app）并操作托盘与面板 | ❌ **未实测**。壳改动只能以「编译通过 + 核心独立运行行为」为证据，必须显式告知用户未做 GUI 验证 |
 | 本轮壳侧改动（async 命令 + `spawn_blocking`、启动失败反复播报 `core-failed`、`startup_error`、**关窗即退出 `quit_app`**） | ❌ **同样未做 GUI 实测**，证据只有 `cargo clippy --no-deps --all-targets` 0 warning 与 `cargo test --lib`（`src-tauri/`）8 通过。关窗行为、托盘驻留取消、macOS 红按钮语义都属**必须实机点一遍**的类别 |
+| 迁移后产出安装包 | ⚠ **只有 macOS aarch64 已实测**。本机 `npm run build` 产出 `src-tauri/target/release/bundle/dmg/WB Bridge_1.0.1_aarch64.dmg`（3,720,766 B）与 updater 包 `bundle/macos/WB Bridge.app.tar.gz`（3,595,514 B，**文件名不带版本与架构**，正是 CI 里必须补架构后缀的那个实测事实）+ 配对 `.sig`；dmg 已只读挂载核对、`codesign --verify --deep --strict` 通过（adhoc + hardened runtime，**未公证**）。其余五平台（macOS x86_64 / Windows / Linux）**只能靠 CI 产出**，本机不具备交叉构建条件 |
+| updater 接线（`tauri-plugin-updater` + `tauri-plugin-process`、`createUpdaterArtifacts`、`plugins.updater` 端点与公钥、面板更新区、CI 的 `.sig` glob 与 `update-manifest` 作业） | ⚠ **部分已验证**。已验证：壳编译与 clippy、`scripts/gen-latest-json.mjs` 的合成产物单测（六平台识别 + 缺签名/重复候选/目录缺失/漏架构后缀四类失败路径）、workflow YAML 结构、**本机真实签名构建**（`tauri build --bundles app` 产出 `WB Bridge.app.tar.gz` + 配对 `.sig`，签名 key ID 与配置公钥一致）。**仍未验证**：Windows/Linux 产物的真实文件名与签名、`latest.json` 上传到真实 Release 后的下载与安装、`relaunch()` 之后壳能否带已更新的核心正常重启（属必须实机点一遍的类别） |
+| `RunEvent::ExitRequested` 改走 `stop_core_bounded`（原为事件循环线程上无界的 `graceful_stop`） | ❌ **无单测覆盖**（需要真实 `AppHandle`）。依据仅是 `stop_core` 最坏 ~17s 的既有预算与 `STOP_BUDGET = 8s` 的复用；重启/退出时窗口不再冻住的**效果必须实机看** |
 | `.github/workflows/release.yml`（cargo 化后） | ❌ **未在 CI 上跑通**，仅静态校验过 YAML 结构 |
 | `cargo fmt --check` 全绿 | ❌ 未达成（本仓库不以 fmt 为准，勿在无关文件上顺手格式化） |
 
@@ -80,14 +83,22 @@ WB Bridge 是一个**跨平台托盘工具**，通过**隔离的 OpenCode 技术
 
 ### 签名与发布
 
-- **自动更新（updater）目前未接线**：`tauri.conf.json` 没有 `bundle.createUpdaterArtifacts`，也没有 `plugins.updater` / `tauri-plugin-updater` 依赖，因此产物不含 `.sig` 与 `latest.json`，下面这些签名变量现在**无人读取**。接入前不要引导用户生成私钥；接入时需同时补配置项、插件依赖、更新端点，并把 CI 的 `.sig` glob 加回来。
+- **自动更新已接线**：`src-tauri/Cargo.toml` 依赖 `tauri-plugin-updater` + `tauri-plugin-process`，`lib.rs` 的 builder 链注册两者，`tauri.conf.json` 有 `bundle.createUpdaterArtifacts: true` 与 `plugins.updater`（`pubkey` 内联公钥串 + `endpoints` 指向 `https://github.com/trexwb/wbBridge/releases/latest/download/latest.json`）。因此**本地 `npm run build` 现在必须先在环境里给出签名私钥**（`.env` 文件不会被 Tauri 自动读取，必须真的 `export`），否则打包在生成 updater 产物那一步失败并报「A public key has been found, but no private key」。产物每平台额外得到 `<安装包>.sig`：macOS `*.app.tar.gz`、Windows `*-setup.exe`（MSI 不参与更新）、Linux `*.AppImage`（官方文档口径；bundler 是否额外产出 `*.AppImage.tar.gz` 待首次 CI 核对）。
+  - ✅ 本机实测（2026-10-01，tauri-cli 2.12）：`export TAURI_SIGNING_PRIVATE_KEY="$HOME/.tauri/wbBridge-updater-20261001.key"`（**路径形式对 `build` 有效**）+ 空密码 → `tauri build --bundles app` 产出 `WB Bridge.app.tar.gz(.sig)`，签名 key ID 与 `tauri.conf.json` 内嵌公钥一致（`126D4E208E0F17BA`），trusted comment 携带 `version:1.0.1`。
+  - ⚠ 变量分工（易错，实测过）：`tauri build|bundle` **只读 `TAURI_SIGNING_PRIVATE_KEY`**（值可为私钥全文或文件路径）；`TAURI_SIGNING_PRIVATE_KEY_PATH` 只对 `tauri signer sign` 生效（等价 `-f`）；`signer sign -k` 要的是**私钥字符串**，误传路径会报 `failed to decode base64 secret key: Invalid symbol 46`。⚠ 本机仓库根 `.env`（`0644`、已 gitignore、`git ls-files` 确认未入库）用的正是**旧写法**（只有 `_PATH` + `_PASSWORD`），`source` 它仍不够，必须再 `export TAURI_SIGNING_PRIVATE_KEY=<私钥绝对路径>`。
+  - ⚠ 旧文件 `~/.tauri/wbBridge-updater.key`（key ID `2B11F78BEA8A43F`）**不可用**：带未知密码、且 `~/.tauri/wbBridge.env` 里那个口令也解不开，且与现配置公钥不配对（该钥文件本身权限 `0600`，未删未改）。按用户决定另生成一把 wbBridge 专用新钥（`~/.tauri/wbBridge-updater-20261001.key`，`0600`，无密码），`tauri.conf.json` 的 `pubkey` 已同步换成新公钥。**换钥必须同步换 pubkey**，否则老客户端验签必失败。
+  - ⚠ 本机权限隐患（**属待用户决策项，Agent 不得自行改动 `~/.tauri` 下的文件**）：`~/.tauri/wbBridge.env` 与仓库本地 `.env` 都是 `0644`（同机其他用户可读）且内含明文凭据。仓库侧安全：两者都被 `.gitignore` 忽略、`git ls-files` 确认未入库，`.env.example` 只含占位符。
+  - ⚠ macOS 的更新包名**不含版本也不含架构**（就是 `WB Bridge.app.tar.gz`），两个 mac runner 会往同一 Release 传同名资产、后者静默覆盖前者；CI 的「给 macOS 更新包补架构后缀」步骤因此把它改名为 `WB Bridge_<arch>.app.tar.gz`（`.sig` 同步改名——minisign 签的是内容不是文件名）。
+- `latest.json` **只有一个写者**：CI 末尾的 `update-manifest` 作业跑 `scripts/gen-latest-json.mjs`（`node scripts/gen-latest-json.mjs --dir artifacts --out latest.json`），平台键取自 artifact **目录名**里的 target triple（`macos-aarch64-…-bundles` → `darwin-aarch64`；不能靠文件名，见上），默认要求六平台齐全、缺一即退出 1。`tauri-action` 自带的清单生成已用 `includeUpdaterJson: false` 关闭——6 个并发作业各写一次会互相覆盖、静默漏平台。Draft 未 Publish 前该 URL 返回 404 属预期。
 - 环境变量模板：`.env.example` → 复制为 `.env.local`（`.env.local` 已被 `.gitignore` 忽略，**严禁提交**）。这是唯一模板落点（`src-tauri/updater-signing.env.example` 与其逐字节相同、已删除）。
-  - `TAURI_SIGNING_PRIVATE_KEY_PATH`：更新产物签名私钥路径，默认 `~/.tauri/wbBridge-updater.key`
-  - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`：私钥密码
-  - 备用方式：内联 `TAURI_SIGNING_PRIVATE_KEY`（仅当 CI 不支持 PATH 形式时启用）
+  - `TAURI_SIGNING_PRIVATE_KEY`：私钥全文**或私钥文件的绝对路径**（本地推荐路径形式，密钥内容不进环境）；CI 用 GitHub **Secrets** 存私钥全文。
+  - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`：私钥密码（当前这把未设密码，留空）
+  - 🔴 私钥纪律：私钥绝不入库、不进日志、不进 `status.json`；公钥是公开值，内嵌配置即可
 - 密钥生成（`@tauri-apps/cli` 已在根 devDependencies，现可执行）：
   ```bash
-  npm run tauri -- signer generate -p <密码> -w ~/.tauri/wbBridge-updater.key
+  npm run tauri -- signer generate -p '' -w ~/.tauri/wbBridge-updater-<日期>.key
+  # -k/--private-key 是「私钥字符串」，读文件要用 -f/--private-key-path；
+  # 单独签文件：npm run tauri -- signer sign -f <私钥路径> -p '' <产物路径>
   ```
 - CI：`.github/workflows/release.yml`（推 `v*` tag 或手动 dispatch）——test 作业跑 `cargo test` + `check-version.mjs`，三个平台作业跑 `npm ci` + `tauri-apps/tauri-action`（带 `--target <triple>`）出 bundle。**该工作流自「移除 Node 核心」改造后尚未在 CI 实际跑通**，改动它时如实标注。
 
@@ -128,7 +139,8 @@ wbBridge/
 ├── eslint.config.js              ← 扁平 ESLint（只开能真报错的规则）
 ├── src/                          ← 控制面板（Vue 3 + Vite；root: src）
 │   ├── index.html  main.js  App.vue
-│   ├── core/bridge.js            ← 与壳的唯一边界：invoke + listen → onState/onDismiss/action（另有只读 readLog/dataDir）
+│   ├── core/bridge.js            ← 与壳的唯一边界：invoke + listen → onState/onDismiss/action（另有只读 readLog/dataDir + updater/process 三调用）
+│   ├── core/update.js            ← 更新状态机（静默检查、下载进度、重启生效）；AboutView 只渲染
 │   ├── core/activity.js          ← 活动文案（托盘与面板共用，禁止两套文案）
 │   ├── views/                    ← SideBar.vue（分组导航 + 运行设置）、ModelList.vue、ModelDetails.vue（详情右栏）、
 │   │                                ServiceStatus.vue、MetricsBar.vue、FeedbackBar.vue、
@@ -166,7 +178,7 @@ wbBridge/
 │           ├── js_parity.rs      ← JS↔Rust 对拍：与 fixtures 里冻结的 expected 比较（默认无需 Node）
 │           ├── red_lines.rs      ← 运行期红线守卫（鉴权/Origin/权限表/隔离配置/限额/环境白名单）
 │           └── fixtures/*.json   ← 11 个模块共 271 个用例，每个带 expected 黄金快照
-├── scripts/                      ← bump-version.mjs / check-version.mjs
+├── scripts/                      ← bump-version.mjs / check-version.mjs / gen-latest-json.mjs
 ├── docs/                         ← contract.md、validation.md、version/*、research/upstream-architecture.md
 ├── .github/workflows/release.yml ← cargo 化 CI（无 sidecar 步骤）
 ├── .env.example / .env.local     ← 签名环境变量（.env.local 严禁提交）
@@ -284,9 +296,10 @@ start_backend
 | `atomic.rs` | `replace_with_retry`/`replace_with_retry_with`、`ReplaceError`、`DELAYS`、`TRANSIENT_CODES`、`node_code_for_io` | 原子替换（Windows 共享冲突重试） |
 | `json.rs` | `parse_json`、`Env`、`truthy`、`strict_eq`、`js_stringify`/`js_stringify_pretty`、`number_from_f64`、`type_of` 等 | 容错 JSON + JS 语义等价原语 |
 | `src-tauri/src/lib.rs` | `core_action`、`restart_core`、`core_running`、`data_dir_path`、`read_log`（`generate_handler` 五命令；前两个是 **async 命令**，阻塞的 key 轮询与回环 HTTP 走 `spawn_blocking`；`read_log` 无参数、只读数据目录内运行日志的尾部，返回 `{text, truncated, bytes}`）、事件 `core-status`（轻量快照）/ `core-activity`（activity + modelResults）/ `core-failed`（**故障期间每 ~4s 重播**，面板晚注册监听也能收到）、`start_core`/`stop_core`/`watch_status`/`service_down`/`restart_core_with`/`build_tray`/`quit_app`/`stop_core_bounded`/`show_main`/`admin_call`（`on_window_event` 的 `CloseRequested` → `quit_app`，即**关窗即退出**，全平台一致） | 托盘壳：生命周期、IPC、状态轮询、退出预算 |
-| `src/core/bridge.js` | `action(name, value)`、`onState(cb)`、`onDismiss(cb)`、`readLog()`、`dataDir()` | 面板与壳的唯一边界（invoke + listen）；后两个是**只读**调用（新增视图用），不接受路径入参、不写文件 |
+| `src/core/bridge.js` | `action(name, value)`、`onState(cb)`、`onDismiss(cb)`、`readLog()`、`dataDir()`、`checkUpdate()`、`downloadUpdate(onProgress)`、`relaunchApp()` | 面板与壳/插件的唯一边界（invoke + listen + 插件全局绑定）；`readLog`/`dataDir` 是**只读**调用，不接受路径入参、不写文件。`check()` 返回的 Update 句柄只留在模块内（组件拿的是可序列化快照 `{version, notes}`） |
+| `src/core/update.js` | `subscribe(cb)`、`check({silent})`、`install()`、`restart()`、`dismiss()`、`startSilentCheck()` | 更新状态机（`idle`/`checking`/`available`/`downloading`/`ready`/`uptodate`/`error`）；冷启动 5s 后静默检查，静默失败不打扰用户。视图不得自行持有状态 |
 | `src/core/activity.js` | `activityText(...)` | 活动文案统一（托盘与面板共用） |
-| `scripts/*.mjs` | `bump-version.mjs`、`check-version.mjs` | 版本单一来源同步与校验 |
+| `scripts/*.mjs` | `bump-version.mjs`、`check-version.mjs`、`gen-latest-json.mjs` | 版本单一来源同步与校验；更新清单生成（平台键由产物文件名推导，默认要求六平台齐全） |
 
 ### 关键常量（改动前必须确认语义）
 
@@ -353,8 +366,8 @@ start_backend
 ### UI 规范
 
 - 面板 = Vue 3 SFC + Vite 构建产物 `dist/`，由 Tauri WebView 加载；**不得引入 CDN 或任何外部请求**，必须满足 `tauri.conf.json` 的 CSP（`default-src 'self'`、`script-src 'self'`、`connect-src ipc: http://ipc.localhost`）。
-- 与壳的通信只走既有契约：`src/core/bridge.js` 的 `action(name, value)` / `onState(cb)` / `onDismiss(cb)`，底层是 `invoke('core_action' | 'restart_core' | 'core_running' | 'data_dir_path' | 'read_log')` + 事件 `core-status`（轻量快照，含顶层 `usage`）/ `core-activity`（`activity` + `modelResults` 明细，面板必须与最近一次轻量快照合并后再下发，否则逐模型状态永远为空）/ `core-failed`。新增只读命令时须同步 `src-tauri/src/lib.rs` 的 `generate_handler`；`capabilities/default.json` **无需改动**——自有命令不经 capability 授权。**不得新增或改名 IPC 命令/事件**，除非同步更新 `src-tauri/src/lib.rs` 与 `src-tauri/capabilities/default.json`。
-- 面板为只读展示 + 动作触发：不得在面板内直接读写文件、直接访问网络、直接调用 OpenCode。
+- 与壳的通信只走既有契约：`src/core/bridge.js` 的 `action(name, value)` / `onState(cb)` / `onDismiss(cb)`，底层是 `invoke('core_action' | 'restart_core' | 'core_running' | 'data_dir_path' | 'read_log')` + 事件 `core-status`（轻量快照，含顶层 `usage`）/ `core-activity`（`activity` + `modelResults` 明细，面板必须与最近一次轻量快照合并后再下发，否则逐模型状态永远为空）/ `core-failed`。新增只读命令时须同步 `src-tauri/src/lib.rs` 的 `generate_handler`；`capabilities/default.json` 对**应用自有命令无需改动**（自有命令不经 capability 授权），但**插件命令必须在此声明**——updater/process 已加 `updater:default` + `process:allow-restart`（刻意不用 `process:default`：它含 `allow-exit`，会让 WebView 绕过 `quit_app` 的优雅关停链硬杀进程）。**不得新增或改名 IPC 命令/事件**，除非同步更新 `src-tauri/src/lib.rs` 与 `src-tauri/capabilities/default.json`。
+- 面板为只读展示 + 动作触发：不得在面板内直接读写文件、直接访问网络、直接调用 OpenCode。**唯一例外是自动更新**：`checkUpdate/downloadUpdate/relaunchApp`（`src/core/bridge.js`）调的是 Tauri 官方 updater/process 插件，联网发生在 **Rust 侧**（插件命令），不经 WebView `fetch`，因此 CSP 的 `default-src 'self'` 无需放宽；更新状态机集中在 `src/core/update.js`，视图只渲染与触发。
 - 动作执行期间必须置忙（按钮禁用 + spinner + 结果反馈），失败必须显示原因。
 - **交互反馈分层（2026-10-01 UI 优化后固化）**：等待用 `spinner` / `.skeleton` / `.busy-bar`，结果用 `FeedbackBar`（pending / error / success 三态；pending 态**不给关闭按钮**，防误判操作已结束）。**进度只许来自壳推送的真实数据**：`probe` 可显示「已完成/总数」（由 `probe.pending` 队列长度与当前模型数推算，只反映当帧快照，缺任一项即不显示），其余动作前端拿不到真实进度，一律只给文字、**不写数字**。
 - **图标一律内联 SVG**（`stroke="currentColor"`）：禁止字符符号（▦▤◔⇄ⓘ 之类随系统字体变化、基线不齐、无法统一线宽），也禁止外部图标资源或图标字体（CSP `default-src 'self'`）。
@@ -370,7 +383,7 @@ start_backend
   窗口失焦（`onDismiss`）；收起即清空选中，列表占满主区宽度。
 - **侧栏是分组导航**：分组为「模型 / 运行 / 集成 / 其他」，底部为「运行设置」（系统代理开关 + 版本号）。**5 个入口都是已实现的视图**（视图状态由 `src/App.vue` 的 `view` 持有，侧栏按 `current` 高亮并带 `aria-current="page"`）：
   模型与服务（`.top` + `.content`，保留主从两栏）、运行日志（`src/views/LogsView.vue`，经 `read_log` 只读拉取日志尾部）、用量与额度（`src/views/UsageView.vue`，渲染 `status.json` 顶层 `usage`）、
-  WorkBuddy 集成（`src/views/IntegrationView.vue`，只读展示配置定位与最近发布结果，唯一动作是复用既有 `import`）、关于与更新（`src/views/AboutView.vue`，**未接入自动更新**，升级需重新下载安装包）。
+  WorkBuddy 集成（`src/views/IntegrationView.vue`，只读展示配置定位与最近发布结果，唯一动作是复用既有 `import`）、关于与更新（`src/views/AboutView.vue`，版本与数据目录只读 + **自动更新区**：启动后静默检查、发现新版本才出现更新条、由用户点「下载并安装」，进度百分比只在上游给出 `contentLength` 时显示，装完点「重启应用」经 `process.relaunch` 走 `ExitRequested` 的有界停止）。
   **禁止**再出现「规划中」标签、禁用占位或可点击却无响应的假入口。
 - **`usage` 口径（`status.json` 顶层字段）**：`{"since": ISO, "total": {requests, ok, failed}, "models": {"<clientModelId>": {requests, ok, failed, lastMs, avgMs}}}`；只累计 `source == "request"` 的真实客户端请求——探测（`probe`）不计；客户端取消（连接断开）走 `server.rs` 的两条早退路径，**整条不计入**（`requests` 也不 +1，不是记为失败）；启动时从上一份 `status.json` 读回，与 `modelResults` 同法跨重启延续。
 - **`schemaVersion` 升级口径**：向后兼容的**加法式**顶层字段（如本次新增的 `usage`，旧壳忽略未知字段即可）**不**递增两侧 `STATUS_SCHEMA_VERSION`，本次保持 `1`；只有删除 / 改名顶层字段、或改变既有字段语义（非兼容变更）时，才把 `src-tauri/src/lib.rs` 与 `src-tauri/core/src/orchestration.rs` 两侧常量**同步 +1**（规则原文见两处注释）。
@@ -456,7 +469,7 @@ start_backend
 1. **禁止重构**：只做针对性最小改动；不得重命名已有导出、路由、错误码、IPC 命令与事件名。
 2. **禁止重新引入 Node 运行期到核心**：不得为 `src-tauri/core` 加 sidecar/pkg/esbuild 链路，也不得新建第二个核心实现。
 3. **禁止在仓库内写入运行时数据**：所有运行期文件（`api-key`、`status.json`、日志、runtime、opencode 目录）只能写入平台数据目录（或壳的 `app_data_dir`）。
-4. **禁止编造已验证状态**：GUI 启动、CI 跑通、签名发布这三件事在本仓库**尚未实测**，涉及它们的说明必须标注"未验证"。
+4. **禁止编造已验证状态**：GUI 实机启动与 CI 跑通在本仓库**尚未实测**；签名链路只验证到**本机产出一个 key ID 与配置公钥配对的 `.sig`**，Windows/Linux 产物、发布后的 `latest.json` 与一次真实的升级闭环都**未实测**。涉及这些的说明必须标注"未验证"。
 5. **禁止大规模二进制入库**：`src-tauri/binaries/` 已随 sidecar 方案废弃（目录已删除，`.gitignore` 仍保留守卫条目），不得复活该约定。
 6. **禁止擅自推进版本号**：见下节。
 7. **Rust 代码只能放在 `src-tauri/` 下**：壳 = `src-tauri/src/`，核心 = `src-tauri/core/`（独立 workspace、壳以 `path = "core"` 依赖）。不得在仓库根重建 `core-rs/` 之类的第三个 Rust 位置，也不得把核心并进壳的单个 crate（那会让核心测试被迫编译 tauri/webkit 依赖图、失去独立二进制）。

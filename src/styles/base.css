@@ -110,6 +110,34 @@ button:disabled { opacity: .48; cursor: not-allowed; }
   to { transform: translateX(275%); }
 }
 
+/* 确定进度条：只有在拿到真实字节数时才用（宽度 = 真实比例），
+   与 .busy-bar 分工——后者表达「进行中但不知道多少」。 */
+.progress {
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--green) 14%, transparent);
+  overflow: hidden;
+}
+.progress > i {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 999px;
+  background: linear-gradient(90deg,
+    color-mix(in srgb, var(--green) 70%, var(--text)), var(--green));
+  transition: width var(--dur-2) var(--ease-standard);
+}
+/* 进行中：已填充部分叠一层流光，表示数据仍在到达而非卡在某个百分比 */
+.progress.is-active > i::after {
+  content: "";
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, #fff 45%, transparent), transparent);
+  background-size: 400% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
 /* ── 动效降级 ──────────────────────────────────────────────────────
    用户要求减少动态效果时，位移 / 淡入一律取消且不重播；
    仅保留 spinner / 骨架 / 进度条的循环——它们是「正在加载」的唯一信息载体，
@@ -120,7 +148,7 @@ button:disabled { opacity: .48; cursor: not-allowed; }
     animation-duration: 1ms !important;
     animation-iteration-count: 1 !important;
   }
-  .spinner, .skeleton, .busy-bar::after {
+  .spinner, .skeleton, .busy-bar::after, .progress.is-active > i::after {
     animation-duration: 1.6s !important;
     animation-iteration-count: infinite !important;
   }

@@ -1,9 +1,11 @@
 <script setup>
-// 关于与更新：版本与运行位置信息，只读。
-// 更新能力如实呈现：本构建未接入自动更新通道（tauri.conf.json 未配置 updater 插件），
-// 升级只能重新下载安装包，面板不做联网检查，也不编造「有更新」结论。
-import { onMounted, ref } from 'vue'
+// 关于与更新：版本与运行位置信息只读；更新区是唯一动作区。
+// 状态机在 src/core/update.js（冷启动静默检查由 App.vue 触发），本视图只渲染与触发，
+// 百分比一律来自 updater 事件的真实字节数，拿不到 contentLength 就不显示数字。
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { dataDir } from '../core/bridge.js'
+import { check, dismiss, install, restart, subscribe } from '../core/update.js'
+import FeedbackBar from './FeedbackBar.vue'
 
 defineProps({
   state: { type: Object, default: () => ({}) },
@@ -12,11 +14,44 @@ defineProps({
 const version = __APP_VERSION__
 const dir = ref('')
 const dirError = ref(null)
+const update = ref({ status: 'idle', version: '', notes: '', received: 0, total: 0, error: '', checkedAt: 0 })
+let unsubscribe = null
+
+const busy = computed(() => ['checking', 'downloading'].includes(update.value.status))
+// 可见的更新条：available / downloading / ready 三态共用一条，避免状态切换时布局跳动。
+const hasBar = computed(() => ['available', 'downloading', 'ready'].includes(update.value.status))
+const percent = computed(() => {
+  const { received, total } = update.value
+  if (!total) return null
+  return Math.min(100, Math.round((received / total) * 100))
+})
+const progressText = computed(() => {
+  const text = `已下载 ${formatBytes(update.value.received)}`
+  if (!update.value.total) return `${text}（总大小未知）`
+  return `${percent.value}% · ${text} / ${formatBytes(update.value.total)}`
+})
+
+function formatBytes(bytes) {
+  const value = Number(bytes) || 0
+  if (value < 1024) return `${value} B`
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
+  return `${(value / 1024 / 1024).toFixed(2)} MB`
+}
+
+// 更新条上的唯一主按钮：还没装就下载安装，装好了就重启生效。
+function primary() {
+  return update.value.status === 'ready' ? restart() : install()
+}
 
 onMounted(async () => {
+  unsubscribe = subscribe(next => { update.value = next })
   const response = await dataDir()
   if (response.ok) dir.value = String(response.result || '')
   else dirError.value = response.error
+})
+
+onUnmounted(() => {
+  if (unsubscribe) unsubscribe()
 })
 </script>
 
@@ -59,12 +94,60 @@ onMounted(async () => {
       </div>
     </dl>
 
-    <div class="panel">
+    <div class="panel update" :class="`is-${update.status}`">
       <h3>更新</h3>
-      <p>
-        当前构建未接入自动更新：应用不会在后台检查或下载新版本，这里也没有「检查更新」按钮。
-        需要新版时请重新下载安装包覆盖安装；WorkBuddy 侧无需改动。
+      <p class="lede">
+        启动后在后台静默检查一次；只有真的发现新版本才会在下面出现更新条。
+        下载与安装一律由你点击触发，安装完成后需重启应用生效。
       </p>
+
+      <div v-if="hasBar" class="update-bar">
+        <span class="pulse" aria-hidden="true" />
+        <div class="update-main">
+          <strong>{{ update.status === 'ready' ? `v${update.version} 已下载完成` : `发现新版本 v${update.version}` }}</strong>
+          <p v-if="update.notes" class="notes">{{ update.notes }}</p>
+        </div>
+        <button
+          v-if="update.status !== 'downloading'"
+          type="button"
+          class="primary"
+          :disabled="busy"
+          @click="primary"
+        >{{ update.status === 'ready' ? '重启应用' : '下载并安装' }}</button>
+        <button v-else type="button" class="primary" disabled aria-busy="true">
+          <span class="spinner sm" />下载中
+        </button>
+      </div>
+
+      <div
+        v-if="update.status === 'downloading'"
+        class="progress is-active"
+        role="progressbar"
+        :aria-valuenow="percent"
+        :aria-valuetext="progressText"
+        aria-valuemin="0"
+        aria-valuemax="100"
+      >
+        <i :style="{ width: `${percent ?? 0}%` }" />
+      </div>
+      <p v-if="update.status === 'downloading'" class="progress-text">{{ progressText }}</p>
+
+      <div class="update-actions">
+        <button type="button" class="ghost" :disabled="busy" @click="check()">
+          <span v-if="update.status === 'checking'" class="spinner sm" />检查更新
+        </button>
+        <span v-if="update.checkedAt" class="checked-at">
+          上次检查：{{ new Date(update.checkedAt).toLocaleString() }}
+        </span>
+      </div>
+
+      <FeedbackBar
+        v-if="update.status === 'error'"
+        :text="`更新失败：${update.error}`"
+        error
+        @dismiss="dismiss()"
+      />
+      <p v-else-if="update.status === 'uptodate'" class="uptodate">已是最新版本（v{{ version }}）。</p>
     </div>
 
     <p class="note">
@@ -100,4 +183,44 @@ header { display: flex; justify-content: space-between; gap: var(--sp-3); align-
 .panel p { margin: 0; font-size: var(--fs-sm); color: var(--muted-strong); line-height: var(--lh-loose); }
 .error-text { color: var(--orange); }
 .note { margin: 0; font-size: var(--fs-xs); color: var(--muted-strong); line-height: var(--lh-loose); }
+
+/* ── 更新区 ───────────────────────────────────────────────────────
+   更新条随 v-if 挂载而入场（与主区 rise-in 同一时长与缓动，不引 <Transition>）；
+   prefers-reduced-motion 下位移与淡入被全站降级规则取消，绿点脉冲同样只放一次。 */
+.update-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-top: var(--sp-3);
+  padding: var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-s);
+  animation: update-rise var(--dur-3) var(--ease-enter) both;
+}
+.pulse {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--green);
+}
+.is-available .pulse { animation: update-ping var(--dur-3) var(--ease-emphasis) 1; }
+.update-main { flex: 1; min-width: 0; }
+.update-main strong { font-size: var(--fs-sm); font-weight: 600; }
+.notes { margin: 4px 0 0; font-size: var(--fs-xs); color: var(--muted); line-height: var(--lh-loose); }
+.progress { margin-top: var(--sp-3); }
+.progress-text { margin: 6px 0 0; font-size: var(--fs-xs); color: var(--muted-strong); font-variant-numeric: tabular-nums; }
+.update-actions { display: flex; align-items: center; gap: var(--sp-3); margin-top: var(--sp-3); }
+.checked-at { font-size: var(--fs-xs); color: var(--muted-strong); }
+.uptodate { margin-top: var(--sp-3); }
+@keyframes update-rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes update-ping {
+  from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--green) 55%, transparent); }
+  to { box-shadow: 0 0 0 8px transparent; }
+}
 </style>
