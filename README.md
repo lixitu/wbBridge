@@ -1,14 +1,3 @@
----
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: 16825e3339a4e87ec3619b4c10842061_421ad350bd6211f1a1bf52540064ee0f
-    ReservedCode1: KXW/dp9Nr1owm9X4WF0ksd0kVZ/D6wF9br++W+P77/bvzvkVdXIUAubPqoHb7kensvhWM2Dzfsb+h4R8VIwhpanS9WPqyDEsmpULF07hEKyhMRyJodsigRqya5X9+5GN0V3H35crycc7vq5Vm6RhFHJe4YDUwY1ug8AgSewXvmgIpmFq8p4xTYAxeqg=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: 16825e3339a4e87ec3619b4c10842061_421ad350bd6211f1a1bf52540064ee0f
-    ReservedCode2: KXW/dp9Nr1owm9X4WF0ksd0kVZ/D6wF9br++W+P77/bvzvkVdXIUAubPqoHb7kensvhWM2Dzfsb+h4R8VIwhpanS9WPqyDEsmpULF07hEKyhMRyJodsigRqya5X9+5GN0V3H35crycc7vq5Vm6RhFHJe4YDUwY1ug8AgSewXvmgIpmFq8p4xTYAxeqg=
----
-
 # WB Bridge
 
 基于 Tauri 2 的跨平台托盘应用，通过隔离的 OpenCode 运行时为 [WorkBuddy](https://www.workbuddy.cn) 提供免费模型。功能与界面参考上游实现（https://github.com/louchi1984-coder/ow-bridge，Electron 版）并优化，核心代理逻辑与之保持行为一致。
@@ -117,4 +106,3 @@ docs/           验证记录（validation.md）、版本日志（version/）、�
 ## 验证记录
 
 见 `docs/validation.md`（含 Node/sidecar 时代基线、2026-10-01 Node → Rust 迁移复验，以及同日面板布局改造三段）。
-*（内容由AI生成，仅供参考）*

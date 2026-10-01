@@ -1,14 +1,3 @@
----
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: 16825e3339a4e87ec3619b4c10842061_43b67b77bd6211f19ba1525400638852
-    ReservedCode1: xGdNidy6eY40+poDuCYQAvvHSWO7+AMRBg+z/fyOKA/B6BodVGZfLsVGgy9feXzY3XXeIWuiGiqpvmqappbriCnFvzn0G4L+iIWN/YpdlyNXmDONw7Dj7QVF0Sjk1VwdM8E2wQ132wJDQL7i5URsb6XdyhfeTOw+CzREnVqZG2BH+LqR2ky7NIXK2Ug=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: 16825e3339a4e87ec3619b4c10842061_43b67b77bd6211f19ba1525400638852
-    ReservedCode2: xGdNidy6eY40+poDuCYQAvvHSWO7+AMRBg+z/fyOKA/B6BodVGZfLsVGgy9feXzY3XXeIWuiGiqpvmqappbriCnFvzn0G4L+iIWN/YpdlyNXmDONw7Dj7QVF0Sjk1VwdM8E2wQ132wJDQL7i5URsb6XdyhfeTOw+CzREnVqZG2BH+LqR2ky7NIXK2Ug=
----
-
 # 版本发布日志 · v1.0
 
 > 本文件按主版本组织：v1.0.x 的全部迭代日志集中于此（最新在前）。
@@ -97,4 +86,3 @@ AIGC:
 - 版本号**仅在**「不同类新功能 / 不同根因新修复 + 用户明确允许」时末位 +1；
 - 同一问题多轮往返、同日同模块追加修复、仅文档更新、纯文案/措辞打磨等场景**禁止**推进版本号，但仍需在本文件顶部追加分节留痕（注明日期与"不推进版本号"）；
 - 历史分节**只增不改**。
-*（内容由AI生成，仅供参考）*

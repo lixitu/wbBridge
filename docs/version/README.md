@@ -1,14 +1,3 @@
----
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: 16825e3339a4e87ec3619b4c10842061_44a04a08bd6211f1a1bf52540064ee0f
-    ReservedCode1: 8070Oc1pBhF1Q749JK5qgznzqHcd7QKsjVs1nkR5A+aUpuZ4vMFdxICOaiff6joo4jH0YvZeElMCnncS90rhW4NOL4GLS/mVp2NGuY7hTGJMXM21kQq+spERjKNTAY583K9aZvgivNUoenlmMjctA41hJBHt34RW6lvbR1h9/Zq0Z/3b/fM/PuhFOdk=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: 16825e3339a4e87ec3619b4c10842061_44a04a08bd6211f1a1bf52540064ee0f
-    ReservedCode2: 8070Oc1pBhF1Q749JK5qgznzqHcd7QKsjVs1nkR5A+aUpuZ4vMFdxICOaiff6joo4jH0YvZeElMCnncS90rhW4NOL4GLS/mVp2NGuY7hTGJMXM21kQq+spERjKNTAY583K9aZvgivNUoenlmMjctA41hJBHt34RW6lvbR1h9/Zq0Z/3b/fM/PuhFOdk=
----
-
 # 版本迭代日志
 
 > 本目录专门存储 wbBridge 每次升级迭代的发布日志。
@@ -63,4 +52,3 @@ AIGC:
 - **去重整理（沿用参考项目 discipline）**：同类问题多次修复的条目合并为一条，统一记述于最终修复版本；被合并的早期版本分节保留编号与合并指向（不删版本号、不重复正文）
 - **文档类更新不推进版本号**：本目录建立（`docs/version/README.md` + `RELEASE-v1.0.md`）与本次 Node → Rust 迁移后的文档更正均属纯文档更新，按纪律**不推进版本号**（产品版本保持 **1.0.0**），只在对应分节留痕（见 `RELEASE-v1.0.md` v1.0.0 分节末条）
 - **界面调整同样不推进版本号**：2026-10-01 的面板布局改造（侧栏分组导航、详情改为右侧常驻分栏、默认窗口 980×680 → **1120×720**、侧栏 `--sidebar-w` 224 → **208px**、新增 `--muted-strong`，4 个入口标「规划中」）属同一未发布版本内的界面调整，**不推进版本号**；已在 `RELEASE-v1.0.md` 的 v1.0.0 分节以「面板布局改造说明」留痕，验证证据见 `docs/validation.md` 同轮条目
-*（内容由AI生成，仅供参考）*

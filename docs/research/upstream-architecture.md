@@ -1,14 +1,3 @@
----
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: 16825e3339a4e87ec3619b4c10842061_4574e2efbd6211f1a1bf52540064ee0f
-    ReservedCode1: vkpyW9qgSF5qxqazmXbDBW+o9oce+m8W9NsWpo0UMxTgYwiIEb+3oeePHqCmI2Z+XLCNLx4tfKCVjHmJplxEIvj5E5KMxhygChYYB0A3vV/S2KWHLHJ6XoXl0RZm1LW8v2vxlSUOYQk/u4zmxBGGsd+5O17VWBNh94W1d0q8iiSVDJbGVnnWeUj75Co=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: 16825e3339a4e87ec3619b4c10842061_4574e2efbd6211f1a1bf52540064ee0f
-    ReservedCode2: vkpyW9qgSF5qxqazmXbDBW+o9oce+m8W9NsWpo0UMxTgYwiIEb+3oeePHqCmI2Z+XLCNLx4tfKCVjHmJplxEIvj5E5KMxhygChYYB0A3vV/S2KWHLHJ6XoXl0RZm1LW8v2vxlSUOYQk/u4zmxBGGsd+5O17VWBNh94W1d0q8iiSVDJbGVnnWeUj75Co=
----
-
 # 上游参考实现架构规格书（Tauri 移植调研）
 
 - 参考仓库：`https://github.com/louchi1984-coder/ow-bridge`（只读快照），版本基线 `package.json` version **0.2.5**（package.json:3）；注意 `src/main.js:39` 内嵌 `version: '0.2.0'` 写入 status.json，两者不一致，移植时以 package.json 为准并在状态里注明来源。
@@ -414,4 +403,3 @@ K1. `BUDDY_PARENT_PID` 指向的壳进程消失后，sidecar 自行优雅退出�
 8. **退出清理顺序**（1.4）：sync([])→stop→等 probe→落盘→删锁的顺序保证不丢状态不留 owned 残留（H1, I13）。
 9. **模型目录一致性**：失败模型即时下架 + 缓存调用 400 + 格式失败不撤模型（I14, lifecycle H1）三者的边界容易混。
 10. **低风险**：桌面壳 IPC/status 轮询（第 8 章）在 Tauri 中由原生机制替代，行为可简化但需保留 action 白名单与 {ok,result}/{ok,error} 形状的兼容层。
-*（内容由AI生成，仅供参考）*

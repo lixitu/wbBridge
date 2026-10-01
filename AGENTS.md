@@ -1,14 +1,3 @@
----
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: 16825e3339a4e87ec3619b4c10842061_41146ba1bd6211f19ba1525400638852
-    ReservedCode1: DvUbfRAmXidF/cgd/KJZh9Sv4+XUxrYf0/2rd+0lrc+0C1DQaxJDBnngEDJN6cREmQ5LVusQY+WxBaAA22q6pXuqPigtZ0kaS1Y4ZNQCHGe+C/9yV9AnIJ2S7Xy+CJJxg+eJrREjIvzZCLs3qKIGplKAsIpClmkcAwXNzVGgcVGVc1GwXrN8yH4DL68=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: 16825e3339a4e87ec3619b4c10842061_41146ba1bd6211f19ba1525400638852
-    ReservedCode2: DvUbfRAmXidF/cgd/KJZh9Sv4+XUxrYf0/2rd+0lrc+0C1DQaxJDBnngEDJN6cREmQ5LVusQY+WxBaAA22q6pXuqPigtZ0kaS1Y4ZNQCHGe+C/9yV9AnIJ2S7Xy+CJJxg+eJrREjIvzZCLs3qKIGplKAsIpClmkcAwXNzVGgcVGVc1GwXrN8yH4DL68=
----
-
 # AGENTS.md — WB Bridge 桥接服务 (wbBridge)
 
 ## ⚠ 强制规范（所有 Agent 必须遵守）
@@ -498,4 +487,3 @@ start_backend
    - 若改动涉及对外契约（路由、错误码、`status.json` 字段、`models.json` 写入格式、IPC 命令/事件），必须在回复中显式列出并提示用户影响面；
    - 若改动触及红线，必须同步更新 `tests/red_lines.rs` 的对应断言。
 4. **遇到不确定**：宁可向用户询问，也不要凭推测修改安全、供应链、隔离相关代码。
-*（内容由AI生成，仅供参考）*

@@ -1,14 +1,3 @@
----
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: 16825e3339a4e87ec3619b4c10842061_42d8262abd6211f1a1bf52540064ee0f
-    ReservedCode1: 8v5JzYALY9+PbTIywmox8hY9xxfIKgQ66K8Id94CQaY7InJZhspGV1hCjg8uCfl3jPlWAIkctxZppq7YsndIp2KuvHCmka1fP7hQIWGamyPMP8KN51ygeXb3LexbKSBOAE7LXU+5JWbOgl2IF3Rw/+aB9P93kwZGop9uTjvDRvJ/EAzHUz720C61gdg=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: 16825e3339a4e87ec3619b4c10842061_42d8262abd6211f1a1bf52540064ee0f
-    ReservedCode2: 8v5JzYALY9+PbTIywmox8hY9xxfIKgQ66K8Id94CQaY7InJZhspGV1hCjg8uCfl3jPlWAIkctxZppq7YsndIp2KuvHCmka1fP7hQIWGamyPMP8KN51ygeXb3LexbKSBOAE7LXU+5JWbOgl2IF3Rw/+aB9P93kwZGop9uTjvDRvJ/EAzHUz720C61gdg=
----
-
 # WB Bridge v1.0.0 验证记录
 
 > 阅读顺序：最新记录在前。自 **2026-10-01** 起核心已从 Node.js sidecar 迁移为 Rust 库（静态链接进壳），
@@ -209,4 +198,3 @@ AIGC:
 - 已验证：macOS ARM64 包的构建、启动、模型发现、生命周期与退出清理；全部核心测试。
 - 未验证（本机无法执行）：Windows x64/ARM64 安装包、Linux x64/ARM64 AppImage/deb 的实机运行——由 GitHub Actions 构建产出后需在实际系统上冒烟。
 - 未处理：Apple 公证与 Windows 发布者签名（与原版一致，发布说明中已注明放行方式）。
-*（内容由AI生成，仅供参考）*
