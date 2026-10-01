@@ -200,6 +200,10 @@ fn graceful_stop(state: &AppState) {
 }
 
 fn show_main(app: &AppHandle) {
+    // 退出流程进行中（关闭窗口后到进程结束之间可能有数秒）不要把窗口再唤回来。
+    if app.state::<AppState>().quitting.load(Ordering::SeqCst) {
+        return;
+    }
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
@@ -640,11 +644,18 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                if window.app_handle().state::<AppState>().quitting.load(Ordering::SeqCst) {
+                let app = window.app_handle();
+                if app.state::<AppState>().quitting.load(Ordering::SeqCst) {
+                    // 已在退出流程里（托盘退出 / 上一次关闭触发的 quit）：不再拦截，让窗口正常销毁。
                     return;
                 }
+                // 关闭窗口即退出整个应用（含内嵌核心与 WorkBuddy 发布收尾），全平台一致：
+                // 不再隐藏到托盘等用户「再去关一次后台」——驻留托盘时核心仍在跑，用户会以为已经停了。
+                // 关停序列最坏数秒，因此先立即隐藏窗口再在后台线程走完退出，事件循环不被冻住。
                 api.prevent_close();
                 let _ = window.hide();
+                let app = app.clone();
+                thread::spawn(move || quit_app(&app));
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -747,5 +758,81 @@ mod tests {
         shell.sort_unstable();
         core.sort_unstable();
         assert_eq!(shell, core);
+    }
+
+    fn idle_state() -> AppState {
+        AppState {
+            core: Mutex::new(None),
+            data_dir: PathBuf::new(),
+            quitting: AtomicBool::new(false),
+            core_stopped: AtomicBool::new(false),
+            core_code: AtomicU8::new(0),
+            stopping_by_request: AtomicBool::new(false),
+            proxy_on: Mutex::new(false),
+            tray_proxy: Mutex::new(None),
+            tray: Mutex::new(None),
+            api_key: Mutex::new(None),
+            startup_error: Mutex::new(None),
+        }
+    }
+
+    /// 关窗即退出后，「点关闭」「托盘点退出」「`RunEvent::ExitRequested`」会在同一进程里前后触发
+    /// `graceful_stop`；`quitting` 的 swap 是唯一的幂等保证。第二次必须直接返回且不碰状态。
+    #[test]
+    fn repeated_quit_requests_stop_only_once() {
+        let state = idle_state();
+        assert!(!state.quitting.load(Ordering::SeqCst));
+        graceful_stop(&state);
+        assert!(state.quitting.load(Ordering::SeqCst), "首次关停必须置位 quitting");
+        // 再次触发不得 panic、不得改动已取空的槽位。
+        graceful_stop(&state);
+        assert!(state.core.lock().unwrap().is_none());
+    }
+
+    /// 用户主动停止（关窗或托盘退出）不是故障：即使核心已报告结束，也不能播报「核心服务已退出」，
+    /// 否则关窗收尾的几秒里面板会弹出一条假的故障与「重试」入口。
+    #[test]
+    fn a_quit_requested_shutdown_is_not_reported_as_failure() {
+        let state = idle_state();
+        state.core_stopped.store(true, Ordering::SeqCst);
+        state.stopping_by_request.store(true, Ordering::SeqCst);
+        assert!(core_exit(&state).is_none(), "主动关停不得算作故障退出");
+        assert!(service_down(&state).is_none(), "主动关停期间不得推送故障态");
+        // 对照：真正的崩溃仍必须被识别，否则上面两条断言会因为永远返回 None 而失去意义。
+        state.stopping_by_request.store(false, Ordering::SeqCst);
+        assert!(core_exit(&state).is_some());
+    }
+
+    /// 故障播报只认真正的故障：核心在跑不报；真崩溃必须报「已退出」；**关窗退出的收尾期**
+    /// （core 槽已被取走、主动停止标志在位）不得谎报故障，否则面板会在退出过程中弹出一条假的
+    /// 「核心服务已退出 + 重试」；启动失败则必须报出原因且不能说成「已退出」。
+    #[test]
+    fn service_down_reports_only_real_failures() {
+        let running = idle_state();
+        *running.core.lock().unwrap() = Some(RunningCore {
+            runtime: tokio::runtime::Runtime::new().expect("测试用运行时"),
+            port: 41980,
+        });
+        assert!(service_down(&running).is_none(), "核心在跑时不得报故障");
+
+        // 同一份状态改成「崩溃」口径：exit hook 置位且非主动停止。
+        running.stopping_by_request.store(false, Ordering::SeqCst);
+        running.core_stopped.store(true, Ordering::SeqCst);
+        let (message, by_exit) = service_down(&running).expect("崩溃必须报故障");
+        assert!(by_exit);
+        assert!(message.contains("核心服务已退出"), "{message}");
+
+        // 关窗退出的收尾期：没有核心、核心也已结束，但这是用户主动停的。
+        let shutting = idle_state();
+        shutting.core_stopped.store(true, Ordering::SeqCst);
+        shutting.stopping_by_request.store(true, Ordering::SeqCst);
+        assert!(service_down(&shutting).is_none(), "主动关停期间不得推送故障态");
+
+        // 启动失败：没有核心在跑，原因来自 startup_error，口径不得与「已退出」混用。
+        let failed = idle_state();
+        *failed.startup_error.lock().unwrap() = Some("核心启动失败：端口不可用".to_string());
+        let (message, by_exit) = service_down(&failed).expect("启动失败必须报故障");
+        assert!(!by_exit, "启动失败不是「核心已退出」");
+        assert_eq!(message, "核心启动失败：端口不可用");
     }
 }

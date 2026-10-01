@@ -1,10 +1,107 @@
-# WB Bridge v1.0.0 验证记录
+# WB Bridge v1.0.1 验证记录
 
 > 阅读顺序：最新记录在前。自 **2026-10-01** 起核心已从 Node.js sidecar 迁移为 Rust 库（静态链接进壳），
 > 该日期之后的条目描述 Rust 形态；下方的 2026-09-30 条目属于**迁移前的 Node/sidecar 时代**，作为历史
 > 保留原样（其 97 项测试、`src/core/`、`src-tauri/binaries/` 等结论已不再对应当前仓库）。
 
 日期：2026-10-01（本机 macOS，Apple Silicon；Rust 核心 + Vue 面板）
+
+## 关窗即退出应用（2026-10-01，同日第九轮）
+
+用户诉求：**无论哪个系统的桌面端，关闭窗口就要把后台服务一起停掉**，不允许出现「窗口关了、核心还在跑，
+用户得自己去托盘再关一次」的驻留态。改动只在壳（`src-tauri/src/lib.rs`）与文档，**未触碰核心、IPC 命令、
+事件名、路由、错误码与 `status.json` 字段**；版本号沿用用户上一轮批准的 **1.0.1**（同一未发布版本内的行为调整）。
+
+### 改了什么
+
+| 位置 | 改动 | 原因 |
+|---|---|---|
+| `on_window_event`（`CloseRequested`） | 由「`prevent_close` + `window.hide()`（驻留托盘）」改为「`prevent_close` + `window.hide()` + 后台线程 `quit_app(&app)`」 | 关窗即走与托盘「退出」**同一条**优雅关停链路（`stop_core_bounded` → `APP.exits` → `app.exit(0)`），不新增第二套退出实现 |
+| 同上，事件循环 | 关停放到 `thread::spawn`，不在事件回调里就地执行 | 关停含 `/admin/shutdown` + `STOP_BUDGET = 8s` 等待，就地执行会**冻住事件循环**；先 `hide()` 再后台跑，用户立刻看到窗口消失 |
+| `show_main` | `quitting` 置位后直接返回 | 否则关停的数秒窗口里，托盘菜单「打开控制面板」或 macOS Dock 点击会把窗口重新唤回，形成「关不掉也留着」的僵尸窗口 |
+| 托盘 | **保留未删**（`build_tray` 与四项菜单照旧） | 最小改动；驻留能力不再依赖它，用户仍可用托盘开关代理与主动退出 |
+
+行为后果（全平台一致）：macOS 红按钮 / `Cmd+W`、Windows/Linux 标题栏关闭 = **终止应用**，不再有驻留态；
+想让服务继续运行只能**最小化**窗口。`RunEvent::ExitRequested` 仍就地 `graceful_stop`（有意保留：WorkBuddy 配置
+清理必须在进程结束前跑完），与关窗触发的退出经 `quitting.swap(false)` 互相去重，因此两次触发只会停一次。
+
+### 新增测试（壳侧 `cargo test --lib` 5 → 8）
+
+- `repeated_quit_requests_stop_only_once`：连续两次 `graceful_stop` 只有第一次生效（`quitting` 置位、核心槽取空后不再改动）。
+- `a_quit_requested_shutdown_is_not_reported_as_failure`：`core_stopped` + `stopping_by_request` 期间 `core_exit` / `service_down`
+  都必须返回 `None`；对照断言「主动停止标志复位后同一状态必须被认成崩溃」，避免实现退化为永远返回 `None` 而空过。
+- `service_down_reports_only_real_failures`：核心在跑 → 不报；崩溃 → `Some((含「核心服务已退出」, by_exit = true))`；
+  关窗收尾期 → 不报；启动失败 → `Some((startup_error 原文, by_exit = false))`，不得与「已退出」口径混用。
+- 另补 `idle_state()` 构造 11 个字段的空壳状态，供上述三项复用。
+
+### 本轮实测（数字来自真实执行）
+
+- `cargo test --lib`（`src-tauri/`）→ **8 通过 / 0 失败**（改前 5 通过）；`cargo clippy --no-deps --all-targets` → **0 warning**。
+- `cargo test`（`src-tauri/core/`）→ **207 通过 / 0 失败**（核心未改，基线不变）；核心 `cargo clippy --all-targets` → **0 warning**。
+- **反向验证（变异测试）**：把 `core_exit` 中的 `|| state.stopping_by_request.load(Ordering::SeqCst)` 守卫删掉后，
+  `a_quit_requested_shutdown_is_not_reported_as_failure` 与 `service_down_reports_only_real_failures` **两条同时转红**
+  （`test result: FAILED. 6 passed; 2 failed`，位置 `src-tauri/src/lib.rs:799` 与 `:829`）；守卫已按原文恢复并复跑至全绿。
+  结论：这组断言不是永真式，确实钉住了「主动关停不得谎报故障」这条口径。
+
+### 未验证与遗留（如实标注）
+
+- ❌ **GUI 仍未实机启动**（`npm run tauri:dev` 与打包 `.app` 都没跑过）。本轮证据只有 clippy 0 warning + 壳侧 8 项单测，
+  属于「编译通过 + 单元测试」级别。
+- ❌ **必须实机点一遍**才能确认的三件事：① 点关闭后进程与 `127.0.0.1:<port>` 是否真的在 ≤8s 内一起消失；
+  ② 托盘驻留取消后 macOS 红按钮 / `Cmd+W` / Dock 图标行为；③ 关窗到进程退出这几秒里窗口是否保持隐藏、
+  面板是否弹出假的「核心服务已退出 + 重试」。
+- ⚠️ macOS 的「应用仍在 Dock、窗口关掉后重新点击应唤回」这一惯用行为被本改动**主动放弃**（用户明确要求关窗即停）。
+  `RunEvent::Reopen → show_main` 代码路径仍在，只在退出流程结束后失效。
+- ⚠️ 工作区仍有上一轮遗留：改动**未提交、未打 `v1.0.1` 标签**（提交由用户决定）；`docs/version/RELEASE-NOTES-v1.0.0.md`
+  处于已删除状态（`D`），恢复还是提交由用户决定。
+
+## 版本推进 1.0.0 → 1.0.1 与 GitHub 发布说明（2026-10-01，同日第八轮）
+
+范围：**用户明确要求**推进版本号（"更新版本到 v1.0.1"），并把同日各轮已落地的改动整理成 GitHub Release 正文。
+除版本落点与文档外**未改任何运行时代码**；IPC 命令、事件、路由、错误码、`status.json` 既有字段全部未变。
+改动文件：`package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`AGENTS.md`（两行基准表）、
+`README.md`、`docs/validation.md`、`docs/version/{README.md,RELEASE-v1.0.md,RELEASE-NOTES-v1.0.1.md}`、
+`docs/wiki/{版本与发布,Home,快速开始,已知限制与未验证项,_Footer}.md`。
+
+### 版本号落点（`npm run version:set -- 1.0.1` 实跑输出）
+
+| 落点 | 值 | 说明 |
+|---|---|---|
+| 根 `package.json` → `version` | **1.0.1** | 版本单一来源（脚本改写） |
+| `src-tauri/tauri.conf.json` → `version` | **1.0.1** | 安装包名随之为 `WB Bridge_1.0.1_*` |
+| `src-tauri/Cargo.toml` → `[package] version` | **1.0.1** | 壳工程同步落点 |
+| `AGENTS.md` 基准表两行 | **1.0.1** | 文档侧同步落点 |
+| 面板 `__APP_VERSION__` | `v1.0.1` | `vite.config.js` 构建期注入，已在产物 `dist/assets/index-*.js` 中回读到 `v1.0.1` |
+| `src-tauri/core/Cargo.toml` | `0.1.0`（**未改**） | crate 内部版本，有意与产品版本解耦 |
+| `status.json` 内置 `version` | `0.2.0`（**未改**） | 历史沿革值；`schemaVersion` 仍为 `1`（本版仅加法式新增顶层 `usage`） |
+
+`npm run version:check` → **全部 5 处版本号一致（1.0.1）**。
+
+### 推进理由（对齐 `AGENTS.md` 版本号规则）
+
+规则要求「新增与现有问题**不同类、不同根因**的功能/修复 **且** 用户明确允许」两者同时成立才可末位 +1：
+本版含供应链来源校验、鉴权兜底、壳生命周期、并发/panic、文件权限传播 5 类不同根因的修复，以及侧栏 4 个只读视图 + `usage` 统计的新增功能；
+用户本轮明确要求推进 → 允许 `1.0.0 → 1.0.1`。**注意**：v1.0.0 分节从未发布（无安装包、未实机冒烟），其全部内容并入本版。
+
+### 发布说明落点
+
+- 新增 `docs/version/RELEASE-NOTES-v1.0.1.md`：**可直接复制为 GitHub Release body**，含发布状态如实标注（GUI/CI/安装包/自动更新均未验证）、安全修复逐条根因、并发与生命周期修复、面板新入口、基线对照表、六平台安装包命名、已知限制、升级与兼容说明。
+- `docs/version/RELEASE-v1.0.md` 顶部新增 **v1.0.1 分节**（最新在前），`当前最新版本` 改为 v1.0.1；v1.0.0 分节保留为历史口径。
+- `docs/version/README.md`：索引新增 GitHub Release 正文文件的命名规则与条目，落点表同步为 1.0.1。
+
+### 本轮实测（数字来自真实执行）
+
+- 核心 `cargo test` → **207 通过 / 0 失败**（lib 187 + `js_parity` 11 + `red_lines` 9）；`cargo clippy --all-targets` → **0 warning**。
+- 壳 `cargo test --lib` → **5 通过 / 0 失败**；`cargo clippy --no-deps --all-targets` → **0 warning**。
+- `npx eslint .` → **0 problems**；`npm run vite:build` → 成功（CSS 25.85 kB / JS 93.99 kB，产物含 `v1.0.1`）；`node -v` → v24.19.0。
+- 影响面提示：**版本号是打包元数据的一部分**，`tauri.conf.json` 变更后需重新构建安装包才生效；面板「关于与更新」显示 `v1.0.1`，而 `status.json` 的 `version` 仍为 `0.2.0`（历史沿革值，两者不同源，界面上会同时出现）。
+
+### 未验证与遗留（如实标注）
+
+- ❌ **本版仍未发布**：改动全部在工作区，**尚未 `git commit`、尚未打 `v1.0.1` 标签**（提交与推送由用户决定）。`release.yml` 由 tag 触发且从仓库读取 `package.json`，因此**必须先提交版本号改动再打标签**，否则 CI 仍会构建出 1.0.0 产物。
+- ❌ GUI 未实机启动、`release.yml` 未在 CI 跑通、无安装包产出、自动更新未接线 —— 发布说明里逐条标注为未验证。
+- ⚠️ 既有 tag `v1.0.0`（`f046208`）**不是** `dev` HEAD 的祖先；`git diff v1.0.0 --name-status` 为 39 文件 / +3554 / −231，发布说明即以此范围整理。
+- ⚠️ `docs/version/RELEASE-NOTES-v1.0.0.md` 当前在工作区处于**已删除**状态（`git status` 显示 ` D`，该文件存在于 HEAD 而不在 v1.0.0 标签内）。本轮**未替用户决定**是恢复还是提交该删除；发布说明正文已合并到 `RELEASE-NOTES-v1.0.1.md`。
 
 ## 安全与并发修复（2026-10-01，同日第七轮：审计后的逐项落地）
 

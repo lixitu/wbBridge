@@ -8,14 +8,14 @@
 - 自动发现 OpenCode 免费模型，向每个模型发送简短真实请求检测可用性与工具调用能力（会消耗少量免费额度）。
 - 在本地 `127.0.0.1` 提供 OpenAI 兼容接口（Chat Completions + SSE），只发布检测通过的模型。
 - 将可用模型写入 WorkBuddy 的 `models.json`（只修改本应用拥有的条目，写入前备份；退出时清理，保留用户手动配置）。
-- 关闭窗口后常驻托盘；从托盘退出时优雅停止服务并完成配置清理。核心是静态链接进壳的 Rust 库（不再是独立进程），生命周期完全由壳掌握：壳可重启核心，核心任何退出路径都只能触发回调而绝不能终止壳进程。单独运行核心可执行文件时，`BUDDY_PARENT_PID` 父进程看门狗会在父进程消失后自行优雅退出，不留占端口的孤儿进程。
+- **关闭窗口即退出应用**（macOS / Windows / Linux 行为一致）：壳在窗口关闭请求里走与托盘「退出」完全相同的优雅关停链路（停核心 → 清理 WorkBuddy 配置 → 结束进程），不再驻留托盘、无需用户二次退出。托盘仍在（运行期间可左键唤回面板、切代理、重选配置、退出）。核心是静态链接进壳的 Rust 库（不再是独立进程），生命周期完全由壳掌握：壳可重启核心，核心任何退出路径都只能触发回调而绝不能终止壳进程。单独运行核心可执行文件时，`BUDDY_PARENT_PID` 父进程看门狗会在父进程消失后自行优雅退出，不留占端口的孤儿进程。
 
 ## 下载与安装
 
 | 系统 | 状态 | 安装包 |
 |---|---|---|
-| macOS 10.15+（Apple Silicon） | 迁移前（Node sidecar 版）已本机构建并冒烟；Rust 版尚未产出过安装包，GUI 未实机启动 | `WB Bridge_1.0.0_aarch64.dmg`（待重新构建） |
-| Windows 10/11 x64 | CI 构建，待实机验证 | `WB Bridge_1.0.0_x64-setup.exe` |
+| macOS 10.15+（Apple Silicon） | 迁移前（Node sidecar 版）已本机构建并冒烟；Rust 版尚未产出过安装包，GUI 未实机启动 | `WB Bridge_1.0.1_aarch64.dmg`（待重新构建） |
+| Windows 10/11 x64 | CI 构建，待实机验证 | `WB Bridge_1.0.1_x64-setup.exe` |
 | Linux x64 | CI 构建，待实机验证 | `.AppImage` / `.deb` |
 
 推送 `v*` 标签后 GitHub Actions 自动构建六平台（macOS ARM/Intel、Windows x64/ARM、Linux x64/ARM）安装包并发布 Release。
