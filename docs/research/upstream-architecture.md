@@ -1,8 +1,20 @@
+---
+AIGC:
+    Label: "1"
+    ContentProducer: 001191440300708461136T1XGW3
+    ProduceID: 16825e3339a4e87ec3619b4c10842061_4574e2efbd6211f1a1bf52540064ee0f
+    ReservedCode1: vkpyW9qgSF5qxqazmXbDBW+o9oce+m8W9NsWpo0UMxTgYwiIEb+3oeePHqCmI2Z+XLCNLx4tfKCVjHmJplxEIvj5E5KMxhygChYYB0A3vV/S2KWHLHJ6XoXl0RZm1LW8v2vxlSUOYQk/u4zmxBGGsd+5O17VWBNh94W1d0q8iiSVDJbGVnnWeUj75Co=
+    ContentPropagator: 001191440300708461136T1XGW3
+    PropagateID: 16825e3339a4e87ec3619b4c10842061_4574e2efbd6211f1a1bf52540064ee0f
+    ReservedCode2: vkpyW9qgSF5qxqazmXbDBW+o9oce+m8W9NsWpo0UMxTgYwiIEb+3oeePHqCmI2Z+XLCNLx4tfKCVjHmJplxEIvj5E5KMxhygChYYB0A3vV/S2KWHLHJ6XoXl0RZm1LW8v2vxlSUOYQk/u4zmxBGGsd+5O17VWBNh94W1d0q8iiSVDJbGVnnWeUj75Co=
+---
+
 # 上游参考实现架构规格书（Tauri 移植调研）
 
 - 参考仓库：`https://github.com/louchi1984-coder/ow-bridge`（只读快照），版本基线 `package.json` version **0.2.5**（package.json:3）；注意 `src/main.js:39` 内嵌 `version: '0.2.0'` 写入 status.json，两者不一致，移植时以 package.json 为准并在状态里注明来源。
 - 本文所有结论标注 `文件:行号`（相对仓库根）。无法确认的点显式标注「未确认」。
 - 用途：在不再回读原仓库的情况下忠实复刻其行为；第 10 章为移植后验收清单，第 11 章为风险排序。
+- ⚠ **阅读须知（2026-10-01 更新）**：本文件记录的是**上游 Node + Electron 参考实现的形态**，与当前仓库的形态已不同——本仓核心已重写为 Rust（`src-tauri/core/`，crate `wbbridge-core`，静态链接进 Tauri 壳），面板为 Vue 3 + Vite（`src/`）。因此**第 8 / 9 章的窗口与界面数值均属上游原实现**（窗口 1040×740 / 最小 880×620、侧栏 218px、详情为模型行就地展开、`renderer.js` 的 Escape + 面板外点击关闭），**不代表本仓当前界面**；本仓界面现状见 `AGENTS.md`「UI 规范」与 `docs/validation.md`「面板布局改造」（详情为右侧常驻分栏 `clamp(300px, 45%, 360px)`、默认窗口 1120×720 / 最小 860×560、侧栏 208px、无宽度堆叠降级）。第 10 章的 JS 测试清单同样见下方说明。
 
 ---
 
@@ -351,6 +363,8 @@ envelope = `{ content, calls: [{name, arguments}] }`。三通道按序：
 
 ## 10. 测试基线（test/*.test.js 逐文件验收清单）
 
+> ⚠ **历史清单（2026-10-01 标注）**：本章清单属于**迁移前已归档的 JS 核心**（连同其 12 个测试文件整体移出仓库到 `/Users/wbtrex/website/localServer/node/trexwb/backup/wbBridge-node-20261001/`），仓库内已不可执行，保留原样作为行为覆盖的对照依据。**当前仓库的测试基线**是 Rust：`src-tauri/core/` 下 `cargo test` → **197 通过 / 0 失败**（lib 179 + `tests/js_parity.rs` 11 + `tests/red_lines.rs` 7），其中 `js_parity.rs` 以冻结在 `src-tauri/core/tests/fixtures/*.json` 的 JS 真相快照（**271 例 / 11 个 fixture 模块**）对拍，不需要 Node；详见 `docs/validation.md` 与 `docs/version/RELEASE-v1.0.md`。
+
 **system-proxy.test.js（2 条）**
 A1. macOS scutil 解析（HTTPS 必须，SOCKS-only 拒绝）。A2. Windows 注册表代理共享与 http/https 分流、socks 拒绝。
 
@@ -384,7 +398,7 @@ J1. `POST /admin/shutdown` 先回 `{ok:true}` 再触发恰好一次优雅退出�
 **watchdog.test.js（1 条，本仓新增）**
 K1. `BUDDY_PARENT_PID` 指向的壳进程消失后，sidecar 自行优雅退出（exit 0）并落 `status.json` phase=stopped，不留守端口的孤儿进程（30s 超时保护）。
 
-> 覆盖度：`activity` / `atomic` / `bridge` / `lifecycle` / `platform` / `repair` / `runtime` / `system-proxy` / `workbuddy-config` 9 个文件对照上游行为，合计 95 条；`shutdown` / `watchdog` 2 条为本仓库新增（上游无对应行为）。**11 个文件、97 条**（`npm test` 实测，node v24.21.0）。
+> 覆盖度：`activity` / `atomic` / `bridge` / `lifecycle` / `platform` / `repair` / `runtime` / `system-proxy` / `workbuddy-config` 9 个文件对照上游行为，合计 95 条；`shutdown` / `watchdog` 2 条为本仓库新增（上游无对应行为）。**11 个文件、97 条**（`npm test` 实测，node v24.21.0；此为 JS 核心归档前的实测值，当前仓库测试基线见本章开头注）。
 
 ---
 
@@ -400,3 +414,4 @@ K1. `BUDDY_PARENT_PID` 指向的壳进程消失后，sidecar 自行优雅退出�
 8. **退出清理顺序**（1.4）：sync([])→stop→等 probe→落盘→删锁的顺序保证不丢状态不留 owned 残留（H1, I13）。
 9. **模型目录一致性**：失败模型即时下架 + 缓存调用 400 + 格式失败不撤模型（I14, lifecycle H1）三者的边界容易混。
 10. **低风险**：桌面壳 IPC/status 轮询（第 8 章）在 Tauri 中由原生机制替代，行为可简化但需保留 action 白名单与 {ok,result}/{ok,error} 形状的兼容层。
+*（内容由AI生成，仅供参考）*

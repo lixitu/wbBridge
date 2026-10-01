@@ -1,3 +1,14 @@
+---
+AIGC:
+    Label: "1"
+    ContentProducer: 001191440300708461136T1XGW3
+    ProduceID: 16825e3339a4e87ec3619b4c10842061_42d8262abd6211f1a1bf52540064ee0f
+    ReservedCode1: 8v5JzYALY9+PbTIywmox8hY9xxfIKgQ66K8Id94CQaY7InJZhspGV1hCjg8uCfl3jPlWAIkctxZppq7YsndIp2KuvHCmka1fP7hQIWGamyPMP8KN51ygeXb3LexbKSBOAE7LXU+5JWbOgl2IF3Rw/+aB9P93kwZGop9uTjvDRvJ/EAzHUz720C61gdg=
+    ContentPropagator: 001191440300708461136T1XGW3
+    PropagateID: 16825e3339a4e87ec3619b4c10842061_42d8262abd6211f1a1bf52540064ee0f
+    ReservedCode2: 8v5JzYALY9+PbTIywmox8hY9xxfIKgQ66K8Id94CQaY7InJZhspGV1hCjg8uCfl3jPlWAIkctxZppq7YsndIp2KuvHCmka1fP7hQIWGamyPMP8KN51ygeXb3LexbKSBOAE7LXU+5JWbOgl2IF3Rw/+aB9P93kwZGop9uTjvDRvJ/EAzHUz720C61gdg=
+---
+
 # WB Bridge v1.0.0 验证记录
 
 > 阅读顺序：最新记录在前。自 **2026-10-01** 起核心已从 Node.js sidecar 迁移为 Rust 库（静态链接进壳），
@@ -5,6 +16,48 @@
 > 保留原样（其 97 项测试、`src/core/`、`src-tauri/binaries/` 等结论已不再对应当前仓库）。
 
 日期：2026-10-01（本机 macOS，Apple Silicon；Rust 核心 + Vue 面板）
+
+## 面板布局改造（2026-10-01，同日第三轮）
+
+范围：只动面板（`src/`）与壳的窗口配置（`src-tauri/tauri.conf.json`），不涉及核心逻辑、路由、错误码与 IPC 契约。
+改动文件：`src/App.vue`、`src/views/SideBar.vue`、`src/views/ModelDetails.vue`、`src/styles/variables.css`、`src-tauri/tauri.conf.json`。
+
+### 改了什么
+
+- **详情面板从「点开模型行就地展开」改为右侧常驻分栏**：`.content.is-split` 变为
+  `grid-template-columns: minmax(0, 1fr) var(--details-w)`（`--details-w: clamp(300px, 45%, 360px)`），
+  无遮罩层、不 `position: fixed/absolute`、不覆盖列表；收起路径有三条且等价：`Esc`（`App.vue::onKeydown`）、
+  详情头部「收起详情」按钮（`aria-label="收起详情"`）、窗口失焦（`onDismiss`）。
+- **删除 `<900px` 的上下堆叠降级**：`src/App.vue` 不再有任何宽度媒体查询，`.content.is-split` 恒为两栏，
+  注释写明「任何窗口宽度都不降级为上下堆叠」；全仓 `src/` 现存媒体查询只剩 `prefers-color-scheme`
+  （`variables.css`）与 `prefers-reduced-motion`（`base.css`）。
+- **默认窗口 980×680 → 1120×720**，最小尺寸保持 `860 × 560`（`src-tauri/tauri.conf.json` → `app.windows[0]`）。
+- **侧栏宽 `--sidebar-w` 224px → 208px**；侧栏改为**分组导航**（模型 / 运行 / 集成 / 其他 + 运行设置），
+  当前只有「模型与服务」为激活视图，运行日志、用量与额度、WorkBuddy 集成、关于与更新 4 个入口为
+  `state: 'planned'` 禁用态 + 「规划中」标签（不做可点击却无响应的假入口）。
+- **新增 `--muted-strong` token**（亮/暗色成对），用于副标题、页脚说明、耗时行等小字号说明文字；
+  普通次要文字仍用 `--muted`。
+
+### 已验证（本轮实跑）
+
+- `npx eslint .` → 0 problems；`npm run vite:build` → exit 0（面板产物 `dist/` 更新）。
+- 面板在浏览器引擎内经 **CDP** 实测（**非 Tauri GUI 实机**）：
+  - 默认 1120×720 与最小 860×560 两档下，主区与其内列表均无横向溢出，详情始终与列表并排；
+  - 收起详情三条路径（`Esc` / 「收起详情」按钮 / 失焦）均生效，收起后列表占满主区宽度；
+  - 键盘可达：侧栏导航与模型行可 Tab 到达，禁用项不进入 Tab 序；
+  - 深色主题下 `--muted-strong` / `--muted` 字色对比度均达标。
+- 改造轮曾出现并当场修复两处回归：`App.vue` 漏导入 `onUnmounted` 导致面板白屏；侧栏禁用态文字被压暗。
+- 改造前的备份：会话中间产物目录 `temp/backup-20261001-ui/`（patch + 文件快照），另有安全网提交 `32b2841`。
+
+### 未验证 / 已知遗留（如实标注）
+
+- **Tauri GUI 仍未实机启动**：以上实测均在浏览器引擎内完成，托盘与真实 WebView 渲染未复验，本仓库的
+  GUI 验证边界不变（见 `AGENTS.md`「当前状态与验证边界」）。
+- 浅色主题下仍有 3 处次要文字（副标题、页脚说明、耗时行）使用 `--muted`，对比度约 4.01 / 4.01 / 3.73，
+  **低于 4.5:1**；此为改造前既有问题，本轮未处理。
+- 本轮为纯面板/窗口配置改动，**未跑** `cargo test` 与 `cargo clippy`（未触碰 Rust 代码），也未重跑
+  `npm run build` 桌面打包；核心测试基线仍为上一轮的 197 通过 / 0 失败。
+- 后续「文档与代码一致性核对」轮次只同步文档描述，未重跑任何测试与构建。
 
 ## 全量代码审查与壳↔面板接缝修复（2026-10-01，同日第二轮）
 
@@ -156,3 +209,4 @@
 - 已验证：macOS ARM64 包的构建、启动、模型发现、生命周期与退出清理；全部核心测试。
 - 未验证（本机无法执行）：Windows x64/ARM64 安装包、Linux x64/ARM64 AppImage/deb 的实机运行——由 GitHub Actions 构建产出后需在实际系统上冒烟。
 - 未处理：Apple 公证与 Windows 发布者签名（与原版一致，发布说明中已注明放行方式）。
+*（内容由AI生成，仅供参考）*

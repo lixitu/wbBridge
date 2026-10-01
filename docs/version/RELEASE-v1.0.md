@@ -1,3 +1,14 @@
+---
+AIGC:
+    Label: "1"
+    ContentProducer: 001191440300708461136T1XGW3
+    ProduceID: 16825e3339a4e87ec3619b4c10842061_43b67b77bd6211f19ba1525400638852
+    ReservedCode1: xGdNidy6eY40+poDuCYQAvvHSWO7+AMRBg+z/fyOKA/B6BodVGZfLsVGgy9feXzY3XXeIWuiGiqpvmqappbriCnFvzn0G4L+iIWN/YpdlyNXmDONw7Dj7QVF0Sjk1VwdM8E2wQ132wJDQL7i5URsb6XdyhfeTOw+CzREnVqZG2BH+LqR2ky7NIXK2Ug=
+    ContentPropagator: 001191440300708461136T1XGW3
+    PropagateID: 16825e3339a4e87ec3619b4c10842061_43b67b77bd6211f19ba1525400638852
+    ReservedCode2: xGdNidy6eY40+poDuCYQAvvHSWO7+AMRBg+z/fyOKA/B6BodVGZfLsVGgy9feXzY3XXeIWuiGiqpvmqappbriCnFvzn0G4L+iIWN/YpdlyNXmDONw7Dj7QVF0Sjk1VwdM8E2wQ132wJDQL7i5URsb6XdyhfeTOw+CzREnVqZG2BH+LqR2ky7NIXK2Ug=
+---
+
 # 版本发布日志 · v1.0
 
 > 本文件按主版本组织：v1.0.x 的全部迭代日志集中于此（最新在前）。
@@ -11,12 +22,14 @@
 ## v1.0.0 · 📝 待发布
 
 > **状态**: 📝 待发布（核心已用 Rust 重写并静态链接进完整入库的 Tauri 壳，面板为 Vue 3 + Vite 构建；但迁移后**未产出过安装包、桌面 GUI 未实机启动、`release.yml` 未在 CI 运行**，签名链路亦未实际执行，尚不具备"已发布"条件）
-> **发布日期**: 待定（记为 2026-09-30 基线快照日；2026-10-01 因 Node → Rust 迁移对本节的仓库形态与测试基线记录做更正）
+> **发布日期**: 待定（记为 2026-09-30 基线快照日；2026-10-01 因 Node → Rust 迁移对本节的仓库形态与测试基线记录做更正，同日面板布局改造亦已并入本节）
 > **上一版本**: 无（v1.0 首个分节）
 > **版本范围**: 项目首个基线版本——Tauri 托盘壳 + **Rust 核心（crate `wbbridge-core`，path 依赖静态链接）** 的桥接工具，面向 WorkBuddy 提供隔离托管的 OpenCode 免费模型服务；Node.js 仅用于 Vite 构建面板与两个版本号脚本，**不存在 sidecar / pkg / `src-tauri/binaries/`**
 > **版本号说明**: 本次仅新增 `docs/version/`（本文档 + `README.md`），属纯文档更新，按版本纪律**不推进版本号**，仍按约定建分节留痕；2026-10-01 的核心迁移更正同样**不推进版本号**（产品版本保持 1.0.0）
 
 > ⚠ **2026-10-01 迁移更正说明**：本节下方「一、版本号基线核验」「二、代码与资产快照」「三、尚未入库/未实现项」最初按 Node/sidecar 形态记录，现已按迁移后的真实仓库状态更正；原记录中的 **97 通过 / 0 失败**（`node --test`）属于**已归档的 JS 核心**（连同其测试移到仓库外 `/Users/wbtrex/website/localServer/node/trexwb/backup/wbBridge-node-20261001/`），不再是当前基线。当前基线：`cargo test`（`src-tauri/core/`）**197 通过 / 0 失败**（2026-10-01 同日两轮——迁移复验轮 **195**（lib 177），全量代码审查修复轮 **197**（lib 179），详见 `docs/validation.md`）。
+
+> ⚠ **2026-10-01 面板布局改造说明**：同日面板（`src/`，Vue 3）完成一次布局改造，本节「二、代码与资产快照」的 `src/` 一条已按改造后状态记录：详情面板改为**右侧常驻分栏**（`--details-w: clamp(300px, 45%, 360px)`，可收起，`Esc` / 详情头部按钮 / 窗口失焦三条等价路径，无遮罩层、不覆盖列表）、**删除 `<900px` 上下堆叠降级**；默认窗口由 980×680 调整为 **1120×720**（最小 `860×560` 不变）；侧栏宽 `--sidebar-w` 由 224px 调整为 **208px** 并改为分组导航（模型 / 运行 / 集成 / 其他 + 运行设置），其中 4 个入口仅为禁用态 + 「规划中」标签；`styles/variables.css` 新增 `--muted-strong`。属同一未发布版本的界面调整，**不推进版本号**；验证证据见 `docs/validation.md`「面板布局改造」（**仅在浏览器引擎内经 CDP 实测，GUI 仍未实机启动**）。
 
 ---
 
@@ -39,7 +52,7 @@
 - **`src-tauri/core/src/`（Rust 核心，crate `wbbridge-core`，lib `wbbridge_core`，16 个模块 + 独立入口）**：`orchestration.rs`（原 `main.js` 的等价编排/生命周期，含 `STATUS_SCHEMA_VERSION = 1` 与写入 `status.json` 的 `"version": "0.2.0"`，导出 `run(StartOptions)` 与 `set_exit_hook`）、`main.rs`（独立可执行入口 `wbbridge-core`，`--help` / `--version`）、`lib.rs`（crate 根，导出 `Env`、`BridgeError`、`STAGE = "stage-4-embedded-no-node"`、`PACKAGE_NAME`、`VERSION`）、`server.rs`（HTTP 路由与鉴权）、`protocol.rs`、`backend.rs`、`runtime.rs`、`probe.rs`、`repair.rs`、`handoff.rs`、`sync.rs`、`workbuddy_config.rs`、`system_proxy.rs`、`reasoning.rs`、`model_status.rs`、`platform.rs`、`atomic.rs`、`json.rs`
 - **构建形态**：**无 sidecar、无 `@yao-pkg/pkg`、核心链路无 esbuild**。核心作为 path 依赖静态链接进壳；`src-tauri/tauri.conf.json` 的 `bundle.externalBin` 为 `[]`，`src-tauri/binaries/` 目录已删除，`src-tauri/core/Cargo.toml` 只额外产出一个用于独立运行/冒烟的 `[[bin]] wbbridge-core`
 - **`src-tauri/`**：`Cargo.toml`（`name = wbbridge`、`version = 1.0.0`、`tauri = "2"`）、`tauri.conf.json`、`build.rs`、`src/{main.rs,lib.rs}`、`capabilities/`、`icons/`、`updater-signing.env.example`。`lib.rs` 负责：在专用 tokio 运行时上 `orchestration::run(StartOptions { data_dir, port, handle_signals: false })` 装配核心、`pick_port()`（默认 41980，占用则回退系统分配端口）、`app.path().app_data_dir()` 注入数据目录、`admin_call(port, key, "/admin/…")` + `ADMIN_ROUTES`/`admin_route()` 驱动动作、轮询 `status.json` 并 emit `core-status` / `core-failed`、`orchestration::set_exit_hook` 保证核心不能反向终止壳；暴露 Tauri 命令 `core_action` / `restart_core` / `core_running` / `data_dir_path`
-- **`src/`（面板，Vue 3 + Vite）**：`index.html`、`main.js`、`App.vue`、`views/*.vue`、`components/ModelRow.vue`、`styles/{variables,base}.css`、`public/`；与壳的唯一边界是 **`src/core/bridge.js`**（导出 `action(name, value)` / `onState(cb)` / `onDismiss(cb)` / `activityText`，包装 Tauri `invoke` + `listen`）与 `src/core/activity.js`。⚠ `src/core/` 现在是**前端内核**目录，与已归档的 Node 后端无关；构建产物在根 `dist/`（`vite.config.js`：`root: src`、`outDir: ../dist`、dev 端口 41990）
+- **`src/`（面板，Vue 3 + Vite）**：`index.html`、`main.js`、`App.vue`、`views/{SideBar,ModelList,ModelDetails,ServiceStatus,MetricsBar,FeedbackBar}.vue`（`SideBar.vue` = 分组导航 + 运行设置；`ModelDetails.vue` = 详情右栏）、`components/ModelRow.vue`、`styles/{variables,base}.css`、`public/`；与壳的唯一边界是 **`src/core/bridge.js`**（导出 `action(name, value)` / `onState(cb)` / `onDismiss(cb)` / `activityText`，包装 Tauri `invoke` + `listen`）与 `src/core/activity.js`。⚠ `src/core/` 现在是**前端内核**目录，与已归档的 Node 后端无关；构建产物在根 `dist/`（`vite.config.js`：`root: src`、`outDir: ../dist`、dev 端口 41990）。**布局（2026-10-01 改造后）**：外层为「左侧栏（`--sidebar-w: 208px`）+ 右侧主区」，主区默认单列，选中模型时 `.content.is-split` 变为 `minmax(0, 1fr) var(--details-w)` 两栏（`--details-w: clamp(300px, 45%, 360px)`）；详情为**右侧常驻分栏**（无遮罩、不 `position: fixed/absolute`、**任何宽度都不降级为上下堆叠**），`Esc` / 详情头部「收起详情」按钮 / 窗口失焦均可收起；侧栏仅「模型与服务」为激活视图，运行日志、用量与额度、WorkBuddy 集成、关于与更新 4 项为 `state: 'planned'` 禁用态 + 「规划中」标签。壳窗口默认 **1120 × 720**、最小 **860 × 560**（`src-tauri/tauri.conf.json`）
 - **`scripts/`**：仅 `bump-version.mjs`、`check-version.mjs`（版本号的设定与 5 处一致性校验）；`vite.config.js` 在根目录
 - **测试基线（本次实读执行）**：`src-tauri/core/` 下 `cargo test` → **197 通过 / 0 失败**（lib 单测 **179** + `tests/js_parity.rs` **11** + `tests/red_lines.rs` **7**）；`cargo clippy --all-targets`（核心）与 `cargo clippy --no-deps`（src-tauri）均 **0 warning**。`tests/js_parity.rs` 现与冻结在 `src-tauri/core/tests/fixtures/*.json` 的 JS 真相快照对拍（**271 例 / 11 个 fixture 模块**），**不再需要 Node**；重新录制需恢复归档 JS 源码并 `WB_PARITY_RECORD=1 cargo test --test js_parity`
 - **旧 Node 基线的归属**：迁移前的 **97 通过 / 0 失败**（`node --test`）属于**已归档的 JS 核心**，源码与测试整体移出仓库到 `/Users/wbtrex/website/localServer/node/trexwb/backup/wbBridge-node-20261001/`（内含 `core/src/*.js` 16 个模块、`core/test/*.test.js` 12 个测试文件——其中 `contract.test.js` 断言的「三处动作表一致」门禁没有随迁移保留，见 `docs/contract.md`；另含用于重新录制对拍快照的 `core-rs-tests-js/`）；仓库工作区内已不存在 Node 版 `src/core/` 后端与 `src/ui/`，只剩同名不同物的前端内核 `src/core/bridge.js` / `activity.js`
@@ -48,7 +61,7 @@
 
 ### 三、尚未验证 / 未完成项（不得伪装成已验证）
 
-1. **桌面 GUI 从未实机启动**：迁移后只验证过编译、clippy 与「独立核心二进制」的一次冒烟（一次性临时数据目录内完成运行时下载、隔离 OpenCode 启动、`/agent` 校验、发现 8 个免费模型并探测、干净关停）；托盘、面板交互、壳侧重启与优雅退出链路未经真实运行验证；
+1. **桌面 GUI 从未实机启动**：迁移后只验证过编译、clippy 与「独立核心二进制」的一次冒烟（一次性临时数据目录内完成运行时下载、隔离 OpenCode 启动、`/agent` 校验、发现 8 个免费模型并探测、干净关停）；托盘、面板交互、壳侧重启与优雅退出链路未经真实运行验证；2026-10-01 的面板布局改造仅在浏览器引擎内经 CDP 实测（1120×720 / 860×560 两档无横向溢出、键盘可达、收起路径生效、深浅色对比度达标），**仍非 Tauri GUI 实机**；
 2. **迁移后未产出过安装包**：`src-tauri/target/release/bundle/` 不存在，`.app` / `.dmg` / Windows / Linux 包待重新构建；
 3. **CI 未实跑**：`.github/workflows/release.yml` 已按 Rust 形态重写，仅做过本地 YAML 结构校验；
 4. **签名与更新链路未执行**：`.env.example` / `src-tauri/updater-signing.env.example` 已就位（`tauri.conf.json` 的 `plugins` 目前为空对象，未配置 updater），`npm run tauri -- signer generate …` 与签名构建均未实际跑过，**无对外分发安装包**；
@@ -84,3 +97,4 @@
 - 版本号**仅在**「不同类新功能 / 不同根因新修复 + 用户明确允许」时末位 +1；
 - 同一问题多轮往返、同日同模块追加修复、仅文档更新、纯文案/措辞打磨等场景**禁止**推进版本号，但仍需在本文件顶部追加分节留痕（注明日期与"不推进版本号"）；
 - 历史分节**只增不改**。
+*（内容由AI生成，仅供参考）*

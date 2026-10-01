@@ -1,3 +1,14 @@
+---
+AIGC:
+    Label: "1"
+    ContentProducer: 001191440300708461136T1XGW3
+    ProduceID: 16825e3339a4e87ec3619b4c10842061_41146ba1bd6211f19ba1525400638852
+    ReservedCode1: DvUbfRAmXidF/cgd/KJZh9Sv4+XUxrYf0/2rd+0lrc+0C1DQaxJDBnngEDJN6cREmQ5LVusQY+WxBaAA22q6pXuqPigtZ0kaS1Y4ZNQCHGe+C/9yV9AnIJ2S7Xy+CJJxg+eJrREjIvzZCLs3qKIGplKAsIpClmkcAwXNzVGgcVGVc1GwXrN8yH4DL68=
+    ContentPropagator: 001191440300708461136T1XGW3
+    PropagateID: 16825e3339a4e87ec3619b4c10842061_41146ba1bd6211f19ba1525400638852
+    ReservedCode2: DvUbfRAmXidF/cgd/KJZh9Sv4+XUxrYf0/2rd+0lrc+0C1DQaxJDBnngEDJN6cREmQ5LVusQY+WxBaAA22q6pXuqPigtZ0kaS1Y4ZNQCHGe+C/9yV9AnIJ2S7Xy+CJJxg+eJrREjIvzZCLs3qKIGplKAsIpClmkcAwXNzVGgcVGVc1GwXrN8yH4DL68=
+---
+
 # AGENTS.md — WB Bridge 桥接服务 (wbBridge)
 
 ## ⚠ 强制规范（所有 Agent 必须遵守）
@@ -129,7 +140,9 @@ wbBridge/
 │   ├── index.html  main.js  App.vue
 │   ├── core/bridge.js            ← 与壳的唯一边界：invoke + listen → onState/onDismiss/action
 │   ├── core/activity.js          ← 活动文案（托盘与面板共用，禁止两套文案）
-│   ├── views/*.Vue  components/ModelRow.vue  styles/  public/
+│   ├── views/                    ← SideBar.vue（分组导航 + 运行设置）、ModelList.vue、ModelDetails.vue（详情右栏）、
+│   │                                ServiceStatus.vue、MetricsBar.vue、FeedbackBar.vue
+│   ├── components/ModelRow.vue   styles/{variables,base}.css  public/logo.svg
 ├── src-tauri/                    ← 全部 Rust 代码都在这里（壳 + 核心）
 │   ├── Cargo.toml                ← 壳 crate wbbridge；依赖 wbbridge-core = { path = "core" } + tokio(rt-multi-thread)
 │   ├── tauri.conf.json           ← frontendDist ../dist、bundle.externalBin **空**、CSP
@@ -349,6 +362,28 @@ start_backend
 - 面板为只读展示 + 动作触发：不得在面板内直接读写文件、直接访问网络、直接调用 OpenCode。
 - 动作执行期间必须置忙（按钮禁用 + spinner + 结果反馈），失败必须显示原因。
 
+#### 布局与窗口（2026-10-01 面板改造后的当前实现）
+
+- **布局**：外层 `.shell` 为左右两段——左侧栏固定宽 `var(--sidebar-w)` + 右侧主区；主区默认单列，选中模型时 `.content.is-split` 变为
+  `grid-template-columns: minmax(0, 1fr) var(--details-w)`（`src/App.vue`）。
+- **详情面板是右侧常驻分栏，不是浮层**：无遮罩、不 `position: fixed/absolute`、不覆盖列表；**任何窗口宽度都不降级为上下堆叠**。
+  禁止新增按宽度堆叠的媒体查询或 `<900px` 降级分支——`src/` 内现存的媒体查询只有 `prefers-color-scheme`（`variables.css`）与
+  `prefers-reduced-motion`（`base.css`）两处。收起详情有三条等价路径：`Esc`（`App.vue::onKeydown`）、详情头部「收起详情」按钮、
+  窗口失焦（`onDismiss`）；收起即清空选中，列表占满主区宽度。
+- **侧栏是分组导航**：分组为「模型 / 运行 / 集成 / 其他」，底部为「运行设置」（系统代理开关 + 版本号）。当前**只有「模型与服务」
+  是已实现视图**（`state: 'current'`）；运行日志、用量与额度、WorkBuddy 集成、关于与更新这 4 个入口必须保持**禁用态 + 「规划中」标签**
+  （`state: 'planned'`，`src/views/SideBar.vue`）：**文档与界面都不得把它们描述/呈现为已实现功能**，也不得改成可点击却无响应的假入口。
+- **设计 token**：尺寸与颜色一律取自 `src/styles/variables.css`；小字号说明文字（副标题、页脚说明、耗时行等）用 `--muted-strong`，
+  普通次要文字用 `--muted`，不得在组件里写死颜色或宽度。
+
+| 布局常量 | 值 | 位置 |
+|---|---|---|
+| 默认窗口 | `1120 × 720` | `src-tauri/tauri.conf.json` → `app.windows[0]` |
+| 最小窗口 | `860 × 560`（`minWidth` / `minHeight`） | 同上 |
+| 侧栏宽 | `--sidebar-w: 208px` | `src/styles/variables.css` |
+| 详情栏宽 | `--details-w: clamp(300px, 45%, 360px)` | 同上 |
+| 宽度断点 | **无**（不按窗口宽度堆叠，见上） | `src/` 内无宽度媒体查询 |
+
 ### 命名规范
 
 | 类别 | 规则 | 示例 |
@@ -358,7 +393,7 @@ start_backend
 | Rust 常量 | SCREAMING_SNAKE_CASE | `PROBE_TIMEOUT_MS`、`TRANSLATOR_ORDER`、`MAX_BODY_BYTES`、`OWNER` |
 | Rust 类型 | CamelCase | `BridgeError`、`PreparedRequest`、`SyncOptions` |
 | 对外契约 | 保持 JS 侧原名（snake_case 化） | 路由 `/v1/chat/completions`、`/admin/system-proxy`；错误码 `invalid_model_output` |
-| Vue 组件文件 | PascalCase | `ModelRow.vue`、`ServiceStatus.vue` |
+| Vue 组件文件 | PascalCase；视图放 `src/views/`，通用组件放 `src/components/` | `views/SideBar.vue`、`views/ModelDetails.vue`、`components/ModelRow.vue` |
 
 ## Git 提交规范
 
@@ -463,3 +498,4 @@ start_backend
    - 若改动涉及对外契约（路由、错误码、`status.json` 字段、`models.json` 写入格式、IPC 命令/事件），必须在回复中显式列出并提示用户影响面；
    - 若改动触及红线，必须同步更新 `tests/red_lines.rs` 的对应断言。
 4. **遇到不确定**：宁可向用户询问，也不要凭推测修改安全、供应链、隔离相关代码。
+*（内容由AI生成，仅供参考）*
