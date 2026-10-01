@@ -1,0 +1,263 @@
+{
+  "module": "workbuddy_config",
+  "cases": [
+    {
+      "name": "workbuddy-config：绝对路径且 basename 正确",
+      "op": "workbuddy_config.validateModelsFile",
+      "files": {
+        "$BASE/wb/models.json": "[]"
+      },
+      "input": {
+        "file": "$BASE/wb/models.json"
+      },
+      "expected": {
+        "ok": true,
+        "value": "$BASE/wb/models.json"
+      }
+    },
+    {
+      "name": "workbuddy-config：相对路径被拒绝",
+      "op": "workbuddy_config.validateModelsFile",
+      "input": {
+        "file": "wb/models.json"
+      },
+      "expected": {
+        "ok": false,
+        "kind": "invalid",
+        "message": "请选择 WorkBuddy 的 models.json 配置文件"
+      }
+    },
+    {
+      "name": "workbuddy-config：basename 不是 models.json 被拒绝",
+      "op": "workbuddy_config.validateModelsFile",
+      "files": {
+        "$BASE/wb/wrong.json": "{\"foo\":1}"
+      },
+      "input": {
+        "file": "$BASE/wb/wrong.json"
+      },
+      "expected": {
+        "ok": false,
+        "kind": "invalid",
+        "message": "请选择 WorkBuddy 的 models.json 配置文件"
+      }
+    },
+    {
+      "name": "workbuddy-config：非字符串入参被拒绝",
+      "op": "workbuddy_config.validateModelsFile",
+      "input": {
+        "file": 123
+      },
+      "expected": {
+        "ok": false,
+        "kind": "invalid",
+        "message": "请选择 WorkBuddy 的 models.json 配置文件"
+      }
+    },
+    {
+      "name": "workbuddy-config：文件不存在归为 io",
+      "op": "workbuddy_config.validateModelsFile",
+      "input": {
+        "file": "$BASE/wb/missing.json"
+      },
+      "expected": {
+        "ok": false,
+        "kind": "invalid",
+        "message": "请选择 WorkBuddy 的 models.json 配置文件"
+      }
+    },
+    {
+      "name": "workbuddy-config：JSON 语法错误归为 json",
+      "op": "workbuddy_config.validateModelsFile",
+      "files": {
+        "$BASE/wb/broken.json": "{oops"
+      },
+      "input": {
+        "file": "$BASE/wb/broken.json"
+      },
+      "expected": {
+        "ok": false,
+        "kind": "invalid",
+        "message": "请选择 WorkBuddy 的 models.json 配置文件"
+      }
+    },
+    {
+      "name": "workbuddy-config：带 BOM 的数组通过",
+      "op": "workbuddy_config.validateModelsFile",
+      "files": {
+        "$BASE/wb/bom.json": "﻿[1]"
+      },
+      "input": {
+        "file": "$BASE/wb/bom.json"
+      },
+      "expected": {
+        "ok": false,
+        "kind": "invalid",
+        "message": "请选择 WorkBuddy 的 models.json 配置文件"
+      }
+    },
+    {
+      "name": "workbuddy-config：对象形如 {models:[]} 通过",
+      "op": "workbuddy_config.validateModelsFile",
+      "files": {
+        "$BASE/wb/object.json": "{\"models\":[{},{}]}"
+      },
+      "input": {
+        "file": "$BASE/wb/object.json"
+      },
+      "expected": {
+        "ok": false,
+        "kind": "invalid",
+        "message": "请选择 WorkBuddy 的 models.json 配置文件"
+      }
+    },
+    {
+      "name": "workbuddy-config：文件名正确但结构不支持",
+      "op": "workbuddy_config.validateModelsFile",
+      "files": {
+        "$BASE/wb/plain/models.json": "{\"foo\":1}"
+      },
+      "input": {
+        "file": "$BASE/wb/plain/models.json"
+      },
+      "expected": {
+        "ok": false,
+        "kind": "invalid",
+        "message": "文件不是支持的 WorkBuddy 模型配置格式"
+      }
+    },
+    {
+      "name": "workbuddy-config：BUDDY_MODELS_FILE 生效",
+      "op": "workbuddy_config.resolveModelsFile",
+      "files": {
+        "$BASE/wb/models.json": "[]"
+      },
+      "input": {
+        "env": {
+          "BUDDY_MODELS_FILE": "$BASE/wb/models.json"
+        },
+        "home": "$BASE"
+      },
+      "expected": "$BASE/wb/models.json"
+    },
+    {
+      "name": "workbuddy-config：saved 生效",
+      "op": "workbuddy_config.resolveModelsFile",
+      "files": {
+        "$BASE/wb/models.json": "[]"
+      },
+      "input": {
+        "saved": "$BASE/wb/models.json",
+        "env": {},
+        "home": "$BASE"
+      },
+      "expected": "$BASE/wb/models.json"
+    },
+    {
+      "name": "workbuddy-config：env 优先于 saved",
+      "op": "workbuddy_config.resolveModelsFile",
+      "files": {
+        "$BASE/wb/models.json": "[]",
+        "$BASE/.workbuddy/models.json": "[1]"
+      },
+      "input": {
+        "saved": "$BASE/wb/models.json",
+        "env": {
+          "BUDDY_MODELS_FILE": "$BASE/.workbuddy/models.json"
+        },
+        "home": "$BASE"
+      },
+      "expected": "$BASE/.workbuddy/models.json"
+    },
+    {
+      "name": "workbuddy-config：WORKBUDDY_CONFIG_DIR 生效",
+      "op": "workbuddy_config.resolveModelsFile",
+      "files": {
+        "$BASE/wb/models.json": "[]"
+      },
+      "input": {
+        "env": {
+          "WORKBUDDY_CONFIG_DIR": "$BASE/wb"
+        },
+        "home": "$BASE"
+      },
+      "expected": "$BASE/wb/models.json"
+    },
+    {
+      "name": "workbuddy-config：WORKBUDDY_CONFIG_DIR 空白被 trim",
+      "op": "workbuddy_config.resolveModelsFile",
+      "files": {
+        "$BASE/wb/models.json": "[]"
+      },
+      "input": {
+        "env": {
+          "WORKBUDDY_CONFIG_DIR": "  $BASE/wb  "
+        },
+        "home": "$BASE"
+      },
+      "expected": "$BASE/wb/models.json"
+    },
+    {
+      "name": "workbuddy-config：WORKBUDDY_DATA_FOLDER_NAME 生效",
+      "op": "workbuddy_config.resolveModelsFile",
+      "files": {
+        "$BASE/.workbuddy/models.json": "[]"
+      },
+      "input": {
+        "env": {
+          "WORKBUDDY_DATA_FOLDER_NAME": ".workbuddy"
+        },
+        "home": "$BASE"
+      },
+      "expected": "$BASE/.workbuddy/models.json"
+    },
+    {
+      "name": "workbuddy-config：默认 .workbuddy 目录",
+      "op": "workbuddy_config.resolveModelsFile",
+      "files": {
+        "$BASE/.workbuddy/models.json": "[]"
+      },
+      "input": {
+        "env": {},
+        "home": "$BASE"
+      },
+      "expected": "$BASE/.workbuddy/models.json"
+    },
+    {
+      "name": "workbuddy-config：saved 为空串时回退默认",
+      "op": "workbuddy_config.resolveModelsFile",
+      "files": {
+        "$BASE/.workbuddy/models.json": "[]"
+      },
+      "input": {
+        "saved": "",
+        "env": {},
+        "home": "$BASE"
+      },
+      "expected": "$BASE/.workbuddy/models.json"
+    },
+    {
+      "name": "workbuddy-config：全部不可用返回 null",
+      "op": "workbuddy_config.resolveModelsFile",
+      "input": {
+        "env": {},
+        "home": "$BASE/nowhere"
+      },
+      "expected": null
+    },
+    {
+      "name": "workbuddy-config：env 指向校验失败的文件返回 null",
+      "op": "workbuddy_config.resolveModelsFile",
+      "files": {
+        "$BASE/wb/wrong.json": "{\"foo\":1}"
+      },
+      "input": {
+        "env": {
+          "BUDDY_MODELS_FILE": "$BASE/wb/wrong.json"
+        },
+        "home": "$BASE"
+      },
+      "expected": null
+    }
+  ]
+}

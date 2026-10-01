@@ -1,0 +1,132 @@
+{
+  "module": "platform",
+  "cases": [
+    {
+      "name": "platform：darwin 数据目录",
+      "op": "platform.dataDirectory",
+      "input": {
+        "platform": "darwin",
+        "env": {},
+        "home": "/Users/test"
+      },
+      "expected": "/Users/test/Library/Application Support/Buddy Bridge"
+    },
+    {
+      "name": "platform：win32 使用 APPDATA",
+      "op": "platform.dataDirectory",
+      "input": {
+        "platform": "win32",
+        "env": {
+          "APPDATA": "C:\\Users\\test\\AppData\\Roaming"
+        },
+        "home": "C:\\Users\\test"
+      },
+      "expected": "C:\\Users\\test\\AppData\\Roaming\\Buddy Bridge"
+    },
+    {
+      "name": "platform：win32 空 APPDATA 回退 home",
+      "op": "platform.dataDirectory",
+      "input": {
+        "platform": "win32",
+        "env": {
+          "APPDATA": ""
+        },
+        "home": "C:\\Users\\test"
+      },
+      "expected": "C:\\Users\\test\\AppData\\Roaming\\Buddy Bridge"
+    },
+    {
+      "name": "platform：linux 使用 XDG_CONFIG_HOME",
+      "op": "platform.dataDirectory",
+      "input": {
+        "platform": "linux",
+        "env": {
+          "XDG_CONFIG_HOME": "/home/test/.config"
+        },
+        "home": "/home/test"
+      },
+      "expected": "/home/test/.config/Buddy Bridge"
+    },
+    {
+      "name": "platform：linux 空 XDG 回退 home",
+      "op": "platform.dataDirectory",
+      "input": {
+        "platform": "linux",
+        "env": {
+          "XDG_CONFIG_HOME": ""
+        },
+        "home": "/home/test"
+      },
+      "expected": "/home/test/.config/Buddy Bridge"
+    },
+    {
+      "name": "platform：运行时包名 win32/x64",
+      "op": "platform.runtimePackage",
+      "input": {
+        "platform": "win32",
+        "arch": "x64"
+      },
+      "expected": {
+        "ok": true,
+        "value": {
+          "name": "opencode-windows-x64",
+          "binary": "opencode.exe"
+        }
+      }
+    },
+    {
+      "name": "platform：运行时包名 linux/arm64",
+      "op": "platform.runtimePackage",
+      "input": {
+        "platform": "linux",
+        "arch": "arm64"
+      },
+      "expected": {
+        "ok": true,
+        "value": {
+          "name": "opencode-linux-arm64",
+          "binary": "opencode"
+        }
+      }
+    },
+    {
+      "name": "platform：运行时包名 darwin/x64",
+      "op": "platform.runtimePackage",
+      "input": {
+        "platform": "darwin",
+        "arch": "x64"
+      },
+      "expected": {
+        "ok": true,
+        "value": {
+          "name": "opencode-darwin-x64",
+          "binary": "opencode"
+        }
+      }
+    },
+    {
+      "name": "platform：未知平台报错",
+      "op": "platform.runtimePackage",
+      "input": {
+        "platform": "freebsd",
+        "arch": "arm64"
+      },
+      "expected": {
+        "ok": false,
+        "message": "不支持的系统或架构：freebsd/arm64"
+      }
+    },
+    {
+      "name": "platform：未知架构报错",
+      "op": "platform.runtimePackage",
+      "input": {
+        "platform": "darwin",
+        "arch": "x86_64"
+      },
+      "expected": {
+        "ok": false,
+        "message": "不支持的系统或架构：darwin/x86_64"
+      }
+    }
+  ]
+}

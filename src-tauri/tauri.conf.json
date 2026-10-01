@@ -4,7 +4,10 @@
   "version": "1.0.0",
   "identifier": "app.wbbridge.desktop",
   "build": {
-    "frontendDist": "../src/ui"
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:41990",
+    "beforeDevCommand": "npm run vite:dev",
+    "beforeBuildCommand": "npm run vite:build"
   },
   "app": {
     "withGlobalTauri": true,
@@ -35,7 +38,7 @@
       "icons/icon.ico"
     ],
     "resources": [],
-    "externalBin": ["binaries/wbbridge-core"],
+    "externalBin": [],
     "copyright": "© 2026 WB Bridge",
     "category": "DeveloperTool",
     "shortDescription": "让 WorkBuddy 使用 OpenCode 免费模型",

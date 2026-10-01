@@ -10,6 +10,9 @@
 #   • macOS:   .dmg + .app（ad-hoc 签名）
 #   • Linux:   .AppImage + .deb
 # 说明：
+#   • 核心已用 Rust 重写并**静态编进 Tauri 壳**（`src-tauri/core/` 作为 path 依赖），
+#     不再需要 Node 运行时、不再有 pkg sidecar 打包步骤，也不再有 `src-tauri/binaries/`；
+#     因此构建 = cargo 编译壳（含核心）+ Vite 打包面板，Node 只用于前端构建。
 #   • macOS 产物为 ad-hoc 签名（无 Developer ID 证书），首次打开需在
 #     系统设置中放行。
 #   • Windows 产物未签名，SmartScreen 会提示"更多信息 → 仍要运行"。
@@ -20,6 +23,7 @@
 #   • 签名私钥存 GitHub Variables：TAURI_SIGNING_PRIVATE_KEY
 #     （本地私钥 ~/.tauri/wbBridge-updater.key）
 #   • 注意：Draft Release 未 Publish 前 latest.json 下载 404，属预期
+#   • ⚠ 本工作流自「移除 Node 核心」改造后尚未在 CI 上实际跑通，描述以脚本内容为准。
 # ═══════════════════════════════════════════════════════════════════
 
 name: Release Build (Tauri)
@@ -38,7 +42,7 @@ permissions:
   contents: write
 
 jobs:
-  # ── 核心测试 ──────────────────────────────────────────────────────
+  # ── 核心测试（Rust：177 单测 + 11 组 JS↔Rust 对拍快照 + 7 条红线）────
   test:
     name: 核心测试
     runs-on: ubuntu-latest
@@ -50,13 +54,21 @@ jobs:
         with:
           node-version: 22
 
-      - name: 安装核心依赖
-        working-directory: src/core
-        run: npm ci
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 启用 cargo 缓存
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri/core
 
       - name: 运行核心测试
-        working-directory: src/core
-        run: npm test
+        # 对拍测试比较的是 tests/fixtures/*.json 里冻结的 JS 真相快照，无需 Node。
+        run: cargo test --manifest-path src-tauri/core/Cargo.toml
+
+      - name: 校验版本号一致性
+        # package.json / tauri.conf.json / Cargo.toml / AGENTS.md 必须同一版本。
+        run: node scripts/check-version.mjs
 
   # ── macOS：.app + .dmg（ad-hoc 签名）────────────────────────────
   build-macos:
@@ -81,20 +93,15 @@ jobs:
 
       - name: 安装 Rust 工具链
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.arch }}
 
       - name: 启用 cargo 缓存
         uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
 
-      - name: 安装核心依赖
-        working-directory: src/core
-        run: npm ci
-
-      - name: 构建核心 sidecar
-        run: node scripts/build-sidecar.mjs --targets=${{ matrix.arch }}
-
-      - name: 安装 Tauri 依赖
+      - name: 安装前端依赖
         run: npm ci
 
       - name: 构建 Tauri 应用
@@ -104,6 +111,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ vars.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ vars.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
+          args: --target ${{ matrix.arch }}
           tagName: v__VERSION__
           releaseName: 'WB Bridge v__VERSION__'
           releaseBody: 'WB Bridge — 让 WorkBuddy 使用 OpenCode 免费模型。'
@@ -116,6 +124,10 @@ jobs:
           name: macos-${{ matrix.arch }}-bundles
           if-no-files-found: warn
           path: |
+            src-tauri/target/${{ matrix.arch }}/release/bundle/**/*.dmg
+            src-tauri/target/${{ matrix.arch }}/release/bundle/**/*.app
+            src-tauri/target/${{ matrix.arch }}/release/bundle/**/*.tar.gz
+            src-tauri/target/${{ matrix.arch }}/release/bundle/**/*.sig
             src-tauri/target/release/bundle/**/*.dmg
             src-tauri/target/release/bundle/**/*.app
             src-tauri/target/release/bundle/**/*.tar.gz
@@ -128,10 +140,10 @@ jobs:
           draft: true
           generate_release_notes: true
           files: |
-            src-tauri/target/release/bundle/**/*.dmg
-            src-tauri/target/release/bundle/**/*.app
-            src-tauri/target/release/bundle/**/*.tar.gz
-            src-tauri/target/release/bundle/**/*.sig
+            src-tauri/target/**/release/bundle/**/*.dmg
+            src-tauri/target/**/release/bundle/**/*.app
+            src-tauri/target/**/release/bundle/**/*.tar.gz
+            src-tauri/target/**/release/bundle/**/*.sig
 
   # ── Windows：NSIS + MSI ──────────────────────────────────────────
   build-windows:
@@ -156,20 +168,15 @@ jobs:
 
       - name: 安装 Rust 工具链
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.arch }}
 
       - name: 启用 cargo 缓存
         uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
 
-      - name: 安装核心依赖
-        working-directory: src/core
-        run: npm ci
-
-      - name: 构建核心 sidecar
-        run: node scripts/build-sidecar.mjs --targets=${{ matrix.arch }}
-
-      - name: 安装 Tauri 依赖
+      - name: 安装前端依赖
         run: npm ci
 
       - name: 构建 Tauri 应用
@@ -179,6 +186,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ vars.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ vars.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
+          args: --target ${{ matrix.arch }}
           tagName: v__VERSION__
           releaseName: 'WB Bridge v__VERSION__'
           releaseBody: 'WB Bridge — 让 WorkBuddy 使用 OpenCode 免费模型。'
@@ -191,9 +199,9 @@ jobs:
           name: windows-${{ matrix.arch }}-bundles
           if-no-files-found: warn
           path: |
-            src-tauri/target/release/bundle/**/*.exe
-            src-tauri/target/release/bundle/**/*.msi
-            src-tauri/target/release/bundle/**/*.sig
+            src-tauri/target/**/release/bundle/**/*.exe
+            src-tauri/target/**/release/bundle/**/*.msi
+            src-tauri/target/**/release/bundle/**/*.sig
 
       - name: 上传到 GitHub Release（仅推 tag 或勾选 create_release 时）
         if: github.event_name == 'push' || inputs.create_release == true
@@ -202,9 +210,9 @@ jobs:
           draft: true
           generate_release_notes: true
           files: |
-            src-tauri/target/release/bundle/**/*.exe
-            src-tauri/target/release/bundle/**/*.msi
-            src-tauri/target/release/bundle/**/*.sig
+            src-tauri/target/**/release/bundle/**/*.exe
+            src-tauri/target/**/release/bundle/**/*.msi
+            src-tauri/target/**/release/bundle/**/*.sig
 
   # ── Linux：.AppImage + .deb ──────────────────────────────────────
   build-linux:
@@ -229,6 +237,8 @@ jobs:
 
       - name: 安装 Rust 工具链
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.arch }}
 
       - name: 启用 cargo 缓存
         uses: swatinem/rust-cache@v2
@@ -240,14 +250,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
 
-      - name: 安装核心依赖
-        working-directory: src/core
-        run: npm ci
-
-      - name: 构建核心 sidecar
-        run: node scripts/build-sidecar.mjs --targets=${{ matrix.arch }}
-
-      - name: 安装 Tauri 依赖
+      - name: 安装前端依赖
         run: npm ci
 
       - name: 构建 Tauri 应用
@@ -257,6 +260,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ vars.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ vars.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
+          args: --target ${{ matrix.arch }}
           tagName: v__VERSION__
           releaseName: 'WB Bridge v__VERSION__'
           releaseBody: 'WB Bridge — 让 WorkBuddy 使用 OpenCode 免费模型。'
@@ -269,9 +273,9 @@ jobs:
           name: linux-${{ matrix.arch }}-bundles
           if-no-files-found: warn
           path: |
-            src-tauri/target/release/bundle/**/*.AppImage
-            src-tauri/target/release/bundle/**/*.deb
-            src-tauri/target/release/bundle/**/*.sig
+            src-tauri/target/**/release/bundle/**/*.AppImage
+            src-tauri/target/**/release/bundle/**/*.deb
+            src-tauri/target/**/release/bundle/**/*.sig
 
       - name: 上传到 GitHub Release（仅推 tag 或勾选 create_release 时）
         if: github.event_name == 'push' || inputs.create_release == true
@@ -280,6 +284,7 @@ jobs:
           draft: true
           generate_release_notes: true
           files: |
-            src-tauri/target/release/bundle/**/*.AppImage
-            src-tauri/target/release/bundle/**/*.deb
-            src-tauri/target/release/bundle/**/*.sig
+            src-tauri/target/**/release/bundle/**/*.AppImage
+            src-tauri/target/**/release/bundle/**/*.deb
+            src-tauri/target/**/release/bundle/**/*.sig
+

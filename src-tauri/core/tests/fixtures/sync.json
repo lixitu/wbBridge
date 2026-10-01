@@ -1,0 +1,637 @@
+{
+  "module": "sync",
+  "doc": "sync.js 对拍用例：mergeModels 纯合并 + syncModels 的文件级行为（锁、.bak 备份、原子写、无变化判定）。syncModels 会改动沙箱，Rust 侧为每个用例准备一份同内容的镜像沙箱，两侧各自跑完再比较「结果 + 全目录快照」。",
+  "cases": [
+    {
+      "name": "mergeModels：数组文档保留非本服务条目并追加新条目",
+      "op": "sync.mergeModels",
+      "input": {
+        "document": [
+          {
+            "id": "own-1",
+            "name": "自建模型"
+          },
+          {
+            "id": "OC · 旧的",
+            "buddyBridgeOwner": "buddy-bridge-v1"
+          }
+        ],
+        "models": [
+          {
+            "id": "vendor/gpt",
+            "name": "gpt",
+            "context": 32000
+          }
+        ],
+        "endpoint": "http://127.0.0.1:8123/v1",
+        "key": "sk-parity"
+      },
+      "expected": {
+        "ok": true,
+        "value": [
+          {
+            "id": "own-1",
+            "name": "自建模型"
+          },
+          {
+            "id": "OC · gpt",
+            "name": "OC · gpt",
+            "vendor": "Custom",
+            "url": "http://127.0.0.1:8123/v1",
+            "apiKey": "sk-parity",
+            "supportsToolCall": true,
+            "supportsImages": false,
+            "supportsReasoning": false,
+            "buddyBridgeOwner": "buddy-bridge-v1",
+            "maxInputTokens": 32000
+          }
+        ]
+      }
+    },
+    {
+      "name": "mergeModels：对象文档改写 models 与 availableModels（保留其余字段与键顺序）",
+      "op": "sync.mergeModels",
+      "input": {
+        "document": {
+          "models": [
+            {
+              "id": "mine",
+              "name": "自建模型"
+            },
+            {
+              "id": "OC · gpt",
+              "name": "OC · gpt",
+              "buddyBridgeOwner": "buddy-bridge-v1"
+            }
+          ],
+          "availableModels": [
+            "mine",
+            "OC · gpt",
+            "ghost",
+            "mine"
+          ],
+          "currentModel": "mine",
+          "extra": {
+            "keep": true
+          }
+        },
+        "models": [
+          {
+            "id": "vendor/gpt",
+            "name": "gpt",
+            "context": 32000,
+            "output": 4096,
+            "images": true,
+            "reasoning": true,
+            "variants": {
+              "low": {
+                "reasoningEffort": "low"
+              },
+              "off": {
+                "disabled": true
+              },
+              "max": {
+                "reasoningEffort": "max"
+              }
+            }
+          }
+        ],
+        "endpoint": "https://api.example.com/v1",
+        "key": "sk-1"
+      },
+      "expected": {
+        "ok": true,
+        "value": {
+          "models": [
+            {
+              "id": "mine",
+              "name": "自建模型"
+            },
+            {
+              "id": "OC · gpt",
+              "name": "OC · gpt",
+              "vendor": "Custom",
+              "url": "https://api.example.com/v1",
+              "apiKey": "sk-1",
+              "supportsToolCall": true,
+              "supportsImages": true,
+              "supportsReasoning": true,
+              "onlyReasoning": true,
+              "reasoning": {
+                "supportedEfforts": [
+                  "low",
+                  "max"
+                ],
+                "defaultEffort": "low",
+                "canDisableThinking": false
+              },
+              "buddyBridgeOwner": "buddy-bridge-v1",
+              "maxInputTokens": 32000,
+              "maxOutputTokens": 4096
+            }
+          ],
+          "availableModels": [
+            "mine",
+            "ghost",
+            "OC · gpt"
+          ],
+          "currentModel": "mine",
+          "extra": {
+            "keep": true
+          }
+        }
+      }
+    },
+    {
+      "name": "mergeModels：id 或 OC 名与既有条目冲突的新条目整体丢弃",
+      "op": "sync.mergeModels",
+      "input": {
+        "document": {
+          "models": [
+            {
+              "id": "OC · gpt"
+            },
+            {
+              "id": "OC · taken"
+            }
+          ]
+        },
+        "models": [
+          {
+            "id": "vendor/a",
+            "name": "gpt"
+          },
+          {
+            "id": "taken",
+            "name": "ignored"
+          },
+          {
+            "id": "vendor/b",
+            "name": "fresh"
+          }
+        ],
+        "endpoint": "http://x/v1",
+        "key": "k"
+      },
+      "expected": {
+        "ok": true,
+        "value": {
+          "models": [
+            {
+              "id": "OC · gpt"
+            },
+            {
+              "id": "OC · taken"
+            },
+            {
+              "id": "OC · ignored",
+              "name": "OC · ignored",
+              "vendor": "Custom",
+              "url": "http://x/v1",
+              "apiKey": "k",
+              "supportsToolCall": true,
+              "supportsImages": false,
+              "supportsReasoning": false,
+              "buddyBridgeOwner": "buddy-bridge-v1"
+            },
+            {
+              "id": "OC · fresh",
+              "name": "OC · fresh",
+              "vendor": "Custom",
+              "url": "http://x/v1",
+              "apiKey": "k",
+              "supportsToolCall": true,
+              "supportsImages": false,
+              "supportsReasoning": false,
+              "buddyBridgeOwner": "buddy-bridge-v1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "mergeModels：条目缺少 id 时按 name 拼出 OC · undefined",
+      "op": "sync.mergeModels",
+      "input": {
+        "document": {
+          "models": []
+        },
+        "models": [
+          {
+            "name": "无 id",
+            "chatOnly": true,
+            "images": false
+          },
+          {
+            "id": "with-tokens",
+            "name": "有 token",
+            "input": 0,
+            "context": 128000,
+            "output": 0
+          }
+        ],
+        "endpoint": "e",
+        "key": "k"
+      },
+      "expected": {
+        "ok": true,
+        "value": {
+          "models": [
+            {
+              "id": "OC · 无 id",
+              "name": "OC · 无 id",
+              "vendor": "Custom",
+              "url": "e",
+              "apiKey": "k",
+              "supportsToolCall": false,
+              "supportsImages": false,
+              "supportsReasoning": false,
+              "buddyBridgeOwner": "buddy-bridge-v1"
+            },
+            {
+              "id": "OC · 有 token",
+              "name": "OC · 有 token",
+              "vendor": "Custom",
+              "url": "e",
+              "apiKey": "k",
+              "supportsToolCall": true,
+              "supportsImages": false,
+              "supportsReasoning": false,
+              "buddyBridgeOwner": "buddy-bridge-v1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "mergeModels：空模型列表且未允许为空时整体报错",
+      "op": "sync.mergeModels",
+      "input": {
+        "document": {
+          "models": [
+            {
+              "id": "keep"
+            }
+          ]
+        },
+        "models": [],
+        "endpoint": "e",
+        "key": "k"
+      },
+      "expected": {
+        "ok": false,
+        "kind": "other",
+        "message": "Empty model discovery; existing configuration preserved"
+      }
+    },
+    {
+      "name": "mergeModels：空模型列表但允许为空时保留既有条目",
+      "op": "sync.mergeModels",
+      "input": {
+        "document": {
+          "models": [
+            {
+              "id": "keep"
+            }
+          ]
+        },
+        "models": [],
+        "allowEmpty": true,
+        "endpoint": "e",
+        "key": "k"
+      },
+      "expected": {
+        "ok": true,
+        "value": {
+          "models": [
+            {
+              "id": "keep"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "mergeModels：文档没有 models 数组时报错",
+      "op": "sync.mergeModels",
+      "input": {
+        "document": {
+          "availableModels": [
+            "a"
+          ]
+        },
+        "models": [
+          {
+            "id": "vendor/a",
+            "name": "a"
+          }
+        ],
+        "endpoint": "e",
+        "key": "k"
+      },
+      "expected": {
+        "ok": false,
+        "kind": "other",
+        "message": "Unrecognized WorkBuddy models.json; left unchanged"
+      }
+    },
+    {
+      "name": "mergeModels：文档为标量时报错",
+      "op": "sync.mergeModels",
+      "input": {
+        "document": 42,
+        "models": [
+          {
+            "id": "vendor/a",
+            "name": "a"
+          }
+        ],
+        "endpoint": "e",
+        "key": "k"
+      },
+      "expected": {
+        "ok": false,
+        "kind": "other",
+        "message": "Unrecognized WorkBuddy models.json; left unchanged"
+      }
+    },
+    {
+      "name": "syncModels：目标文件不存在时新建（不产生 .bak）",
+      "op": "sync.syncModels",
+      "input": {
+        "file": "$BASE/models.json",
+        "models": [
+          {
+            "id": "vendor/a",
+            "name": "a",
+            "context": 64000,
+            "output": 8192
+          }
+        ],
+        "endpoint": "http://127.0.0.1:8123/v1",
+        "key": "sk-parity"
+      },
+      "expected": {
+        "ok": true,
+        "value": {
+          "changed": true,
+          "count": 1
+        },
+        "files": {
+          "models.json": "[\n  {\n    \"id\": \"OC · a\",\n    \"name\": \"OC · a\",\n    \"vendor\": \"Custom\",\n    \"url\": \"http://127.0.0.1:8123/v1\",\n    \"apiKey\": \"sk-parity\",\n    \"supportsToolCall\": true,\n    \"supportsImages\": false,\n    \"supportsReasoning\": false,\n    \"buddyBridgeOwner\": \"buddy-bridge-v1\",\n    \"maxInputTokens\": 64000,\n    \"maxOutputTokens\": 8192\n  }\n]\n"
+        }
+      }
+    },
+    {
+      "name": "syncModels：已有文档合并后写盘并留下 .bak 备份",
+      "op": "sync.syncModels",
+      "files": {
+        "models.json": {
+          "json": {
+            "models": [
+              {
+                "id": "my-model",
+                "name": "自建模型"
+              },
+              {
+                "id": "OC · gpt-4o",
+                "buddyBridgeOwner": "buddy-bridge-v1"
+              }
+            ],
+            "availableModels": [
+              "my-model",
+              "OC · gpt-4o",
+              "missing-one"
+            ]
+          }
+        }
+      },
+      "input": {
+        "file": "$BASE/models.json",
+        "models": [
+          {
+            "id": "vendor/b",
+            "name": "b",
+            "context": 128000
+          }
+        ],
+        "endpoint": "http://127.0.0.1:8123/v1",
+        "key": "sk-parity"
+      },
+      "expected": {
+        "ok": true,
+        "value": {
+          "changed": true,
+          "count": 1,
+          "backup": "$BASE/models.json.buddy-bridge-1790726400000.bak"
+        },
+        "files": {
+          "models.json": "{\n  \"models\": [\n    {\n      \"id\": \"my-model\",\n      \"name\": \"自建模型\"\n    },\n    {\n      \"id\": \"OC · b\",\n      \"name\": \"OC · b\",\n      \"vendor\": \"Custom\",\n      \"url\": \"http://127.0.0.1:8123/v1\",\n      \"apiKey\": \"sk-parity\",\n      \"supportsToolCall\": true,\n      \"supportsImages\": false,\n      \"supportsReasoning\": false,\n      \"buddyBridgeOwner\": \"buddy-bridge-v1\",\n      \"maxInputTokens\": 128000\n    }\n  ],\n  \"availableModels\": [\n    \"my-model\",\n    \"missing-one\",\n    \"OC · b\"\n  ]\n}\n",
+          "models.json.buddy-bridge-1790726400000.bak": "{\"models\":[{\"id\":\"my-model\",\"name\":\"自建模型\"},{\"id\":\"OC · gpt-4o\",\"buddyBridgeOwner\":\"buddy-bridge-v1\"}],\"availableModels\":[\"my-model\",\"OC · gpt-4o\",\"missing-one\"]}"
+        }
+      }
+    },
+    {
+      "name": "syncModels：合并结果与既有文档一致时不写盘、不备份",
+      "op": "sync.syncModels",
+      "files": {
+        "models.json": {
+          "json": {
+            "models": []
+          }
+        }
+      },
+      "input": {
+        "file": "$BASE/models.json",
+        "models": [],
+        "allowEmpty": true,
+        "endpoint": "e",
+        "key": "k"
+      },
+      "expected": {
+        "ok": true,
+        "value": {
+          "changed": false,
+          "count": 0
+        },
+        "files": {
+          "models.json": "{\"models\":[]}"
+        }
+      }
+    },
+    {
+      "name": "syncModelsTwice：第二次判定无变化（幂等，仅第一次落盘）",
+      "op": "sync.syncModelsTwice",
+      "input": {
+        "file": "$BASE/models.json",
+        "models": [
+          {
+            "id": "vendor/c",
+            "name": "c",
+            "images": true,
+            "reasoning": true,
+            "variants": {
+              "none": {
+                "reasoningEffort": "none"
+              }
+            }
+          }
+        ],
+        "endpoint": "http://127.0.0.1:8123/v1",
+        "key": "sk-parity"
+      },
+      "expected": {
+        "first": {
+          "ok": true,
+          "value": {
+            "changed": true,
+            "count": 1
+          }
+        },
+        "second": {
+          "ok": true,
+          "value": {
+            "changed": false,
+            "count": 1
+          }
+        },
+        "files": {
+          "models.json": "[\n  {\n    \"id\": \"OC · c\",\n    \"name\": \"OC · c\",\n    \"vendor\": \"Custom\",\n    \"url\": \"http://127.0.0.1:8123/v1\",\n    \"apiKey\": \"sk-parity\",\n    \"supportsToolCall\": true,\n    \"supportsImages\": true,\n    \"supportsReasoning\": true,\n    \"onlyReasoning\": true,\n    \"reasoning\": {\n      \"supportedEfforts\": [],\n      \"canDisableThinking\": false\n    },\n    \"buddyBridgeOwner\": \"buddy-bridge-v1\"\n  }\n]\n"
+        }
+      }
+    },
+    {
+      "name": "syncModels：requireExisting 且目标缺失时报 not_found，且不创建文件",
+      "op": "sync.syncModels",
+      "input": {
+        "file": "$BASE/models.json",
+        "models": [
+          {
+            "id": "vendor/a",
+            "name": "a"
+          }
+        ],
+        "requireExisting": true,
+        "endpoint": "e",
+        "key": "k"
+      },
+      "expected": {
+        "ok": false,
+        "kind": "not_found",
+        "message": "",
+        "files": {}
+      }
+    },
+    {
+      "name": "syncModels：models.json 不是合法 JSON 时报 json，文件保持原样",
+      "op": "sync.syncModels",
+      "files": {
+        "models.json": "{ \"models\": [ "
+      },
+      "input": {
+        "file": "$BASE/models.json",
+        "models": [
+          {
+            "id": "vendor/a",
+            "name": "a"
+          }
+        ],
+        "endpoint": "e",
+        "key": "k"
+      },
+      "expected": {
+        "ok": false,
+        "kind": "json",
+        "message": "",
+        "files": {
+          "models.json": "{ \"models\": [ "
+        }
+      }
+    },
+    {
+      "name": "syncModels：空探测且未允许为空时报错，文件保持原样",
+      "op": "sync.syncModels",
+      "files": {
+        "models.json": {
+          "json": {
+            "models": [
+              {
+                "id": "keep-me"
+              }
+            ]
+          }
+        }
+      },
+      "input": {
+        "file": "$BASE/models.json",
+        "models": [],
+        "endpoint": "e",
+        "key": "k"
+      },
+      "expected": {
+        "ok": false,
+        "kind": "other",
+        "message": "Empty model discovery; existing configuration preserved",
+        "files": {
+          "models.json": "{\"models\":[{\"id\":\"keep-me\"}]}"
+        }
+      }
+    },
+    {
+      "name": "syncModels：数组形态的 models.json 合并后仍写成数组",
+      "op": "sync.syncModels",
+      "files": {
+        "models.json": {
+          "json": [
+            {
+              "id": "own-1"
+            }
+          ]
+        }
+      },
+      "input": {
+        "file": "$BASE/models.json",
+        "models": [
+          {
+            "id": "vendor/d",
+            "name": "d",
+            "context": 8000
+          }
+        ],
+        "endpoint": "http://127.0.0.1:8123/v1",
+        "key": "sk-parity"
+      },
+      "expected": {
+        "ok": true,
+        "value": {
+          "changed": true,
+          "count": 1,
+          "backup": "$BASE/models.json.buddy-bridge-1790726400000.bak"
+        },
+        "files": {
+          "models.json": "[\n  {\n    \"id\": \"own-1\"\n  },\n  {\n    \"id\": \"OC · d\",\n    \"name\": \"OC · d\",\n    \"vendor\": \"Custom\",\n    \"url\": \"http://127.0.0.1:8123/v1\",\n    \"apiKey\": \"sk-parity\",\n    \"supportsToolCall\": true,\n    \"supportsImages\": false,\n    \"supportsReasoning\": false,\n    \"buddyBridgeOwner\": \"buddy-bridge-v1\",\n    \"maxInputTokens\": 8000\n  }\n]\n",
+          "models.json.buddy-bridge-1790726400000.bak": "[{\"id\":\"own-1\"}]"
+        }
+      }
+    },
+    {
+      "name": "syncModels：空探测允许为空且文件缺失时不创建文件",
+      "op": "sync.syncModels",
+      "input": {
+        "file": "$BASE/models.json",
+        "models": [],
+        "allowEmpty": true,
+        "endpoint": "e",
+        "key": "k"
+      },
+      "expected": {
+        "ok": true,
+        "value": {
+          "changed": false,
+          "count": 0
+        },
+        "files": {}
+      }
+    }
+  ]
+}

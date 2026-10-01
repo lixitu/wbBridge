@@ -1,0 +1,671 @@
+{
+  "module": "system_proxy",
+  "doc": "system-proxy.js 对拍用例：parseSystemProxy（macOS scutil 文本）、parseWindowsProxy（注册表 JSON）与 jsNumber（Number() 语义）。systemProxyEnvironment 只覆盖 enabled=false 分支——enabled=true 会真的去开 scutil / powershell，输出随机器而变，不适合作为对拍输入；平台分派本身由 Rust 单测的 environment_from_output 覆盖。",
+  "cases": [
+    {
+      "name": "parseSystemProxy：HTTP 与 HTTPS 均启用",
+      "op": "system_proxy.parseSystemProxy",
+      "input": {
+        "text": "Reserved : 0\nHTTPEnable : 1\nHTTPPort : 8080\nHTTPProxy : 10.0.0.1\nHTTPSEnable : 1\nHTTPSPort : 8443\nHTTPSProxy : proxy.local\nSOCKSEnable : 0\n"
+      },
+      "expected": {
+        "ok": true,
+        "value": {
+          "HTTP_PROXY": "http://10.0.0.1:8080",
+          "HTTPS_PROXY": "http://proxy.local:8443",
+          "http_proxy": "http://10.0.0.1:8080",
+          "https_proxy": "http://proxy.local:8443",
+          "NO_PROXY": "localhost,127.0.0.1,::1",
+          "no_proxy": "localhost,127.0.0.1,::1"
+        }
+      }
+    },
+    {
+      "name": "parseSystemProxy：仅 HTTPS 启用时 HTTP_PROXY 回落到 HTTPS",
+      "op": "system_proxy.parseSystemProxy",
+      "input": {
+        "text": "HTTPEnable : 0\nHTTPPort : 8080\nHTTPProxy : 10.0.0.1\nHTTPSEnable : 1\nHTTPSPort : 443\nHTTPSProxy : secure.local\n"
+      },
+      "expected": {
+        "ok": true,
+        "value": {
+          "HTTP_PROXY": "http://secure.local:443",
+          "HTTPS_PROXY": "http://secure.local:443",
+          "http_proxy": "http://secure.local:443",
+          "https_proxy": "http://secure.local:443",
+          "NO_PROXY": "localhost,127.0.0.1,::1",
+          "no_proxy": "localhost,127.0.0.1,::1"
+        }
+      }
+    },
+    {
+      "name": "parseSystemProxy：缺少 HTTPSEnable 时报错",
+      "op": "system_proxy.parseSystemProxy",
+      "input": {
+        "text": "HTTPEnable : 1\nHTTPPort : 8080\nHTTPProxy : 10.0.0.1\n"
+      },
+      "expected": {
+        "ok": false,
+        "message": "请先在 macOS 中启用 HTTPS 系统代理；暂不支持仅 SOCKS 或 PAC 配置"
+      }
+    },
+    {
+      "name": "parseSystemProxy：HTTPSEnable 不是 1 时报错",
+      "op": "system_proxy.parseSystemProxy",
+      "input": {
+        "text": "HTTPSEnable : true\nHTTPSPort : 8443\nHTTPSProxy : proxy.local\n"
+      },
+      "expected": {
+        "ok": false,
+        "message": "请先在 macOS 中启用 HTTPS 系统代理；暂不支持仅 SOCKS 或 PAC 配置"
+      }
+    },
+    {
+      "name": "parseSystemProxy：HTTPSEnable 为 1 但缺少 HTTPSProxy 时报错",
+      "op": "system_proxy.parseSystemProxy",
+      "input": {
+        "text": "HTTPSEnable : 1\nHTTPSPort : 8443\n"
+      },
+      "expected": {
+        "ok": false,
+        "message": "系统代理地址无效"
+      }
+    },
+    {
+      "name": "parseSystemProxy：端口为 0 时报错",
+      "op": "system_proxy.parseSystemProxy",
+      "input": {
+        "text": "HTTPSEnable : 1\nHTTPSPort : 0\nHTTPSProxy : proxy.local\n"
+      },
+      "expected": {
+        "ok": false,
+        "message": "系统代理地址无效"
+      }
+    },
+    {
+      "name": "parseSystemProxy：端口超过 65535 时报错",
+      "op": "system_proxy.parseSystemProxy",
+      "input": {
+        "text": "HTTPSEnable : 1\nHTTPSPort : 70000\nHTTPSProxy : proxy.local\n"
+      },
+      "expected": {
+        "ok": false,
+        "message": "系统代理地址无效"
+      }
+    },
+    {
+      "name": "parseSystemProxy：端口不是整数时报错",
+      "op": "system_proxy.parseSystemProxy",
+      "input": {
+        "text": "HTTPSEnable : 1\nHTTPSPort : abc\nHTTPSProxy : proxy.local\n"
+      },
+      "expected": {
+        "ok": false,
+        "message": "系统代理地址无效"
+      }
+    },
+    {
+      "name": "parseSystemProxy：地址含空格时报错",
+      "op": "system_proxy.parseSystemProxy",
+      "input": {
+        "text": "HTTPSEnable : 1\nHTTPSPort : 8080\nHTTPSProxy : proxy local\n"
+      },
+      "expected": {
+        "ok": false,
+        "message": "系统代理地址无效"
+      }
+    },
+    {
+      "name": "parseSystemProxy：IPv6 地址自动加方括号",
+      "op": "system_proxy.parseSystemProxy",
+      "input": {
+        "text": "HTTPSEnable : 1\nHTTPSPort : 8443\nHTTPSProxy : ::1\nHTTPEnable : 1\nHTTPPort : 8080\nHTTPProxy : 2001:db8::1\n"
+      },
+      "expected": {
+        "ok": true,
+        "value": {
+          "HTTP_PROXY": "http://[2001:db8::1]:8080",
+          "HTTPS_PROXY": "http://[::1]:8443",
+          "http_proxy": "http://[2001:db8::1]:8080",
+          "https_proxy": "http://[::1]:8443",
+          "NO_PROXY": "localhost,127.0.0.1,::1",
+          "no_proxy": "localhost,127.0.0.1,::1"
+        }
+      }
+    },
+    {
+      "name": "parseSystemProxy：已带方括号的 IPv6 不重复包裹",
+      "op": "system_proxy.parseSystemProxy",
+      "input": {
+        "text": "HTTPSEnable : 1\nHTTPSPort : 8080\nHTTPSProxy : [fe80::1]\n"
+      },
+      "expected": {
+        "ok": true,
+        "value": {
+          "HTTP_PROXY": "http://[fe80::1]:8080",
+          "HTTPS_PROXY": "http://[fe80::1]:8080",
+          "http_proxy": "http://[fe80::1]:8080",
+          "https_proxy": "http://[fe80::1]:8080",
+          "NO_PROXY": "localhost,127.0.0.1,::1",
+          "no_proxy": "localhost,127.0.0.1,::1"
+        }
+      }
+    },
+    {
+      "name": "parseSystemProxy：端口支持十六进制与指数写法",
+      "op": "system_proxy.parseSystemProxy",
+      "input": {
+        "text": "HTTPSEnable : 1\nHTTPSPort : 0x1F90\nHTTPSProxy : hex.local\nHTTPEnable : 1\nHTTPPort : 1e3\nHTTPProxy : exp.local\n"
+      },
+      "expected": {
+        "ok": true,
+        "value": {
+          "HTTP_PROXY": "http://exp.local:1000",
+          "HTTPS_PROXY": "http://hex.local:8080",
+          "http_proxy": "http://exp.local:1000",
+          "https_proxy": "http://hex.local:8080",
+          "NO_PROXY": "localhost,127.0.0.1,::1",
+          "no_proxy": "localhost,127.0.0.1,::1"
+        }
+      }
+    },
+    {
+      "name": "parseSystemProxy：空文本时报错",
+      "op": "system_proxy.parseSystemProxy",
+      "input": {
+        "text": ""
+      },
+      "expected": {
+        "ok": false,
+        "message": "请先在 macOS 中启用 HTTPS 系统代理；暂不支持仅 SOCKS 或 PAC 配置"
+      }
+    },
+    {
+      "name": "parseSystemProxy：键与值两侧的空白被忽略",
+      "op": "system_proxy.parseSystemProxy",
+      "input": {
+        "text": "  HTTPEnable   :   1  \nHTTPPort:3128\nHTTPProxy:  corporate.proxy  \nHTTPSEnable:1\nHTTPSPort:8443\nHTTPSProxy:corporate.secure\n"
+      },
+      "expected": {
+        "ok": true,
+        "value": {
+          "HTTP_PROXY": "http://corporate.proxy:3128",
+          "HTTPS_PROXY": "http://corporate.secure:8443",
+          "http_proxy": "http://corporate.proxy:3128",
+          "https_proxy": "http://corporate.secure:8443",
+          "NO_PROXY": "localhost,127.0.0.1,::1",
+          "no_proxy": "localhost,127.0.0.1,::1"
+        }
+      }
+    },
+    {
+      "name": "parseWindowsProxy：单个地址同时作为 HTTP 与 HTTPS",
+      "op": "system_proxy.parseWindowsProxy",
+      "input": {
+        "settings": {
+          "ProxyEnable": 1,
+          "ProxyServer": "10.0.0.1:8080"
+        }
+      },
+      "expected": {
+        "ok": true,
+        "value": {
+          "HTTP_PROXY": "http://10.0.0.1:8080",
+          "HTTPS_PROXY": "http://10.0.0.1:8080",
+          "http_proxy": "http://10.0.0.1:8080",
+          "https_proxy": "http://10.0.0.1:8080",
+          "NO_PROXY": "localhost,127.0.0.1,::1",
+          "no_proxy": "localhost,127.0.0.1,::1"
+        }
+      }
+    },
+    {
+      "name": "parseWindowsProxy：http= 与 https= 分开指定",
+      "op": "system_proxy.parseWindowsProxy",
+      "input": {
+        "settings": {
+          "ProxyEnable": "1",
+          "ProxyServer": "http=10.1.1.1:80;https=secure.local:8443"
+        }
+      },
+      "expected": {
+        "ok": true,
+        "value": {
+          "HTTP_PROXY": "http://10.1.1.1",
+          "HTTPS_PROXY": "http://secure.local:8443",
+          "http_proxy": "http://10.1.1.1",
+          "https_proxy": "http://secure.local:8443",
+          "NO_PROXY": "localhost,127.0.0.1,::1",
+          "no_proxy": "localhost,127.0.0.1,::1"
+        }
+      }
+    },
+    {
+      "name": "parseWindowsProxy：分号两侧的空格被裁掉且非默认端口保留",
+      "op": "system_proxy.parseWindowsProxy",
+      "input": {
+        "settings": {
+          "ProxyEnable": 1,
+          "ProxyServer": " http=10.1.1.1:3128 ; https=secure.local:443 "
+        }
+      },
+      "expected": {
+        "ok": true,
+        "value": {
+          "HTTP_PROXY": "http://10.1.1.1:3128",
+          "HTTPS_PROXY": "http://secure.local:443",
+          "http_proxy": "http://10.1.1.1:3128",
+          "https_proxy": "http://secure.local:443",
+          "NO_PROXY": "localhost,127.0.0.1,::1",
+          "no_proxy": "localhost,127.0.0.1,::1"
+        }
+      }
+    },
+    {
+      "name": "parseWindowsProxy：主机名按 URL 语义小写化",
+      "op": "system_proxy.parseWindowsProxy",
+      "input": {
+        "settings": {
+          "ProxyEnable": 1,
+          "ProxyServer": "PROXY.LOCAL:8080"
+        }
+      },
+      "expected": {
+        "ok": true,
+        "value": {
+          "HTTP_PROXY": "http://proxy.local:8080",
+          "HTTPS_PROXY": "http://proxy.local:8080",
+          "http_proxy": "http://proxy.local:8080",
+          "https_proxy": "http://proxy.local:8080",
+          "NO_PROXY": "localhost,127.0.0.1,::1",
+          "no_proxy": "localhost,127.0.0.1,::1"
+        }
+      }
+    },
+    {
+      "name": "parseWindowsProxy：ProxyEnable 为布尔 true 且默认端口 80 被省略",
+      "op": "system_proxy.parseWindowsProxy",
+      "input": {
+        "settings": {
+          "ProxyEnable": true,
+          "ProxyServer": "example.com:80"
+        }
+      },
+      "expected": {
+        "ok": true,
+        "value": {
+          "HTTP_PROXY": "http://example.com",
+          "HTTPS_PROXY": "http://example.com",
+          "http_proxy": "http://example.com",
+          "https_proxy": "http://example.com",
+          "NO_PROXY": "localhost,127.0.0.1,::1",
+          "no_proxy": "localhost,127.0.0.1,::1"
+        }
+      }
+    },
+    {
+      "name": "parseWindowsProxy：ProxyEnable 支持 0x1",
+      "op": "system_proxy.parseWindowsProxy",
+      "input": {
+        "settings": {
+          "ProxyEnable": "0x1",
+          "ProxyServer": "10.0.0.1:8080"
+        }
+      },
+      "expected": {
+        "ok": true,
+        "value": {
+          "HTTP_PROXY": "http://10.0.0.1:8080",
+          "HTTPS_PROXY": "http://10.0.0.1:8080",
+          "http_proxy": "http://10.0.0.1:8080",
+          "https_proxy": "http://10.0.0.1:8080",
+          "NO_PROXY": "localhost,127.0.0.1,::1",
+          "no_proxy": "localhost,127.0.0.1,::1"
+        }
+      }
+    },
+    {
+      "name": "parseWindowsProxy：ProxyEnable 为 0 时报错",
+      "op": "system_proxy.parseWindowsProxy",
+      "input": {
+        "settings": {
+          "ProxyEnable": 0,
+          "ProxyServer": "10.0.0.1:8080"
+        }
+      },
+      "expected": {
+        "ok": false,
+        "message": "请先启用 Windows 手动系统代理；暂不支持仅 PAC 配置"
+      }
+    },
+    {
+      "name": "parseWindowsProxy：ProxyEnable 为字符串 0 时报错",
+      "op": "system_proxy.parseWindowsProxy",
+      "input": {
+        "settings": {
+          "ProxyEnable": "0",
+          "ProxyServer": "10.0.0.1:8080"
+        }
+      },
+      "expected": {
+        "ok": false,
+        "message": "请先启用 Windows 手动系统代理；暂不支持仅 PAC 配置"
+      }
+    },
+    {
+      "name": "parseWindowsProxy：缺少 ProxyServer 时报错",
+      "op": "system_proxy.parseWindowsProxy",
+      "input": {
+        "settings": {
+          "ProxyEnable": 1
+        }
+      },
+      "expected": {
+        "ok": false,
+        "message": "请先启用 Windows 手动系统代理；暂不支持仅 PAC 配置"
+      }
+    },
+    {
+      "name": "parseWindowsProxy：ProxyServer 为 0 时报错",
+      "op": "system_proxy.parseWindowsProxy",
+      "input": {
+        "settings": {
+          "ProxyEnable": 1,
+          "ProxyServer": 0
+        }
+      },
+      "expected": {
+        "ok": false,
+        "message": "请先启用 Windows 手动系统代理；暂不支持仅 PAC 配置"
+      }
+    },
+    {
+      "name": "parseWindowsProxy：ProxyServer 为空串时报错",
+      "op": "system_proxy.parseWindowsProxy",
+      "input": {
+        "settings": {
+          "ProxyEnable": 1,
+          "ProxyServer": ""
+        }
+      },
+      "expected": {
+        "ok": false,
+        "message": "请先启用 Windows 手动系统代理；暂不支持仅 PAC 配置"
+      }
+    },
+    {
+      "name": "parseWindowsProxy：地址没有端口时报端口无效",
+      "op": "system_proxy.parseWindowsProxy",
+      "input": {
+        "settings": {
+          "ProxyEnable": 1,
+          "ProxyServer": "10.0.0.1"
+        }
+      },
+      "expected": {
+        "ok": false,
+        "message": "Windows 系统代理端口无效"
+      }
+    },
+    {
+      "name": "parseWindowsProxy：地址以冒号结尾时报端口无效",
+      "op": "system_proxy.parseWindowsProxy",
+      "input": {
+        "settings": {
+          "ProxyEnable": 1,
+          "ProxyServer": "10.0.0.1:"
+        }
+      },
+      "expected": {
+        "ok": false,
+        "message": "Windows 系统代理端口无效"
+      }
+    },
+    {
+      "name": "parseWindowsProxy：地址含空格时报地址无效",
+      "op": "system_proxy.parseWindowsProxy",
+      "input": {
+        "settings": {
+          "ProxyEnable": 1,
+          "ProxyServer": "bad host:8080"
+        }
+      },
+      "expected": {
+        "ok": false,
+        "message": "Windows 系统代理地址无效"
+      }
+    },
+    {
+      "name": "parseWindowsProxy：地址带 scheme 时报地址无效",
+      "op": "system_proxy.parseWindowsProxy",
+      "input": {
+        "settings": {
+          "ProxyEnable": 1,
+          "ProxyServer": "http://10.0.0.1:8080"
+        }
+      },
+      "expected": {
+        "ok": false,
+        "message": "Windows 系统代理地址无效"
+      }
+    },
+    {
+      "name": "parseWindowsProxy：端口超过 65535 时 URL 解析失败报地址无效",
+      "op": "system_proxy.parseWindowsProxy",
+      "input": {
+        "settings": {
+          "ProxyEnable": 1,
+          "ProxyServer": "10.0.0.1:70000"
+        }
+      },
+      "expected": {
+        "ok": false,
+        "message": "Windows 系统代理地址无效"
+      }
+    },
+    {
+      "name": "parseWindowsProxy：重复的 http= 以后一次为准",
+      "op": "system_proxy.parseWindowsProxy",
+      "input": {
+        "settings": {
+          "ProxyEnable": 1,
+          "ProxyServer": "http=10.0.0.1:8080;http=10.0.0.2:9090"
+        }
+      },
+      "expected": {
+        "ok": true,
+        "value": {
+          "HTTP_PROXY": "http://10.0.0.2:9090",
+          "HTTPS_PROXY": "http://10.0.0.2:9090",
+          "http_proxy": "http://10.0.0.2:9090",
+          "https_proxy": "http://10.0.0.2:9090",
+          "NO_PROXY": "localhost,127.0.0.1,::1",
+          "no_proxy": "localhost,127.0.0.1,::1"
+        }
+      }
+    },
+    {
+      "name": "parseWindowsProxy：只给了 https= 时 HTTP 回落到它",
+      "op": "system_proxy.parseWindowsProxy",
+      "input": {
+        "settings": {
+          "ProxyEnable": 1,
+          "ProxyServer": "10.0.0.1:8080;https=secure.local:443"
+        }
+      },
+      "expected": {
+        "ok": true,
+        "value": {
+          "HTTP_PROXY": "http://secure.local:443",
+          "HTTPS_PROXY": "http://secure.local:443",
+          "http_proxy": "http://secure.local:443",
+          "https_proxy": "http://secure.local:443",
+          "NO_PROXY": "localhost,127.0.0.1,::1",
+          "no_proxy": "localhost,127.0.0.1,::1"
+        }
+      }
+    },
+    {
+      "name": "parseWindowsProxy：值里再出现 = 时按截断值处理并报端口无效",
+      "op": "system_proxy.parseWindowsProxy",
+      "input": {
+        "settings": {
+          "ProxyEnable": 1,
+          "ProxyServer": "http=user=pass:80"
+        }
+      },
+      "expected": {
+        "ok": false,
+        "message": "Windows 系统代理端口无效"
+      }
+    },
+    {
+      "name": "parseWindowsProxy：数字型 ProxyServer 报端口无效",
+      "op": "system_proxy.parseWindowsProxy",
+      "input": {
+        "settings": {
+          "ProxyEnable": 1,
+          "ProxyServer": 8080
+        }
+      },
+      "expected": {
+        "ok": false,
+        "message": "Windows 系统代理端口无效"
+      }
+    },
+    {
+      "name": "parseWindowsProxy：主机名百分号解码后小写",
+      "op": "system_proxy.parseWindowsProxy",
+      "input": {
+        "settings": {
+          "ProxyEnable": 1,
+          "ProxyServer": "ex%41mple.com:80"
+        }
+      },
+      "expected": {
+        "ok": true,
+        "value": {
+          "HTTP_PROXY": "http://example.com",
+          "HTTPS_PROXY": "http://example.com",
+          "http_proxy": "http://example.com",
+          "https_proxy": "http://example.com",
+          "NO_PROXY": "localhost,127.0.0.1,::1",
+          "no_proxy": "localhost,127.0.0.1,::1"
+        }
+      }
+    },
+    {
+      "name": "systemProxyEnvironment：未启用时只给出 NO_PROXY",
+      "op": "system_proxy.systemProxyEnvironment",
+      "input": {
+        "enabled": false
+      },
+      "expected": {
+        "ok": true,
+        "value": {
+          "NO_PROXY": "localhost,127.0.0.1,::1",
+          "no_proxy": "localhost,127.0.0.1,::1"
+        }
+      }
+    },
+    {
+      "name": "systemProxyEnvironment：enabled 缺失时同上",
+      "op": "system_proxy.systemProxyEnvironment",
+      "input": {},
+      "expected": {
+        "ok": true,
+        "value": {
+          "NO_PROXY": "localhost,127.0.0.1,::1",
+          "no_proxy": "localhost,127.0.0.1,::1"
+        }
+      }
+    },
+    {
+      "name": "jsNumber：Number() 语义（进制前缀、空白、Infinity、数组、对象）",
+      "op": "system_proxy.jsNumber",
+      "input": {
+        "values": [
+          "0x50",
+          "0X50",
+          "0b101",
+          "0B101",
+          "0o17",
+          "0O17",
+          "0xG1",
+          "",
+          "   ",
+          "12.5",
+          "1e3",
+          "-0",
+          " 42 ",
+          "65535",
+          "65536",
+          "Infinity",
+          "+Infinity",
+          "-Infinity",
+          "inf",
+          "Infinityx",
+          "8o80",
+          "item",
+          "1_000",
+          "1,000",
+          null,
+          true,
+          false,
+          [
+            "7"
+          ],
+          [],
+          [
+            1,
+            2
+          ],
+          {
+            "a": 1
+          },
+          0,
+          1.5,
+          -2.5
+        ]
+      },
+      "expected": {
+        "values": [
+          80,
+          80,
+          5,
+          5,
+          15,
+          15,
+          "NaN",
+          0,
+          0,
+          12.5,
+          1000,
+          0,
+          42,
+          65535,
+          65536,
+          "Infinity",
+          "Infinity",
+          "-Infinity",
+          "NaN",
+          "NaN",
+          "NaN",
+          "NaN",
+          "NaN",
+          "NaN",
+          0,
+          1,
+          0,
+          7,
+          0,
+          "NaN",
+          "NaN",
+          0,
+          1.5,
+          -2.5
+        ]
+      }
+    }
+  ]
+}

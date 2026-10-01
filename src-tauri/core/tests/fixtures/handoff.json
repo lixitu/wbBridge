@@ -1,0 +1,735 @@
+{
+  "module": "handoff",
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "Bash",
+        "description": "Run a shell command",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "timeout": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "command"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "PowerShell",
+        "description": "Run PowerShell",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "command"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "Read",
+        "description": "Read a file",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file_path": {
+              "type": "string"
+            },
+            "offset": {
+              "type": "number"
+            },
+            "limit": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "file_path"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "Write",
+        "description": "Write a file",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file_path": {
+              "type": "string"
+            },
+            "content": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "file_path",
+            "content"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "Edit",
+        "description": "Edit a file",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "file_path": {
+              "type": "string"
+            },
+            "old_string": {
+              "type": "string"
+            },
+            "new_string": {
+              "type": "string"
+            },
+            "replace_all": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "file_path",
+            "old_string",
+            "new_string"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "Grep",
+        "description": "Search text",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "pattern": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "include": {
+              "type": "string"
+            },
+            "output_mode": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pattern"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "Glob",
+        "description": "Find files",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "pattern": {
+              "type": "string"
+            },
+            "directory": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pattern"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "LS",
+        "description": "List files",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "Skill",
+        "description": "Run a skill",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "skill": {
+              "type": "string"
+            },
+            "arguments": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "skill"
+          ]
+        }
+      }
+    }
+  ],
+  "cases": [
+    {
+      "name": "handoff：bash 全字段映射",
+      "op": "handoff.buildHandoff",
+      "input": {
+        "native": "bash",
+        "args": {
+          "command": "ls -la",
+          "description": "列目录",
+          "timeout": 5000
+        }
+      },
+      "expected": {
+        "name": "Bash",
+        "arguments": {
+          "command": "ls -la",
+          "description": "列目录",
+          "timeout": 5000
+        }
+      }
+    },
+    {
+      "name": "handoff：bash 未声明的键被丢弃",
+      "op": "handoff.buildHandoff",
+      "input": {
+        "native": "bash",
+        "args": {
+          "command": "ls",
+          "cwd": "/tmp"
+        }
+      },
+      "expected": {
+        "name": "Bash",
+        "arguments": {
+          "command": "ls"
+        }
+      }
+    },
+    {
+      "name": "handoff：native 大小写不敏感",
+      "op": "handoff.buildHandoff",
+      "input": {
+        "native": "BASH",
+        "args": {
+          "command": "pwd"
+        }
+      },
+      "expected": {
+        "name": "Bash",
+        "arguments": {
+          "command": "pwd"
+        }
+      }
+    },
+    {
+      "name": "handoff：read 主键 filePath",
+      "op": "handoff.buildHandoff",
+      "input": {
+        "native": "read",
+        "args": {
+          "filePath": "/tmp/a.txt",
+          "offset": 0,
+          "limit": 10
+        }
+      },
+      "expected": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/tmp/a.txt",
+          "offset": 0,
+          "limit": 10
+        }
+      }
+    },
+    {
+      "name": "handoff：read 别名 path",
+      "op": "handoff.buildHandoff",
+      "input": {
+        "native": "read",
+        "args": {
+          "path": "/tmp/b.txt"
+        }
+      },
+      "expected": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/tmp/b.txt"
+        }
+      }
+    },
+    {
+      "name": "handoff：write 映射",
+      "op": "handoff.buildHandoff",
+      "input": {
+        "native": "write",
+        "args": {
+          "filePath": "/tmp/c.txt",
+          "content": "hi"
+        }
+      },
+      "expected": {
+        "name": "Write",
+        "arguments": {
+          "file_path": "/tmp/c.txt",
+          "content": "hi"
+        }
+      }
+    },
+    {
+      "name": "handoff：write 缺必填返回 null",
+      "op": "handoff.buildHandoff",
+      "input": {
+        "native": "write",
+        "args": {
+          "filePath": "/tmp/c.txt"
+        }
+      },
+      "expected": null
+    },
+    {
+      "name": "handoff：write 内容非字符串返回 null",
+      "op": "handoff.buildHandoff",
+      "input": {
+        "native": "write",
+        "args": {
+          "filePath": "/tmp/c.txt",
+          "content": 42
+        }
+      },
+      "expected": {
+        "name": "Write",
+        "arguments": {
+          "file_path": "/tmp/c.txt",
+          "content": 42
+        }
+      }
+    },
+    {
+      "name": "handoff：edit 含 replaceAll",
+      "op": "handoff.buildHandoff",
+      "input": {
+        "native": "edit",
+        "args": {
+          "filePath": "/tmp/e.txt",
+          "oldString": "a",
+          "newString": "b",
+          "replaceAll": true
+        }
+      },
+      "expected": {
+        "name": "Edit",
+        "arguments": {
+          "file_path": "/tmp/e.txt",
+          "old_string": "a",
+          "new_string": "b",
+          "replace_all": true
+        }
+      }
+    },
+    {
+      "name": "handoff：grep 映射 path",
+      "op": "handoff.buildHandoff",
+      "input": {
+        "native": "grep",
+        "args": {
+          "pattern": "TODO",
+          "path": "/repo"
+        }
+      },
+      "expected": {
+        "name": "Grep",
+        "arguments": {
+          "pattern": "TODO",
+          "path": "/repo"
+        }
+      }
+    },
+    {
+      "name": "handoff：glob 的 path 落到 directory",
+      "op": "handoff.buildHandoff",
+      "input": {
+        "native": "glob",
+        "args": {
+          "pattern": "*.rs",
+          "path": "/repo"
+        }
+      },
+      "expected": {
+        "name": "Glob",
+        "arguments": {
+          "pattern": "*.rs",
+          "directory": "/repo"
+        }
+      }
+    },
+    {
+      "name": "handoff：glob 直接用 directory",
+      "op": "handoff.buildHandoff",
+      "input": {
+        "native": "glob",
+        "args": {
+          "pattern": "*.rs",
+          "directory": "/repo2"
+        }
+      },
+      "expected": {
+        "name": "Glob",
+        "arguments": {
+          "pattern": "*.rs"
+        }
+      }
+    },
+    {
+      "name": "handoff：skill 的 name 落到 skill 键",
+      "op": "handoff.buildHandoff",
+      "input": {
+        "native": "skill",
+        "args": {
+          "name": "excel",
+          "arguments": {
+            "a": 1
+          }
+        }
+      },
+      "expected": {
+        "name": "Skill",
+        "arguments": {
+          "skill": "excel",
+          "arguments": {
+            "a": 1
+          }
+        }
+      }
+    },
+    {
+      "name": "handoff：ls 映射",
+      "op": "handoff.buildHandoff",
+      "input": {
+        "native": "ls",
+        "args": {
+          "path": "/tmp"
+        }
+      },
+      "expected": null
+    },
+    {
+      "name": "handoff：未知 native 返回 null",
+      "op": "handoff.buildHandoff",
+      "input": {
+        "native": "webfetch",
+        "args": {
+          "url": "https://example.com"
+        }
+      },
+      "expected": null
+    },
+    {
+      "name": "handoff：空 input 返回 null",
+      "op": "handoff.buildHandoff",
+      "input": {
+        "native": "bash",
+        "args": {}
+      },
+      "expected": null
+    },
+    {
+      "name": "handoff：缺必填返回 null",
+      "op": "handoff.buildHandoff",
+      "input": {
+        "native": "bash",
+        "args": {
+          "description": "x"
+        }
+      },
+      "expected": null
+    },
+    {
+      "name": "handoff：args 为 null 返回 null",
+      "op": "handoff.buildHandoff",
+      "input": {
+        "native": "bash",
+        "args": null
+      },
+      "expected": null
+    },
+    {
+      "name": "handoff：工具列表为空返回 null",
+      "op": "handoff.buildHandoff",
+      "toolsOverride": [],
+      "input": {
+        "native": "bash",
+        "args": {
+          "command": "ls"
+        }
+      },
+      "expected": null
+    },
+    {
+      "name": "handoff：handoffInput 工具部分优先",
+      "op": "handoff.handoffInput",
+      "input": {
+        "action": {
+          "input": {
+            "command": "a"
+          }
+        },
+        "permission": {
+          "filepath": "/x",
+          "pattern": "p"
+        }
+      },
+      "expected": {
+        "command": "a"
+      }
+    },
+    {
+      "name": "handoff：handoffInput metadata 回退并忽略空白",
+      "op": "handoff.handoffInput",
+      "input": {
+        "action": {
+          "input": {}
+        },
+        "permission": {
+          "metadata": {
+            "filePath": "/y",
+            "pattern": "  "
+          }
+        }
+      },
+      "expected": {
+        "filePath": "/y"
+      }
+    },
+    {
+      "name": "handoff：handoffInput metadata 小写 filepath",
+      "op": "handoff.handoffInput",
+      "input": {
+        "action": null,
+        "permission": {
+          "metadata": {
+            "filepath": "/z"
+          }
+        }
+      },
+      "expected": {
+        "filePath": "/z"
+      }
+    },
+    {
+      "name": "handoff：handoffInput 全空返回 null",
+      "op": "handoff.handoffInput",
+      "input": {
+        "action": {},
+        "permission": {}
+      },
+      "expected": {}
+    },
+    {
+      "name": "handoff：handoffInput 必填只剩空白返回 null",
+      "op": "handoff.handoffInput",
+      "input": {
+        "permission": {
+          "metadata": {
+            "command": "   "
+          }
+        }
+      },
+      "expected": {}
+    },
+    {
+      "name": "handoff：handoffInput patternList 数组",
+      "op": "handoff.handoffInput",
+      "input": {
+        "permission": {
+          "patternList": [
+            "p1",
+            "p2"
+          ]
+        }
+      },
+      "expected": {}
+    },
+    {
+      "name": "handoff：rejectFeedback 文案",
+      "op": "handoff.rejectFeedback",
+      "input": {
+        "native": "Bash",
+        "reason": "command blocked by receiver"
+      },
+      "expected": "Native tool \"Bash\" was blocked: command blocked by receiver. Native execution is forbidden; the external client owns execution. Return the requested external action inside the calls array using StructuredOutput. The external client will execute it and supply results. Do not call any other native tools."
+    },
+    {
+      "name": "handoff：validateAction 通过",
+      "op": "handoff.validateAction",
+      "input": {
+        "candidate": {
+          "name": "Bash",
+          "arguments": {
+            "command": "ls"
+          }
+        }
+      },
+      "expected": {
+        "ok": {
+          "name": "Bash",
+          "arguments": {
+            "command": "ls"
+          }
+        }
+      }
+    },
+    {
+      "name": "handoff：validateAction 名称大小写归一",
+      "op": "handoff.validateAction",
+      "input": {
+        "candidate": {
+          "name": "bash",
+          "arguments": {
+            "command": "ls"
+          }
+        }
+      },
+      "expected": {
+        "ok": {
+          "name": "Bash",
+          "arguments": {
+            "command": "ls"
+          }
+        }
+      }
+    },
+    {
+      "name": "handoff：validateAction 未列出工具",
+      "op": "handoff.validateAction",
+      "input": {
+        "candidate": {
+          "name": "Nope",
+          "arguments": {}
+        }
+      },
+      "expected": {
+        "threw": {
+          "code": "invalid_tool_call",
+          "message": "Translated action names a tool the receiver did not offer"
+        }
+      }
+    },
+    {
+      "name": "handoff：validateAction 额外参数",
+      "op": "handoff.validateAction",
+      "input": {
+        "candidate": {
+          "name": "Bash",
+          "arguments": {
+            "command": "ls",
+            "cwd": "/tmp"
+          }
+        }
+      },
+      "expected": {
+        "threw": {
+          "code": "invalid_tool_call",
+          "message": "Translated action sets an argument the receiver does not declare: cwd"
+        }
+      }
+    },
+    {
+      "name": "handoff：validateAction 缺必填",
+      "op": "handoff.validateAction",
+      "input": {
+        "candidate": {
+          "name": "Bash",
+          "arguments": {}
+        }
+      },
+      "expected": {
+        "threw": {
+          "code": "invalid_tool_call",
+          "message": "Translated action misses a required argument"
+        }
+      }
+    },
+    {
+      "name": "handoff：validateAction 非对象",
+      "op": "handoff.validateAction",
+      "input": {
+        "candidate": "Bash"
+      },
+      "expected": {
+        "threw": {
+          "code": "invalid_tool_call",
+          "message": "Translated action is not an object"
+        }
+      }
+    },
+    {
+      "name": "handoff：validateAction arguments 非对象",
+      "op": "handoff.validateAction",
+      "input": {
+        "candidate": {
+          "name": "Bash",
+          "arguments": []
+        }
+      },
+      "expected": {
+        "threw": {
+          "code": "invalid_tool_call",
+          "message": "Translated action arguments are not an object"
+        }
+      }
+    },
+    {
+      "name": "handoff：validateAction arguments 为 null 且无必填",
+      "op": "handoff.validateAction",
+      "input": {
+        "candidate": {
+          "name": "LS",
+          "arguments": null
+        }
+      },
+      "expected": {
+        "ok": {
+          "name": "LS",
+          "arguments": {}
+        }
+      }
+    }
+  ]
+}

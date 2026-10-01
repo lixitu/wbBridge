@@ -1,0 +1,20 @@
+# WB Bridge 编辑器统一配置
+# 目的：跨编辑器/跨平台统一行尾、缩进与编码，避免「谁打开就顺手重排一遍」造成的噪声 diff。
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+[*.{rs,toml}]
+indent_size = 4
+
+[*.md]
+trim_trailing_whitespace = false
+
+[*.{yml,yaml,json}]
+indent_size = 2

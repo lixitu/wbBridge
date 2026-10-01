@@ -1,0 +1,148 @@
+{
+  "module": "json",
+  "cases": [
+    {
+      "name": "json：BOM 前缀被剥离",
+      "op": "json.parseJson",
+      "input": {
+        "text": "﻿{\"a\":1}"
+      },
+      "expected": {
+        "ok": true,
+        "value": {
+          "a": 1
+        }
+      }
+    },
+    {
+      "name": "json：嵌套结构",
+      "op": "json.parseJson",
+      "input": {
+        "text": "{\"a\":[1,2,{\"b\":null}],\"c\":true}"
+      },
+      "expected": {
+        "ok": true,
+        "value": {
+          "a": [
+            1,
+            2,
+            {
+              "b": null
+            }
+          ],
+          "c": true
+        }
+      }
+    },
+    {
+      "name": "json：顶层数组",
+      "op": "json.parseJson",
+      "input": {
+        "text": "[1,2,3]"
+      },
+      "expected": {
+        "ok": true,
+        "value": [
+          1,
+          2,
+          3
+        ]
+      }
+    },
+    {
+      "name": "json：顶层字符串",
+      "op": "json.parseJson",
+      "input": {
+        "text": "\"hello\""
+      },
+      "expected": {
+        "ok": true,
+        "value": "hello"
+      }
+    },
+    {
+      "name": "json：非法文本",
+      "op": "json.parseJson",
+      "input": {
+        "text": "{oops}"
+      },
+      "expected": {
+        "ok": false
+      }
+    },
+    {
+      "name": "json：空串",
+      "op": "json.parseJson",
+      "input": {
+        "text": ""
+      },
+      "expected": {
+        "ok": false
+      }
+    },
+    {
+      "name": "json：尾随逗号非法",
+      "op": "json.parseJson",
+      "input": {
+        "text": "{\"a\":1,}"
+      },
+      "expected": {
+        "ok": false
+      }
+    },
+    {
+      "name": "json：安全整数上界",
+      "op": "json.parseJson",
+      "input": {
+        "text": "{\"n\":9007199254740991}"
+      },
+      "expected": {
+        "ok": true,
+        "value": {
+          "n": 9007199254740991
+        }
+      }
+    },
+    {
+      "name": "json：整数浮点与指数写法归一",
+      "op": "json.parseJson",
+      "input": {
+        "text": "{\"a\":1e3,\"b\":0.5,\"c\":1.0}"
+      },
+      "expected": {
+        "ok": true,
+        "value": {
+          "a": 1000,
+          "b": 0.5,
+          "c": 1
+        }
+      }
+    },
+    {
+      "name": "json：字符串转义",
+      "op": "json.parseJson",
+      "input": {
+        "text": "\"a\\nb\\u00e9\""
+      },
+      "expected": {
+        "ok": true,
+        "value": "a\nbé"
+      }
+    },
+    {
+      "name": "json：键序保留",
+      "op": "json.parseJson",
+      "input": {
+        "text": "{\"z\":1,\"a\":2,\"m\":3}"
+      },
+      "expected": {
+        "ok": true,
+        "value": {
+          "z": 1,
+          "a": 2,
+          "m": 3
+        }
+      }
+    }
+  ]
+}

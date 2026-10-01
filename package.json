@@ -3,15 +3,32 @@
   "version": "1.0.0",
   "private": true,
   "description": "WB Bridge — 基于 Tauri 的跨平台桌面应用，通过隔离的 OpenCode 为 WorkBuddy 提供免费模型",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
-    "test": "npm test --prefix src/core",
-    "sidecar": "node scripts/build-sidecar.mjs",
-    "sidecar:all": "node scripts/build-sidecar.mjs --targets=all",
+    "test": "cargo test --manifest-path src-tauri/core/Cargo.toml",
+    "rust:check": "cargo check --manifest-path src-tauri/core/Cargo.toml",
+    "lint": "eslint .",
     "dev": "tauri dev",
-    "build": "tauri build",
-    "icons": "node docs/brand/build-icons.mjs"
+    "vite:dev": "vite",
+    "vite:build": "vite build",
+    "build": "npm run vite:build && tauri build",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "version:set": "node scripts/bump-version.mjs",
+    "version:check": "node scripts/check-version.mjs"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.12.0"
+    "@eslint/js": "^10.0.1",
+    "@tauri-apps/cli": "^2.12.0",
+    "@vitejs/plugin-vue": "^6.0.9",
+    "eslint": "^10.11.0",
+    "vite": "^8.3.1"
+  },
+  "dependencies": {
+    "vue": "^3.5.43"
   }
 }

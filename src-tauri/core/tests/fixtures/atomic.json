@@ -1,0 +1,198 @@
+{
+  "module": "atomic",
+  "cases": [
+    {
+      "name": "atomic：首次 rename 即成功",
+      "op": "atomic.replaceWithRetry",
+      "input": {
+        "plan": []
+      },
+      "expected": {
+        "sleeps": [],
+        "result": {
+          "ok": true
+        }
+      }
+    },
+    {
+      "name": "atomic：EPERM 后重试成功",
+      "op": "atomic.replaceWithRetry",
+      "input": {
+        "plan": [
+          "EPERM"
+        ]
+      },
+      "expected": {
+        "sleeps": [
+          50
+        ],
+        "result": {
+          "ok": true
+        }
+      }
+    },
+    {
+      "name": "atomic：三种暂态错误连续出现后成功",
+      "op": "atomic.replaceWithRetry",
+      "input": {
+        "plan": [
+          "EPERM",
+          "EACCES",
+          "EBUSY"
+        ]
+      },
+      "expected": {
+        "sleeps": [
+          50,
+          100,
+          200
+        ],
+        "result": {
+          "ok": true
+        }
+      }
+    },
+    {
+      "name": "atomic：非暂态错误立刻抛出（不重试）",
+      "op": "atomic.replaceWithRetry",
+      "input": {
+        "plan": [
+          "ENOENT"
+        ]
+      },
+      "expected": {
+        "sleeps": [],
+        "result": {
+          "code": "ENOENT"
+        }
+      }
+    },
+    {
+      "name": "atomic：暂态错误且重试次数用尽，抛出最后一次错误",
+      "op": "atomic.replaceWithRetry",
+      "input": {
+        "plan": [
+          "EPERM",
+          "EPERM",
+          "EPERM",
+          "EPERM",
+          "EPERM",
+          "EPERM"
+        ]
+      },
+      "expected": {
+        "sleeps": [
+          50,
+          100,
+          200,
+          400,
+          800
+        ],
+        "result": {
+          "code": "EPERM"
+        }
+      }
+    },
+    {
+      "name": "atomic：用尽重试但最后一次成功",
+      "op": "atomic.replaceWithRetry",
+      "input": {
+        "plan": [
+          "EPERM",
+          "EPERM",
+          "EPERM",
+          "EPERM",
+          "EPERM"
+        ]
+      },
+      "expected": {
+        "sleeps": [
+          50,
+          100,
+          200,
+          400,
+          800
+        ],
+        "result": {
+          "ok": true
+        }
+      }
+    },
+    {
+      "name": "atomic：自定义退避表后仍失败",
+      "op": "atomic.replaceWithRetry",
+      "input": {
+        "plan": [
+          "EPERM",
+          "EPERM"
+        ],
+        "delays": [
+          7
+        ]
+      },
+      "expected": {
+        "sleeps": [
+          7
+        ],
+        "result": {
+          "code": "EPERM"
+        }
+      }
+    },
+    {
+      "name": "atomic：空退避表等价于不重试",
+      "op": "atomic.replaceWithRetry",
+      "input": {
+        "plan": [
+          "EPERM"
+        ],
+        "delays": []
+      },
+      "expected": {
+        "sleeps": [],
+        "result": {
+          "code": "EPERM"
+        }
+      }
+    },
+    {
+      "name": "atomic：plan 中的 null 视为成功",
+      "op": "atomic.replaceWithRetry",
+      "input": {
+        "plan": [
+          null
+        ]
+      },
+      "expected": {
+        "sleeps": [],
+        "result": {
+          "ok": true
+        }
+      }
+    },
+    {
+      "name": "atomic：plan 用尽后视为成功",
+      "op": "atomic.replaceWithRetry",
+      "input": {
+        "plan": [
+          "EPERM",
+          "EPERM"
+        ],
+        "delays": [
+          1,
+          2,
+          3
+        ]
+      },
+      "expected": {
+        "sleeps": [
+          1,
+          2
+        ],
+        "result": {
+          "ok": true
+        }
+      }
+    }
+  ]
+}

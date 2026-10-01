@@ -65,7 +65,7 @@ coverage/
 .yarn-integrity
 
 # Lock files
-package-lock.json
+# package-lock.json 必须入库：.github/workflows/release.yml 全流程使用 npm ci，缺 lock 会直接失败。
 
 # Environment variables
 .env
@@ -107,16 +107,9 @@ src-tauri/gen/schemas/
 src-tauri/gen/icons/
 **/target/
 
-# Node
-node_modules/
-src/core/dist/
-
 # 本地密钥与凭据（严禁提交）
 .env.local
 
-# Sidecar 产物（构建期生成，不入库）
+# 核心已内嵌进 Tauri 壳（src-tauri/core 编成静态库），不再有 externalBin sidecar。
+# 这条规则留着只是防止误把历史 sidecar 产物加回仓库。
 src-tauri/binaries/
-
-# 图标生成中间产物
-docs/brand/out/
-docs/brand/*.png

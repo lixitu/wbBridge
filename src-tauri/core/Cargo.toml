@@ -1,0 +1,79 @@
+[package]
+name = "wbbridge-core"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "WB Bridge 核心代理的 Rust 实现（纯逻辑模块 + sync/system-proxy + axum HTTP 层 + runtime/backend + 编排；可独立运行，或作为 path 依赖静态嵌入 Tauri 壳）"
+publish = false
+
+[lib]
+name = "wbbridge_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "wbbridge-core"
+path = "src/main.rs"
+
+[dependencies]
+# 与 JS 版逐字段对齐所需的全部依赖，均为阶段一纯逻辑使用：
+#   serde_json        —— JSON.parse / JSON.stringify，preserve_order 保证键序与 JS 一致
+#   regex             —— model-status.js 的失败归类正则
+#   base64            —— protocol.js 的内联图片 data URL 规范化校验
+#   getrandom         —— protocol.js 的 randomUUID（call id / chatcmpl id）
+serde_json = { version = "1.0", features = ["preserve_order"] }
+regex = "1"
+base64 = "0.22"
+# protocol.js 的 randomUUID（v4，密码学安全，由 OS CSPRNG 驱动）
+uuid = { version = "1", features = ["v4"] }
+# server.js 的 timingSafeEqual 等价物（恒定时间比较 API key）
+subtle = "2"
+# 与 core/src/server.js 对应的 HTTP 层（阶段二）：
+#   axum           —— 本地 HTTP 服务（路由/鉴权/限流/SSE 全部由本 crate 自行实现）
+#   tokio          —— 异步运行时、超时、进程调用（system-proxy 的 scutil/powershell）
+#   tokio-stream   —— 把 mpsc 通道转成响应体流，用于 SSE 边生成边发送
+axum = "0.8"
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "net",
+    "time",
+    "sync",
+    "io-util",
+    "process",
+    "signal",
+] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+# 与 core/src/backend.js 和 runtime.js 对应的异步 HTTP 客户端（阶段三）：
+#   reqwest   —— 异步 HTTP（OpenCode 会话请求、registry 元数据、tarball 下载）
+#   futures   —— StreamExt::next() 用于 SSE 增量解析
+#   sha2      —— tarball 的 sha512 完整性校验
+#   flate2    —— .tgz 的 gzip 解压
+#   tar       —— 从 tarball 中取出 package/bin/<binary>
+#   url       —— 复刻 WHATWG URL 的 origin / pathname 语义
+#   percent-encoding —— URL 路径中的 session id 编码
+reqwest = { version = "0.12", default-features = false, features = [
+    "json", "stream", "rustls-tls", "gzip", "brotli",
+] }
+futures = "0.3"
+sha2 = "0.10"
+flate2 = "1"
+tar = "0.4"
+url = "2"
+percent-encoding = "2"
+
+# runtime.js 的看门狗先发 SIGTERM、宽限后再 SIGKILL；`Child::kill` 只有强杀，
+# 所以 unix 下需要 libc 发信号（与 src-tauri 的 libc 用法一致）。
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# main.rs 的父进程看门狗：Windows 没有 `kill(pid, 0)`，只能用 OpenProcess +
+# GetExitCodeProcess 判断壳是否还活着（进程消失即自行关停，避免孤儿进程占用端口）。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+# 契约测试里直接用 oneshot 调用 Router，无需真实网络往返。
+tower = { version = "0.5", features = ["util"] }

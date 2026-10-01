@@ -1,0 +1,336 @@
+{
+  "module": "model_status",
+  "cases": [
+    {
+      "name": "model-status：成功时仍带 error 字段",
+      "op": "model_status.modelResult",
+      "input": {
+        "ok": true,
+        "message": "done"
+      },
+      "expected": {
+        "ok": true,
+        "category": "available",
+        "time": "2026-09-30T00:00:00.000Z",
+        "error": "done"
+      }
+    },
+    {
+      "name": "model-status：成功且无消息",
+      "op": "model_status.modelResult",
+      "input": {
+        "ok": true
+      },
+      "expected": {
+        "ok": true,
+        "category": "available",
+        "time": "2026-09-30T00:00:00.000Z"
+      }
+    },
+    {
+      "name": "model-status：泛化错误",
+      "op": "model_status.modelResult",
+      "input": {
+        "ok": false,
+        "message": "boom"
+      },
+      "expected": {
+        "ok": false,
+        "category": "error",
+        "time": "2026-09-30T00:00:00.000Z",
+        "error": "boom"
+      }
+    },
+    {
+      "name": "model-status：quota（英文 exceeded）",
+      "op": "model_status.modelResult",
+      "input": {
+        "ok": false,
+        "message": "You have exceeded your quota"
+      },
+      "expected": {
+        "ok": false,
+        "category": "error",
+        "time": "2026-09-30T00:00:00.000Z",
+        "error": "You have exceeded your quota"
+      }
+    },
+    {
+      "name": "model-status：quota（out of credits）",
+      "op": "model_status.modelResult",
+      "input": {
+        "ok": false,
+        "message": "out of credits"
+      },
+      "expected": {
+        "ok": false,
+        "category": "quota",
+        "time": "2026-09-30T00:00:00.000Z",
+        "error": "out of credits"
+      }
+    },
+    {
+      "name": "model-status：quota（中文额度不足）",
+      "op": "model_status.modelResult",
+      "input": {
+        "ok": false,
+        "message": "额度已不足"
+      },
+      "expected": {
+        "ok": false,
+        "category": "quota",
+        "time": "2026-09-30T00:00:00.000Z",
+        "error": "额度已不足"
+      }
+    },
+    {
+      "name": "model-status：rate_limit（429）",
+      "op": "model_status.modelResult",
+      "input": {
+        "ok": false,
+        "message": "",
+        "status": 429
+      },
+      "expected": {
+        "ok": false,
+        "category": "rate_limit",
+        "time": "2026-09-30T00:00:00.000Z",
+        "status": 429
+      }
+    },
+    {
+      "name": "model-status：rate_limit（文本）",
+      "op": "model_status.modelResult",
+      "input": {
+        "ok": false,
+        "message": "Too Many Requests"
+      },
+      "expected": {
+        "ok": false,
+        "category": "rate_limit",
+        "time": "2026-09-30T00:00:00.000Z",
+        "error": "Too Many Requests"
+      }
+    },
+    {
+      "name": "model-status：access（403）",
+      "op": "model_status.modelResult",
+      "input": {
+        "ok": false,
+        "message": "forbidden",
+        "status": 403
+      },
+      "expected": {
+        "ok": false,
+        "category": "access",
+        "time": "2026-09-30T00:00:00.000Z",
+        "error": "forbidden",
+        "status": 403
+      }
+    },
+    {
+      "name": "model-status：access（401）",
+      "op": "model_status.modelResult",
+      "input": {
+        "ok": false,
+        "message": "unauthorized",
+        "status": 401
+      },
+      "expected": {
+        "ok": false,
+        "category": "access",
+        "time": "2026-09-30T00:00:00.000Z",
+        "error": "unauthorized",
+        "status": 401
+      }
+    },
+    {
+      "name": "model-status：timeout",
+      "op": "model_status.modelResult",
+      "input": {
+        "ok": false,
+        "message": "request timed out"
+      },
+      "expected": {
+        "ok": false,
+        "category": "timeout",
+        "time": "2026-09-30T00:00:00.000Z",
+        "error": "request timed out"
+      }
+    },
+    {
+      "name": "model-status：成功时 status 仍透传",
+      "op": "model_status.modelResult",
+      "input": {
+        "ok": true,
+        "status": 429
+      },
+      "expected": {
+        "ok": true,
+        "category": "available",
+        "time": "2026-09-30T00:00:00.000Z",
+        "status": 429
+      }
+    },
+    {
+      "name": "model-status：status=0 被忽略",
+      "op": "model_status.modelResult",
+      "input": {
+        "ok": false,
+        "message": "x",
+        "status": 0
+      },
+      "expected": {
+        "ok": false,
+        "category": "error",
+        "time": "2026-09-30T00:00:00.000Z",
+        "error": "x"
+      }
+    },
+    {
+      "name": "model-status：code 空串被忽略",
+      "op": "model_status.modelResult",
+      "input": {
+        "ok": false,
+        "message": "x",
+        "code": ""
+      },
+      "expected": {
+        "ok": false,
+        "category": "error",
+        "time": "2026-09-30T00:00:00.000Z",
+        "error": "x"
+      }
+    },
+    {
+      "name": "model-status：code 透传",
+      "op": "model_status.modelResult",
+      "input": {
+        "ok": false,
+        "message": "x",
+        "code": "invalid_model_output"
+      },
+      "expected": {
+        "ok": false,
+        "category": "error",
+        "time": "2026-09-30T00:00:00.000Z",
+        "error": "x",
+        "code": "invalid_model_output"
+      }
+    },
+    {
+      "name": "model-status：withRequestMeta 全量字段",
+      "op": "model_status.withRequestMeta",
+      "input": {
+        "result": {
+          "ok": false
+        },
+        "meta": {
+          "calls": 2,
+          "nativeAttempts": 1,
+          "steps": "3",
+          "handoff": "Bash",
+          "handoffCheck": {
+            "ok": false
+          },
+          "repaired": {
+            "envelope": {
+              "ok": true
+            }
+          }
+        }
+      },
+      "expected": {
+        "ok": false,
+        "calls": 2,
+        "nativeAttempts": 1,
+        "handoff": "Bash",
+        "handoffCheck": {
+          "ok": false
+        },
+        "repaired": {
+          "envelope": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "name": "model-status：withRequestMeta 忽略非整数字段",
+      "op": "model_status.withRequestMeta",
+      "input": {
+        "result": {
+          "ok": true
+        },
+        "meta": {
+          "calls": 1.5,
+          "nativeAttempts": null,
+          "steps": 0
+        }
+      },
+      "expected": {
+        "ok": true,
+        "steps": 0
+      }
+    },
+    {
+      "name": "model-status：withRequestMeta meta 缺失",
+      "op": "model_status.withRequestMeta",
+      "input": {
+        "result": {
+          "ok": true
+        }
+      },
+      "expected": {
+        "ok": true
+      }
+    },
+    {
+      "name": "model-status：withRequestMeta meta 为 null",
+      "op": "model_status.withRequestMeta",
+      "input": {
+        "result": {
+          "ok": true
+        },
+        "meta": null
+      },
+      "expected": {
+        "ok": true
+      }
+    },
+    {
+      "name": "model-status：withRequestMeta meta 非对象",
+      "op": "model_status.withRequestMeta",
+      "input": {
+        "result": {
+          "ok": true
+        },
+        "meta": "nope"
+      },
+      "expected": {
+        "ok": true
+      }
+    },
+    {
+      "name": "model-status：clientModelID",
+      "op": "model_status.clientModelID",
+      "input": {
+        "model": {
+          "id": "m1",
+          "name": "Model One"
+        }
+      },
+      "expected": "OC · Model One"
+    },
+    {
+      "name": "model-status：clientModelID 缺 name",
+      "op": "model_status.clientModelID",
+      "input": {
+        "model": {
+          "id": "m1"
+        }
+      },
+      "expected": "OC · undefined"
+    }
+  ]
+}
