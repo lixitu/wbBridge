@@ -241,6 +241,8 @@ fn core_exit(state: &AppState) -> Option<String> {
 
 /// status.json 的结构版本。与 `src-tauri/core/src/orchestration.rs` 的 `STATUS_SCHEMA_VERSION` 必须同步 +1；
 /// 不一致时只提示不阻断（可能只是其中一侧升级了），避免两侧互相锁死。
+/// 口径：向后兼容的**加法式**顶层字段（如新增的 `usage`，旧壳忽略未知字段即可）**不**递增本值；
+/// 只有删除 / 改名顶层字段或改变既有字段语义（非兼容变更）时才同步 +1。
 const STATUS_SCHEMA_VERSION: u64 = 1;
 
 /// 轮询核心写的 status.json：内容变化即推送事件、同步托盘勾选态，并监督核心任务是否已结束。
@@ -461,6 +463,73 @@ fn data_dir_path(app: AppHandle) -> Result<String, String> {
     Ok(dir.to_string_lossy().into_owned())
 }
 
+/// 日志文件名：与核心 `orchestration.rs` 的 `join_host(&[&data_dir, "opencode.log"])` 一致，
+/// 轮转文件是 `<同一路径>.previous`。两处必须同步改名，否则面板会静默读到空日志。
+const LOG_FILE_NAME: &str = "opencode.log";
+/// 尾部字节上限：日志按 5MB 轮转，面板只看最近一段，读全量既无意义也会把大字符串塞进 IPC。
+const LOG_TAIL_BYTES: u64 = 256 * 1024;
+/// 尾部行数上限（比字节上限更早生效时也要报告 truncated）。
+const LOG_TAIL_LINES: usize = 1200;
+
+/// 运行日志（只读）：返回数据目录下核心日志的尾部。
+///
+/// 路径由壳自己按 `app_data_dir` + 固定文件名拼出，**不接受调用方传路径** —— 面板只读展示，
+/// 不得借这条命令读取数据目录之外的任意文件（也不写文件）。
+/// 返回 `{ text, truncated, bytes }`：`bytes` 是日志文件的当前总字节数（不是返回文本长度），
+/// `truncated` 表示尾部内容因字节/行数上限被截断。
+#[tauri::command]
+fn read_log(app: AppHandle) -> Result<Value, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    read_log_tail(&dir.join(LOG_FILE_NAME), LOG_TAIL_BYTES, LOG_TAIL_LINES)
+}
+
+/// 读取日志尾部（纯函数，便于单测）。
+///
+/// 实现要点：
+/// - 只 seek 到 `total - max_bytes` 起读，不把 5MB 日志整体读进内存；
+/// - 从中间字节开始解码时首行必然是断的，丢掉这半行（若整个尾部就是一行超长文本则无从丢弃，
+///   此时 `truncated` 已为 true，面板会提示内容被截断）；
+/// - 文件不存在（核心还没写过日志）按空日志处理，不报错。
+fn read_log_tail(path: &Path, max_bytes: u64, max_lines: usize) -> Result<Value, String> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(serde_json::json!({ "text": "", "truncated": false, "bytes": 0 }))
+        }
+        Err(error) => return Err(format!("读取运行日志失败：{error}")),
+    };
+    let total = file
+        .metadata()
+        .map_err(|error| format!("读取运行日志失败：{error}"))?
+        .len();
+    let mut truncated = total > max_bytes;
+    if truncated {
+        file.seek(SeekFrom::Start(total - max_bytes))
+            .map_err(|error| format!("读取运行日志失败：{error}"))?;
+    }
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer)
+        .map_err(|error| format!("读取运行日志失败：{error}"))?;
+    let mut text = String::from_utf8_lossy(&buffer).into_owned();
+    if truncated {
+        if let Some(index) = text.find('\n') {
+            text.drain(..=index);
+        }
+    }
+    let mut lines: Vec<&str> = text.lines().collect();
+    if lines.len() > max_lines {
+        lines.drain(..lines.len() - max_lines);
+        truncated = true;
+    }
+    Ok(serde_json::json!({
+        "text": lines.join("\n"),
+        "truncated": truncated,
+        "bytes": total,
+    }))
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -513,7 +582,13 @@ pub fn run() {
                 let _ = window.hide();
             }
         })
-        .invoke_handler(tauri::generate_handler![core_action, restart_core, core_running, data_dir_path])
+        .invoke_handler(tauri::generate_handler![
+            core_action,
+            restart_core,
+            core_running,
+            data_dir_path,
+            read_log
+        ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
@@ -527,4 +602,72 @@ pub fn run() {
                 _ => {}
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    /// 临时日志文件；Drop 时清理，避免测试往磁盘留垃圾。
+    struct TempLog(PathBuf);
+
+    impl TempLog {
+        fn new(name: &str, content: &str) -> Self {
+            let path = std::env::temp_dir()
+                .join(format!("wb-bridge-log-{}-{name}.log", std::process::id()));
+            let mut file = fs::File::create(&path).expect("创建临时日志");
+            file.write_all(content.as_bytes()).expect("写入临时日志");
+            Self(path)
+        }
+    }
+
+    impl Drop for TempLog {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
+        }
+    }
+
+    fn absent_log_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("wb-bridge-log-{}-{name}-absent.log", std::process::id()))
+    }
+
+    /// 核心还没写过日志（文件不存在）时按空日志处理：不报错、bytes 为 0。
+    #[test]
+    fn missing_log_reads_as_empty_without_error() {
+        let value = read_log_tail(&absent_log_path("missing"), 1024, 10).expect("缺失日志不得报错");
+        assert_eq!(value["text"], "");
+        assert_eq!(value["truncated"], false);
+        assert_eq!(value["bytes"], 0);
+    }
+
+    /// 小文件整份返回：bytes 是文件真实字节数（不是返回文本长度），truncated 为 false。
+    #[test]
+    fn small_log_is_returned_whole() {
+        let log = TempLog::new("small", "line one\nline two\n");
+        let value = read_log_tail(&log.0, 1024, 10).expect("读取小日志");
+        assert_eq!(value["text"], "line one\nline two");
+        assert_eq!(value["truncated"], false);
+        assert_eq!(value["bytes"], 18);
+    }
+
+    /// 超过字节上限：只回尾部，且丢掉跨字节起点被截断的半行，保证首行是完整日志行。
+    #[test]
+    fn oversized_log_keeps_tail_and_drops_the_split_first_line() {
+        let content = "header line that will be cut\nkeep me\nand me\n";
+        let log = TempLog::new("bytes", content);
+        let value = read_log_tail(&log.0, 20, 100).expect("读取超长日志");
+        assert_eq!(value["truncated"], true);
+        assert_eq!(value["text"], "keep me\nand me");
+        assert_eq!(value["bytes"], content.len());
+    }
+
+    /// 超过行数上限：只保留最后 max_lines 行，并如实报告 truncated。
+    #[test]
+    fn oversized_log_keeps_only_the_last_lines() {
+        let log = TempLog::new("lines", "a\nb\nc\nd\n");
+        let value = read_log_tail(&log.0, 1024, 2).expect("读取多行日志");
+        assert_eq!(value["truncated"], true);
+        assert_eq!(value["text"], "c\nd");
+    }
 }

@@ -37,7 +37,7 @@ xattr -dr com.apple.quarantine "/Applications/WB Bridge.app"
 3. 找不到配置时点「导入 WorkBuddy」选择 `models.json`；Windows 托盘菜单「选择 WorkBuddy 配置…」可更换位置。
 4. 「使用系统代理」开关控制运行时下载与模型请求是否走系统 HTTP/HTTPS 代理。
 
-界面说明：左侧栏为分组导航（模型 / 运行 / 集成 / 其他，底部为运行设置），当前**只有「模型与服务」可用**，运行日志、用量与额度、WorkBuddy 集成、关于与更新 4 个入口标注「规划中」、处于禁用态、点击无响应；点击模型行后详情在**右侧常驻分栏**显示，按 `Esc`、点详情头部「收起详情」或窗口失焦即可收起。
+界面说明：左侧栏为分组导航（模型 / 运行 / 集成 / 其他，底部为运行设置），5 个入口均可点击并在侧栏高亮当前视图——模型与服务、运行日志、用量与额度、WorkBuddy 集成、关于与更新；点击模型行后详情在**右侧常驻分栏**显示，按 `Esc`、点详情头部「收起详情」或窗口失焦即可收起。
 
 ## 从源码构建
 
@@ -45,7 +45,7 @@ xattr -dr com.apple.quarantine "/Applications/WB Bridge.app"
 
 ```sh
 npm install
-npm test             # 核心测试：cargo test --manifest-path src-tauri/core/Cargo.toml（197 项 = 179 单测 + 11 JS 对拍 + 7 红线）
+npm test             # 核心测试：cargo test --manifest-path src-tauri/core/Cargo.toml（202 项 = 184 单测 + 11 JS 对拍 + 7 红线）
 npm run rust:check   # cargo check 核心
 npm run lint         # eslint .（面板）
 cargo clippy --all-targets --manifest-path src-tauri/core/Cargo.toml   # 核心门禁：0 warning
@@ -88,7 +88,7 @@ docs/           验证记录（validation.md）、版本日志（version/）、�
 
 - 壳从 Electron 换为 Tauri 2：安装包体积显著下降（迁移前 sidecar 版实测 dmg 约 25 MB），内存占用显著降低；核心已用 Rust 重写并**静态链接进壳**，既不需要用户安装 Node，也不再随包分发 sidecar 可执行文件（`bundle.externalBin` 为空，`src-tauri/binaries/` 已移除）。
 - 新增 `POST /admin/shutdown` 管理接口与 `BUDDY_PARENT_PID` 父进程看门狗（独立运行核心时生效）：Windows 下 SIGTERM 不可靠、壳可能被强杀，两者共同保证退出时总能优雅清理 WorkBuddy 配置。
-- 托盘、导入、系统代理、模型检测与自动导入等行为与原版一致；界面保留原设计系统并优化了层级、留白、悬停反馈与深浅色主题。面板布局按本项目方案重做：侧栏为**分组导航**（模型 / 运行 / 集成 / 其他 + 运行设置），模型详情不再是「点开模型行就地展开」，而是**右侧常驻分栏**——选中模型后列表与详情并排显示，详情宽 `clamp(300px, 45%, 360px)`，可用 `Esc`、详情头部「收起详情」或窗口失焦收起，任何窗口宽度都不降级为上下堆叠。默认窗口 **1120×720**（最小 860×560），侧栏宽 208px。
+- 托盘、导入、系统代理、模型检测与自动导入等行为与原版一致；界面保留原设计系统并优化了层级、留白、悬停反馈与深浅色主题。面板布局按本项目方案重做：侧栏为**分组导航**（模型 / 运行 / 集成 / 其他 + 运行设置），模型详情不再是「点开模型行就地展开」，而是**右侧常驻分栏**——选中模型后列表与详情并排显示，详情宽 `clamp(300px, 45%, 360px)`，可用 `Esc`、详情头部「收起详情」或窗口失焦收起，任何窗口宽度都不降级为上下堆叠。默认窗口 **1120×720**（最小 860×560），侧栏宽 208px。侧栏 5 个入口全部可点（模型与服务 / 运行日志 / 用量与额度 / WorkBuddy 集成 / 关于与更新），非模型视图在主区独立滚动，同样不引入按宽度堆叠的降级分支。
 - logo 全新设计（悬索桥 + W 形缆线），全平台图标已就绪（`src-tauri/icons/`）。
 - 原 Node 核心（`core/src/*.js` 与其 97 项测试）已整体归档到仓库之外（`/Users/wbtrex/website/localServer/node/trexwb/backup/wbBridge-node-20261001/`）；Rust 核心通过冻结在 `src-tauri/core/tests/fixtures/*.json` 的 JS 真相快照（**271 例 / 11 个模块**：atomic、handoff、json、model_status、platform、protocol、reasoning、repair、sync、system_proxy、workbuddy_config）保持行为一致，对拍测试不再需要 Node 环境。
 
@@ -98,7 +98,7 @@ docs/           验证记录（validation.md）、版本日志（version/）、�
 - 未做商用代码签名/公证：Windows 可能提示未知发布者，macOS 见上方放行说明。
 - Windows ARM64 与 Linux 包由 CI 构建，尚未实机验证。
 - 仅 PAC/SOCKS 代理暂不支持（与原版一致）。
-- 面板以只读展示为主：侧栏 4 个标注「规划中」的入口（运行日志 / 用量与额度 / WorkBuddy 集成 / 关于与更新）**尚未实现**，当前只是禁用占位，点击无响应。
+- 面板以只读展示为主：运行日志读核心日志文件尾部（壳侧 `read_log`，尾部截断）、用量与额度展示核心累计的真实请求计数（`status.json` 顶层 `usage`，只统计 `source == "request"` 的真实客户端请求，探测不计、客户端取消不计成功、跨重启延续）、WorkBuddy 集成只读展示配置定位与发布结果（唯一动作是复用既有的「导入 WorkBuddy」）、关于与更新展示版本与数据目录（**未接入自动更新**，升级需重新下载安装包）。这些视图不新增任何写文件或联网行为。
 - 浅色主题下仍有 3 处次要文字（副标题、页脚说明、耗时行）沿用 `--muted`，对比度低于 WCAG AA 的 4.5:1；属既有问题，尚未处理。
 - Rust 化后的桌面 GUI **从未实机启动过**：目前只验证过编译、两个 crate 的 clippy 干净，以及独立核心二进制的一次冒烟运行（在一次性数据目录内完成运行时下载、隔离 OpenCode 启动、`/agent` 校验、发现 8 个免费模型并探测、干净关停）。面板布局改造另在浏览器引擎内经 CDP 实测（非 Tauri GUI 实机）。
 - `cargo fmt --check` 全仓并不干净（未作为门禁），代码风格以 clippy 0 warning 为准。

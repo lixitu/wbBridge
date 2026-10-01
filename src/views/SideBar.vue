@@ -1,5 +1,5 @@
 <script setup>
-// 侧栏：品牌、分组导航（含规划中入口）、运行设置。
+// 侧栏：品牌、分组导航（五个视图均已实现，点击即切换）、运行设置。
 import logo from '../public/logo.svg'
 
 const version = __APP_VERSION__
@@ -7,30 +7,31 @@ const version = __APP_VERSION__
 defineProps({
   proxyOn: { type: Boolean, default: false },
   disabled: { type: Boolean, default: false },
+  // 当前视图 id：由 App.vue 持有，侧栏只负责高亮与派发切换，不自己维护选中态。
+  current: { type: String, default: 'models' },
 })
-defineEmits(['toggle-proxy'])
+defineEmits(['toggle-proxy', 'select'])
 
-// 导航分组：当前只有「模型与服务」是已实现视图（激活态）；
-// 其余为规划中的未来入口，一律以禁用态 + 「规划中」标签呈现，不做可点击却无响应的假入口。
+// 导航分组：五个视图均已实现，点击即切换主区；当前视图常驻高亮。
 const groups = [
   {
     title: '模型',
-    items: [{ id: 'models', icon: '▦', label: '模型与服务', state: 'current' }],
+    items: [{ id: 'models', icon: '▦', label: '模型与服务' }],
   },
   {
     title: '运行',
     items: [
-      { id: 'logs', icon: '▤', label: '运行日志', state: 'planned' },
-      { id: 'usage', icon: '◔', label: '用量与额度', state: 'planned' },
+      { id: 'logs', icon: '▤', label: '运行日志' },
+      { id: 'usage', icon: '◔', label: '用量与额度' },
     ],
   },
   {
     title: '集成',
-    items: [{ id: 'workbuddy', icon: '⇄', label: 'WorkBuddy 集成', state: 'planned' }],
+    items: [{ id: 'workbuddy', icon: '⇄', label: 'WorkBuddy 集成' }],
   },
   {
     title: '其他',
-    items: [{ id: 'about', icon: 'ⓘ', label: '关于与更新', state: 'planned' }],
+    items: [{ id: 'about', icon: 'ⓘ', label: '关于与更新' }],
   },
 ]
 </script>
@@ -41,7 +42,7 @@ const groups = [
     <h1>WB Bridge</h1>
     <p class="tagline">让 WorkBuddy 连接 OpenCode 免费模型</p>
 
-    <nav class="nav" aria-label="主导航（当前仅「模型与服务」可用，其余为规划中）">
+    <nav class="nav" aria-label="主导航">
       <section v-for="group in groups" :key="group.title" class="nav-group">
         <h2 class="nav-group-title">{{ group.title }}</h2>
         <ul class="nav-list">
@@ -49,14 +50,13 @@ const groups = [
             <button
               type="button"
               class="nav-item"
-              :class="item.state"
-              :disabled="true"
-              :aria-current="item.state === 'current' ? 'page' : undefined"
-              :title="item.state === 'planned' ? `${item.label}（规划中，尚未实现）` : `${item.label}（当前视图）`"
+              :class="{ current: item.id === current }"
+              :aria-current="item.id === current ? 'page' : undefined"
+              :title="item.id === current ? `${item.label}（当前视图）` : `切换到${item.label}`"
+              @click="$emit('select', item.id)"
             >
               <span class="nav-icon" aria-hidden="true">{{ item.icon }}</span>
               <span class="nav-label">{{ item.label }}</span>
-              <span v-if="item.state === 'planned'" class="nav-tag">规划中</span>
             </button>
           </li>
         </ul>
@@ -122,32 +122,17 @@ h1 { font-size: 20px; margin: 0 0 6px; letter-spacing: -.6px; }
   border-radius: var(--radius-s);
   color: var(--muted-strong);
 }
-/* 导航项均为知情禁用态（当前视图 / 规划中）：不做 hover 抬升，避免假入口 */
-.nav-item:hover:not(:disabled) { background: transparent; }
+/* 导航项均可点击（五个视图都已实现）：hover 用行底色提示可点，当前视图常驻高亮。 */
+.nav-item:hover:not(.current) { background: var(--row); color: var(--text); }
 .nav-icon { width: 15px; flex-shrink: 0; text-align: center; font-size: 13px; line-height: 1; }
 .nav-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.nav-tag {
-  flex-shrink: 0;
-  font-size: 10px;
-  line-height: 1.5;
-  padding: 0 5px;
-  border-radius: 5px;
-  border: 1px solid var(--line);
-  background: var(--bg);
-  color: var(--muted-strong);
-}
 .nav-item.current {
   background: var(--green-bg);
   color: var(--green);
   font-weight: 600;
-  /* 当前视图是激活态，必须清晰可辨，不随禁用态一起变淡 */
-  opacity: 1;
   cursor: default;
 }
-/* 规划中入口：禁用态由「规划中」标签 + 禁点光标 + 无 hover 表达，
-   标签文字本身保持 AA 对比度（不整体降透明度） */
-.nav-item.planned { opacity: 1; cursor: not-allowed; }
-.nav-item.planned .nav-icon { opacity: .62; }
+.nav-item.current:hover { background: var(--green-bg); }
 
 .sidebar-bottom { margin-top: auto; padding-top: 16px; }
 .toggle-label { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 13px; padding: 2px 9px; }

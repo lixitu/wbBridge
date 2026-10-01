@@ -25,8 +25,18 @@
 
 面板侧链路：`src/core/bridge.js` 的 `action(name, value)`（前端内核，不是后端）→ Tauri 命令
 `core_action(action, payload)` → `admin_route()` → `admin_call()`；例外是面板的 `restart` 动作，它不经
-`/admin/*`，直接映射为壳命令 `restart_core`。壳另有 `core_running`、`data_dir_path` 两个命令，状态由壳
-轮询 `status.json` 后推给面板：`core-status` 是**剥掉 `activity` 与 `modelResults` 的轻量快照**，
+`/admin/*`，直接映射为壳命令 `restart_core`。壳另有 **三个**命令（均不经 `/admin/*`）：
+
+| 壳命令 | 载荷 | 返回 / 语义 |
+|---|---|---|
+| `core_running` | 无 | 查询核心是否在运行 |
+| `data_dir_path` | 无 | 取当前数据目录路径 |
+| `read_log` | **无参数** | 只读数据目录下 `opencode.log` 的**尾部**，返回 `{ text, truncated, bytes }`；尾部截断 256KB / 最多 1200 行，不读 `opencode.log.previous`；不接受路径入参、不写任何文件 |
+
+新增 / 改名只读命令必须同步 `src-tauri/src/lib.rs` 的 `generate_handler`；自有命令不经 capability 授权，
+`capabilities/default.json` 无需改动。
+
+状态由壳轮询 `status.json` 后推给面板：`core-status` 是**剥掉 `activity` 与 `modelResults` 的轻量快照**（顶层 `usage` 仍随该快照下发），
 这两个字段单独走 `core-activity`（每 500ms 轮询只在内容变化时发），失败走 `core-failed`。面板
 `src/core/bridge.js` 必须把两路合并成完整状态再交给订阅者，否则逐模型明细与活动文案永远为空。
 

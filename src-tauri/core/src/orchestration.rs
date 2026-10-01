@@ -77,6 +77,8 @@ const TRANSLATOR_ORDER: [&str; 4] = [
 ];
 
 /// status.json 的结构版本号；壳侧读取时校验，不一致只提示不阻断。
+/// 口径：向后兼容的**加法式**顶层字段（如 `usage`）不递增本值；删除 / 改名顶层字段或改变既有字段语义时才 +1
+/// （须与壳侧 `src-tauri/src/lib.rs` 的 `STATUS_SCHEMA_VERSION` 同步）。
 const STATUS_SCHEMA_VERSION: u32 = 1;
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -309,6 +311,14 @@ impl App {
 /// 落盘由 `persist_status` 触发 —— 二者分开是为了保证「先取快照、后释放锁」，
 /// 避免 std::Mutex 跨越 await 持有。
 fn update(patch: Value) -> Value {
+    update_with_usage(patch, None)
+}
+
+/// `update` 的用量变体：可选的 `(clientModelId, ok, durationMs)` 在**同一次持锁**内累加 `usage`。
+///
+/// 必须与补丁合并共用一把锁：`status.json` 是全量快照而不是增量日志，并发请求各自读旧值再各自
+/// 回写时，后写者会覆盖先写者的计数。`None` 即原来的 `update` 语义。
+fn update_with_usage(patch: Value, usage_entry: Option<(&str, bool, i64)>) -> Value {
     let app = global_app();
     let mut guard = lock(&app.state);
     if let (Some(target), Some(patch)) = (guard.as_object_mut(), patch.as_object()) {
@@ -317,7 +327,78 @@ fn update(patch: Value) -> Value {
         }
         target.insert("updatedAt".to_string(), json!(now_iso8601()));
     }
+    if let Some((model, ok, duration_ms)) = usage_entry {
+        let current = guard.get("usage").cloned().unwrap_or(Value::Null);
+        let next = accumulate_usage(&current, model, ok, duration_ms);
+        if let Some(target) = guard.as_object_mut() {
+            target.insert("usage".to_string(), next);
+            target.insert("updatedAt".to_string(), json!(now_iso8601()));
+        }
+    }
     guard.clone()
+}
+
+/// 用量口径：只有真实客户端请求（`source == "request"`）计入；探测与任何其它来源都不计。
+///
+/// 客户端取消的请求不会走到 `record`（`server.rs` 在 AbortSignal 取消时不回调 `on_result`），
+/// 因此「取消不得记成功」由调用链保证，而不是靠这里过滤。
+fn usage_counted(source: &str) -> bool {
+    source == "request"
+}
+
+/// 全新用量基线：`since` 取首次开始统计的时刻（跨重启由既有状态延续，见 `bootstrap`）。
+fn fresh_usage() -> Value {
+    json!({
+        "since": now_iso8601(),
+        "total": { "requests": 0, "ok": 0, "failed": 0 },
+        "models": {},
+    })
+}
+
+/// 形状校验：`total` / `models` 必须是对象，否则视为上一份状态不可用（重建基线，不沿用脏值）。
+fn is_usage_shape(value: &Value) -> bool {
+    value.get("total").is_some_and(Value::is_object) && value.get("models").is_some_and(Value::is_object)
+}
+
+/// 累加一次真实请求的用量。
+///
+/// `lastMs` 是最近一次耗时；`avgMs` 由「累计均值」递推（四舍五入）得到 —— 因此不需要额外
+/// 落一个总耗时字段，status.json 的 `usage` 形状保持规格给定的五个字段。
+fn accumulate_usage(current: &Value, model: &str, ok: bool, duration_ms: i64) -> Value {
+    let mut usage = if is_usage_shape(current) { current.clone() } else { fresh_usage() };
+    if let Some(total) = usage.get_mut("total").and_then(Value::as_object_mut) {
+        let requests = total.get("requests").and_then(Value::as_i64).unwrap_or(0) + 1;
+        let succeeded = total.get("ok").and_then(Value::as_i64).unwrap_or(0) + i64::from(ok);
+        let failed = total.get("failed").and_then(Value::as_i64).unwrap_or(0) + i64::from(!ok);
+        total.insert("requests".to_string(), json!(requests));
+        total.insert("ok".to_string(), json!(succeeded));
+        total.insert("failed".to_string(), json!(failed));
+    }
+    // 解析不出客户端模型 ID 的请求只进 total：计数必须诚实，不能凭空造一个模型名。
+    if !model.is_empty() {
+        if let Some(models) = usage.get_mut("models").and_then(Value::as_object_mut) {
+            let entry = models.entry(model.to_string()).or_insert_with(|| {
+                json!({ "requests": 0, "ok": 0, "failed": 0, "lastMs": 0, "avgMs": 0 })
+            });
+            if let Some(entry) = entry.as_object_mut() {
+                let requests = entry.get("requests").and_then(Value::as_i64).unwrap_or(0) + 1;
+                let succeeded = entry.get("ok").and_then(Value::as_i64).unwrap_or(0) + i64::from(ok);
+                let failed = entry.get("failed").and_then(Value::as_i64).unwrap_or(0) + i64::from(!ok);
+                let previous_avg = entry.get("avgMs").and_then(Value::as_f64).unwrap_or(0.0);
+                let average = if requests > 1 {
+                    (previous_avg * (requests - 1) as f64 + duration_ms as f64) / requests as f64
+                } else {
+                    duration_ms as f64
+                };
+                entry.insert("requests".to_string(), json!(requests));
+                entry.insert("ok".to_string(), json!(succeeded));
+                entry.insert("failed".to_string(), json!(failed));
+                entry.insert("lastMs".to_string(), js_number(duration_ms as f64));
+                entry.insert("avgMs".to_string(), js_number(average.round()));
+            }
+        }
+    }
+    usage
 }
 
 /// 把状态快照串行写入 `status.json`（对应 `statusWrites` 链）。
@@ -559,6 +640,11 @@ async fn record(
             json!({ "lastPermission": { "time": result["time"].clone(), "entries": permissions } })
         });
 
+    // 用量口径：只有真实客户端请求计入（探测与其它来源既不进 total 也不进 models）。
+    // 无论本次结果是否会撤销发布（REQUEST_SHAPED_FAILURES 早退），这次请求都已经真实发生过，
+    // 因此必须在早退之前算出待累加的条目。
+    let usage_entry = usage_counted(source).then_some((model, ok, duration_ms));
+
     if !ok
         && source == "request"
         && REQUEST_SHAPED_FAILURES.iter().any(|shaped| Some(*shaped) == code)
@@ -567,7 +653,7 @@ async fn record(
         let mut patch = Map::new();
         patch.insert("lastRequest".to_string(), result.clone());
         insert_all(&mut patch, captured.as_ref());
-        persist_status(update(Value::Object(patch)));
+        persist_status(update_with_usage(Value::Object(patch), usage_entry));
         return;
     }
 
@@ -602,7 +688,7 @@ async fn record(
         ),
     );
     insert_all(&mut patch, captured.as_ref());
-    persist_status(update(Value::Object(patch)));
+    persist_status(update_with_usage(Value::Object(patch), usage_entry));
 }
 
 // ---------------------------------------------------------------------------
@@ -1464,6 +1550,13 @@ fn bootstrap(options: &StartOptions) -> Result<Arc<App>, String> {
         "opencodeVersion": Value::Null,
         "models": [],
         "modelResults": previous.get("modelResults").cloned().unwrap_or_else(|| json!({})),
+        // 用量跨重启延续（与 modelResults 同法）：上一份形状合法就整体沿用，`since` 与累计值都不重置；
+        // 缺字段/形状不对（旧版核心写的 status.json）才重建基线。
+        "usage": previous
+            .get("usage")
+            .cloned()
+            .filter(is_usage_shape)
+            .unwrap_or_else(fresh_usage),
         "sync": Value::Null,
         "availableModels": [],
         "probe": { "running": false },
@@ -1860,5 +1953,70 @@ mod tests {
             Some(Err(error)) => assert_eq!(error.message, "运行时下载失败"),
             None => panic!("复用者必须读得到首个调用者的失败"),
         }
+    }
+
+    /// 用量口径：只有真实客户端请求计入，探测不计（`probe` 与空来源都必须被挡在计数之外）。
+    #[test]
+    fn usage_only_counts_real_client_requests() {
+        assert!(usage_counted("request"));
+        assert!(!usage_counted("probe"));
+        assert!(!usage_counted(""));
+    }
+
+    /// 基线形状必须自证合法；旧版核心写的 status.json（无 usage）与写坏的形状都必须判脏重建。
+    #[test]
+    fn usage_baseline_shape_is_validated() {
+        let baseline = fresh_usage();
+        assert!(is_usage_shape(&baseline), "全新基线必须形状合法：{baseline}");
+        assert!(baseline["since"].as_str().is_some(), "基线必须带 ISO 起始时刻");
+        assert_eq!(baseline["total"], json!({ "requests": 0, "ok": 0, "failed": 0 }));
+        assert_eq!(baseline["models"], json!({}));
+
+        assert!(!is_usage_shape(&Value::Null));
+        assert!(!is_usage_shape(&json!({ "total": { "requests": 1 } })), "缺 models 必须判脏");
+        assert!(!is_usage_shape(&json!({ "total": 1, "models": {} })), "total 非对象必须判脏");
+    }
+
+    /// 真实请求逐次累加：total 与逐模型的 requests/ok/failed/lastMs/avgMs 都必须对得上，
+    /// 且累加不得重置 `since`（跨重启延续靠它）。
+    #[test]
+    fn accumulate_usage_tracks_totals_and_per_model_stats() {
+        let baseline = fresh_usage();
+        let since = baseline["since"].clone();
+
+        let usage = accumulate_usage(&baseline, "OC · A", true, 1200);
+        let usage = accumulate_usage(&usage, "OC · A", false, 800);
+        let usage = accumulate_usage(&usage, "OC · A", true, 1000);
+
+        assert_eq!(usage["total"], json!({ "requests": 3, "ok": 2, "failed": 1 }));
+        assert_eq!(usage["models"]["OC · A"]["requests"], 3);
+        assert_eq!(usage["models"]["OC · A"]["ok"], 2);
+        assert_eq!(usage["models"]["OC · A"]["failed"], 1);
+        assert_eq!(usage["models"]["OC · A"]["lastMs"], 1000, "lastMs 是最近一次耗时");
+        assert_eq!(usage["models"]["OC · A"]["avgMs"], 1000, "avgMs = (1200+800+1000)/3");
+        assert_eq!(usage["since"], since, "累加不得重置 since");
+    }
+
+    /// 不同模型各自成条：A 的计数不得串到 B；`avgMs` 为累计均值（四舍五入到整数毫秒）。
+    #[test]
+    fn accumulate_usage_keeps_models_separate() {
+        let usage = accumulate_usage(&fresh_usage(), "OC · A", true, 100);
+        let usage = accumulate_usage(&usage, "OC · B", true, 300);
+        assert_eq!(usage["models"]["OC · A"]["requests"], 1);
+        assert_eq!(usage["models"]["OC · B"]["requests"], 1);
+        assert_eq!(usage["total"]["requests"], 2);
+
+        let usage = accumulate_usage(&usage, "OC · A", false, 200);
+        assert_eq!(usage["models"]["OC · A"]["avgMs"], 150, "(100 + 200) / 2");
+        assert_eq!(usage["models"]["OC · A"]["lastMs"], 200);
+        assert_eq!(usage["models"]["OC · B"]["avgMs"], 300, "B 的均值不得被 A 的请求污染");
+    }
+
+    /// 判不出客户端模型 ID 的请求只进 total：不得凭空造模型名，也不能丢计数。
+    #[test]
+    fn accumulate_usage_without_model_id_only_counts_total() {
+        let usage = accumulate_usage(&fresh_usage(), "", false, 50);
+        assert_eq!(usage["total"], json!({ "requests": 1, "ok": 0, "failed": 1 }));
+        assert_eq!(usage["models"], json!({}), "无模型 ID 时不得创建模型条目");
     }
 }

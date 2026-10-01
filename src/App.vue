@@ -10,9 +10,16 @@ import ModelDetails from './views/ModelDetails.vue'
 import ServiceStatus from './views/ServiceStatus.vue'
 import MetricsBar from './views/MetricsBar.vue'
 import FeedbackBar from './views/FeedbackBar.vue'
+import LogsView from './views/LogsView.vue'
+import UsageView from './views/UsageView.vue'
+import IntegrationView from './views/IntegrationView.vue'
+import AboutView from './views/AboutView.vue'
 
 const state = ref({})
 const selected = ref(null)
+// 当前视图：与 SideBar 的 item.id 一一对应（'models' | 'logs' | 'usage' | 'workbuddy' | 'about'）。
+// 视图状态由根组件持有，侧栏只派发切换事件，避免两处各存一份选中态。
+const view = ref('models')
 // 进行中的动作名（null = 空闲）：模板按动作名点亮对应按钮的 spinner。
 const busyAction = ref(null)
 const feedback = ref(null) // { text, error }
@@ -71,10 +78,12 @@ onUnmounted(() => {
     <SideBar
       :proxy-on="state.useSystemProxy === true"
       :disabled="!!busyAction || state.probe?.running || !['ready', 'error'].includes(state.phase)"
+      :current="view"
+      @select="view = $event"
       @toggle-proxy="run('system-proxy', { enabled: $event })"
     />
     <main>
-      <div class="top">
+      <div v-if="view === 'models'" class="top">
         <header>
           <div>
             <h2>免费模型</h2>
@@ -112,7 +121,7 @@ onUnmounted(() => {
       </div>
 
       <!-- 主从两栏：详情是右侧常驻列（不是浮层/遮罩），任何窗口宽度都不降级为上下堆叠 -->
-      <div class="content" :class="{ 'is-split': !!selected }">
+      <div v-if="view === 'models'" class="content" :class="{ 'is-split': !!selected }">
         <ModelList
           v-model:selected="selected"
           :models="state.models || []"
@@ -130,10 +139,23 @@ onUnmounted(() => {
         />
       </div>
 
-      <footer>
+      <footer v-if="view === 'models'">
         <p id="sync">{{ state.sync?.error || (state.sync?.time ? `已导入 ${state.sync.count ?? 0} 个模型 · 再次检测后需点击导入 WorkBuddy 更新` : '首次读取和检测完成后自动导入 WorkBuddy') }}</p>
         <p class="note">启动后自动发送简短请求检测，会使用少量免费额度，不代表工具流程已验证。耗时为完整请求用时，非首字延迟。不可用模型仅在本窗口保留，不供 WorkBuddy 使用；剩余额度暂不可查询。</p>
       </footer>
+
+      <!-- 非「模型与服务」的视图：各自填满主区并独立滚动，不改变上面两栏布局的任何约束 -->
+      <LogsView v-if="view === 'logs'" />
+      <UsageView v-if="view === 'usage'" :usage="state.usage" />
+      <!-- 该视图内的「导入 WorkBuddy」也走同一个 run()，反馈必须在本视图可见（只换位置，不复制状态） -->
+      <FeedbackBar v-if="view === 'workbuddy' && feedback" :error="feedback.error" :text="feedback.text" />
+      <IntegrationView
+        v-if="view === 'workbuddy'"
+        :state="state"
+        :busy="!!busyAction"
+        @import="run('import')"
+      />
+      <AboutView v-if="view === 'about'" :state="state" />
     </main>
   </div>
 </template>
@@ -150,6 +172,18 @@ main {
   gap: var(--sp-4);
 }
 .top { flex-shrink: 0; display: flex; flex-direction: column; gap: var(--sp-4); }
+/* 非模型视图（运行日志 / 用量与额度 / WorkBuddy 集成 / 关于与更新）：填满主区并自行滚动，
+   仍不引入任何宽度断点；.shell 的左右两段结构不受影响。 */
+main > .view {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  width: 100%;
+  max-width: var(--content-max);
+}
 .content {
   flex: 1;
   min-height: 0;

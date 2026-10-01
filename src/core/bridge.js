@@ -76,3 +76,28 @@ export async function action(name, value) {
     return { ok: false, error: String(error) }
   }
 }
+
+// 以下两条是**只读**调用（新增视图用），与上面的 action/onState/onDismiss 契约互不影响：
+// 面板不得借它们写文件，也不接受任何路径参数。
+
+// 运行日志尾部：由壳读数据目录下的日志文件，截断上限在壳侧常量里（不在前端拼接路径）。
+export async function readLog() {
+  ensureBridge()
+  try {
+    const { invoke } = window.__TAURI__.core
+    return { ok: true, result: await invoke('read_log') }
+  } catch (error) {
+    return { ok: false, error: String(error) }
+  }
+}
+
+// 壳实际使用的数据目录（status.json / 运行日志都在这里）。
+export async function dataDir() {
+  ensureBridge()
+  try {
+    const { invoke } = window.__TAURI__.core
+    return { ok: true, result: await invoke('data_dir_path') }
+  } catch (error) {
+    return { ok: false, error: String(error) }
+  }
+}

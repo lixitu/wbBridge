@@ -352,7 +352,7 @@ envelope = `{ content, calls: [{name, arguments}] }`。三通道按序：
 
 ## 10. 测试基线（test/*.test.js 逐文件验收清单）
 
-> ⚠ **历史清单（2026-10-01 标注）**：本章清单属于**迁移前已归档的 JS 核心**（连同其 12 个测试文件整体移出仓库到 `/Users/wbtrex/website/localServer/node/trexwb/backup/wbBridge-node-20261001/`），仓库内已不可执行，保留原样作为行为覆盖的对照依据。**当前仓库的测试基线**是 Rust：`src-tauri/core/` 下 `cargo test` → **197 通过 / 0 失败**（lib 179 + `tests/js_parity.rs` 11 + `tests/red_lines.rs` 7），其中 `js_parity.rs` 以冻结在 `src-tauri/core/tests/fixtures/*.json` 的 JS 真相快照（**271 例 / 11 个 fixture 模块**）对拍，不需要 Node；详见 `docs/validation.md` 与 `docs/version/RELEASE-v1.0.md`。
+> ⚠ **历史清单（2026-10-01 标注）**：本章清单属于**迁移前已归档的 JS 核心**（连同其 12 个测试文件整体移出仓库到 `/Users/wbtrex/website/localServer/node/trexwb/backup/wbBridge-node-20261001/`），仓库内已不可执行，保留原样作为行为覆盖的对照依据。**当前仓库的测试基线**是 Rust：`src-tauri/core/` 下 `cargo test` → **202 通过 / 0 失败**（lib 184 + `tests/js_parity.rs` 11 + `tests/red_lines.rs` 7，截至 2026-10-01 侧栏四入口轮），其中 `js_parity.rs` 以冻结在 `src-tauri/core/tests/fixtures/*.json` 的 JS 真相快照（**271 例 / 11 个 fixture 模块**）对拍，不需要 Node；详见 `docs/validation.md` 与 `docs/version/RELEASE-v1.0.md`。
 
 **system-proxy.test.js（2 条）**
 A1. macOS scutil 解析（HTTPS 必须，SOCKS-only 拒绝）。A2. Windows 注册表代理共享与 http/https 分流、socks 拒绝。
