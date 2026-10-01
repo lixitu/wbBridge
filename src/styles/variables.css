@@ -5,6 +5,8 @@
   --row: #f6f7f7;
   --text: #202826;
   --muted: #78817e;
+  /* 小字号说明文字专用：在 panel/bg 上均 ≥4.5:1 */
+  --muted-strong: #5c6764;
   --line: #e0e7e3;
   --green: #266e5c;
   --green-bg: #e8f1ed;
@@ -16,6 +18,43 @@
   --radius-m: 9px;
   --radius-l: 12px;
   --shadow: 0 1px 2px rgb(32 40 38 / .04), 0 4px 14px rgb(32 40 38 / .05);
+
+  /* 间距刻度 */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-7: 32px;
+  --sp-8: 40px;
+
+  /* 字号 / 行高刻度 */
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-base: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+  --fs-2xl: 24px;
+  --lh-tight: 1.25;
+  --lh-base: 1.5;
+  --lh-loose: 1.7;
+
+  /* 布局尺寸 */
+  --sidebar-w: 208px;
+  /* 详情列：常驻右栏，宽 300–360px 随可用宽度自适应（不做宽度触发的降级） */
+  --details-w: clamp(300px, 45%, 360px);
+  --content-max: 1180px;
+
+  /* 语义色（浅色）：徽章 / 开关 / 状态灯 */
+  --badge-reason-fg: #815a99;
+  --badge-reason-bg: #eee8f3;
+  --badge-image-fg: #3f6c99;
+  --badge-image-bg: #e7eff9;
+  --badge-unavailable-fg: #965e23;
+  --switch-off: #aab2ae;
+  --switch-knob: #ffffff;
+  --status-ring: rgb(38 110 92 / .06);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -25,6 +64,7 @@
     --row: #2a302d;
     --text: #e3ebe6;
     --muted: #a0ada5;
+    --muted-strong: #c3cec8;
     --line: #3b4540;
     --green: #8cc9ad;
     --green-bg: #2a4035;
@@ -32,5 +72,10 @@
     --orange: #e9ad70;
     --orange-bg: #45392c;
     --shadow: 0 1px 2px rgb(0 0 0 / .25), 0 4px 14px rgb(0 0 0 / .2);
+    --badge-reason-fg: #d4b5e8;
+    --badge-reason-bg: #403249;
+    --badge-image-fg: #a4c9ec;
+    --badge-image-bg: #293e52;
+    --badge-unavailable-fg: #e9ad70;
   }
 }

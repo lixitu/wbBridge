@@ -1,4 +1,4 @@
-//! `core/src/server.js` 的 axum 等价实现 —— 方案B 阶段二「HTTP 层」。
+//! 已归档 Node 核心 `core/src/server.js` 的 axum 等价实现（HTTP 层）。
 //!
 //! 逐条对齐 Node 版的可见行为：
 //! - 路由集合：`GET /health`、`GET /v1/models`、`POST /v1/chat/completions`、
@@ -14,7 +14,7 @@
 //!   `TimeoutError` 的文案统一改写为 `Model request timed out`；
 //! - 结果回调（`onResult`）时序：成功/失败均在写响应体之前回调，取消的请求不记录。
 //!
-//! 与 Node 版的**有意偏差**（阶段三接线时再评估）：
+//! 与 Node 版的**有意偏差**：
 //! 1. JS 把 `meta.activity` 作为回调挂在 meta 对象上（JSON 无法表达函数），Rust 侧改为
 //!    [`RequestContext::activity`]；`meta` 只保留可序列化字段（`tools` / `model` 及后端补充项）。
 //! 2. `Connection` 等 hop-by-hop 头由 hyper 自行管理。
@@ -267,7 +267,7 @@ impl From<BridgeError> for BackendError {
 
 /// 一次模型请求的结果回调参数（对应 JS `onResult(...)` 的前 7 个位置参数）。
 ///
-/// JS 的第 8 个参数（`chatOnly`）由阶段三的 `record` 按默认规则推导，故不在此处传递。
+/// JS 的第 8 个参数（`chatOnly`）由编排层 `record` 按默认规则推导，故不在此处传递。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResultRecord {
     /// 模型标识（`body.model` 或 `request.model.id`；非真值时对应 JS 的 `null`）。

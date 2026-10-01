@@ -32,7 +32,7 @@ const timing = computed(() => {
 </script>
 
 <template>
-  <button class="model" :class="{ selected }" :aria-expanded="String(selected)" @click="$emit('toggle')">
+  <button class="model" :class="{ selected }" role="option" :aria-selected="String(selected)" @click="$emit('toggle')">
     <span class="model-icon" aria-hidden="true">
       <span v-if="waiting" class="spinner" />
       <span v-else>◇</span>
@@ -68,18 +68,12 @@ const timing = computed(() => {
 .model.selected { background: var(--green-bg); border-color: var(--green); }
 .model-icon { font-size: 24px; color: var(--green); width: 26px; flex-shrink: 0; text-align: center; }
 .model-info { min-width: 0; flex: 1; display: block; }
-.model-name { display: block; font-size: 14px; font-weight: 550; line-height: 1.4; }
+.model-name { display: block; font-size: 14px; font-weight: 550; line-height: 1.4; overflow-wrap: anywhere; }
 .duration { display: block; font-size: 11px; color: var(--muted); margin-top: 6px; font-variant-numeric: tabular-nums; }
 .badges { display: flex; align-items: center; gap: 5px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
 .badge { font-size: 11px; white-space: nowrap; padding: 4px 8px; border-radius: 6px; background: var(--green-bg); color: var(--green); }
-.reasoning { color: #815a99; background: #eee8f3; }
-.images { color: #477bad; background: #e7eff9; }
-.unavailable { color: var(--orange); background: var(--orange-bg); }
+.reasoning { color: var(--badge-reason-fg); background: var(--badge-reason-bg); }
+.images { color: var(--badge-image-fg); background: var(--badge-image-bg); }
+.unavailable { color: var(--badge-unavailable-fg); background: var(--orange-bg); }
 .waiting { color: var(--muted); background: var(--panel); }
-
-@media (prefers-color-scheme: dark) {
-  .reasoning { background: #403249; color: #d4b5e8; }
-  .images { background: #293e52; color: #a4c9ec; }
-  .unavailable { background: var(--orange-bg); }
-}
 </style>

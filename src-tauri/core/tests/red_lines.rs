@@ -138,7 +138,7 @@ fn transport_limits_are_not_loosened() {
     assert_eq!(
         probe::PROBE_TIMEOUT_MS,
         60_000,
-        "探测整批共享 60s 预算，不得逐模型各给 60s"
+        "每个模型各自 60s 探测预算（重试共用同一 deadline），不得放宽"
     );
 }
 

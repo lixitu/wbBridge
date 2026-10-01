@@ -87,7 +87,7 @@ fn core_key(state: &AppState) -> Result<String, String> {
     Ok(key)
 }
 
-/// 调核心管理接口（与 src/core/src/server.js 的路由一一对应）。
+/// 调核心管理接口（路由表与 `src-tauri/core/src/server.rs` 的 `ACTION_ROUTES` 一一对应）。
 fn admin_call(port: u16, key: &str, route: &str, body: Option<&Value>) -> Result<Value, String> {
     admin_call_with(port, key, route, body, Duration::from_secs(60))
 }
@@ -111,7 +111,7 @@ fn admin_call_with(
         Err(e) => return Err(format!("核心服务请求失败：{e}")),
     };
     // HTTP 状态码才是权威判据：只看响应体里的 error 字段会把「状态码非 2xx 但没带 error」
-    // 的响应当成成功（与 src/core/src/server.js 的路由约定对齐）。
+    // 的响应当成成功（与 `src-tauri/core/src/server.rs` 的路由约定对齐）。
     let status = response.status();
     let text = response.into_string().map_err(|e| e.to_string())?;
     let json = serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text));
@@ -317,8 +317,16 @@ fn handle_menu(app: &AppHandle, id: &str) {
             let core = state.core.lock().unwrap().as_ref().map(|c| (c.port, state.data_dir.clone()));
             if let Some((port, data_dir)) = core {
                 thread::spawn(move || {
-                    if let Ok(key) = api_key(&data_dir) {
-                        let _ = admin_call(port, &key, "/admin/system-proxy", Some(&serde_json::json!({ "enabled": next })));
+                    let Ok(key) = api_key(&data_dir) else {
+                        eprintln!("[tray] 无法读取 api-key，系统代理切换未执行");
+                        return;
+                    };
+                    // 失败必须留下痕迹：托盘勾选会在下一次状态轮询被核心权威值纠正，
+                    // 但若不记录原因，用户只会看到勾选自己弹回去。
+                    if let Err(error) =
+                        admin_call(port, &key, "/admin/system-proxy", Some(&serde_json::json!({ "enabled": next })))
+                    {
+                        eprintln!("[tray] 系统代理切换失败：{error}");
                     }
                 });
             }
@@ -334,8 +342,21 @@ fn handle_menu(app: &AppHandle, id: &str) {
                         let state = app.state::<AppState>();
                         let core = state.core.lock().unwrap().as_ref().map(|c| c.port);
                         if let Some(port) = core {
-                            if let (Ok(key), Ok(route)) = (api_key(&state.data_dir), admin_route("import")) {
-                                let _ = admin_call(port, &key, route, Some(&serde_json::json!({ "modelsFile": path.to_string() })));
+                            match (api_key(&state.data_dir), admin_route("import")) {
+                                (Ok(key), Ok(route)) => {
+                                    // 导入失败只在日志留痕：面板的 FeedbackBar 由 run() 的返回值驱动，
+                                    // 托盘这条链路没有可复用的错误展示位。
+                                    if let Err(error) = admin_call(
+                                        port,
+                                        &key,
+                                        route,
+                                        Some(&serde_json::json!({ "modelsFile": path.to_string() })),
+                                    ) {
+                                        eprintln!("[tray] 导入 WorkBuddy 配置失败：{error}");
+                                    }
+                                }
+                                (Err(key), _) => eprintln!("[tray] 无法读取 api-key，导入未执行：{key}"),
+                                (_, Err(route)) => eprintln!("[tray] 导入动作路由缺失：{route}"),
                             }
                         }
                         show_main(&app);

@@ -5,19 +5,28 @@ import { activityText } from './activity.js'
 
 const listeners = { state: [], dismiss: [] }
 let started = false
+// 最近一次完整状态：壳把 activity / modelResults 拆成 core-activity 单独发，
+// 轻量快照与明细两路必须合并后再交给订阅者。
+let lastState = {}
+
+function publish(next) {
+  lastState = next
+  listeners.state.forEach(cb => cb(next))
+}
 
 function ensureBridge() {
   if (started) return
   started = true
   const { listen } = window.__TAURI__.event
-  listen('core-status', event => listeners.state.forEach(cb => cb(event.payload))).catch(console.error)
+  listen('core-status', event => publish(event.payload || {})).catch(console.error)
+  listen('core-activity', event => publish({ ...lastState, ...(event.payload || {}) })).catch(console.error)
   listen('core-failed', event => {
     const payload = event.payload || {}
-    listeners.state.forEach(cb => cb({
+    publish({
       phase: 'error',
       message: payload.message || '核心服务启动失败',
       models: [], modelResults: {}, availableModels: [],
-    }))
+    })
   }).catch(console.error)
   listen('tauri://blur', () => listeners.dismiss.forEach(cb => cb())).catch(console.error)
 }
@@ -27,9 +36,9 @@ export { activityText }
 export function onState(cb) {
   ensureBridge()
   listeners.state.push(cb)
-  // 订阅时回放最近一次状态，避免组件挂载晚于首条事件时白屏等待。
-  const { getCurrent } = window.__TAURI__
-  getCurrent?.window?.emit?.('wb-bridge/replay-request').catch?.(() => {})
+  // 立即回放缓存，避免组件挂载晚于首条事件时白屏等待；缓存为空（还没收到任何事件）时
+  // 由壳的状态轮询补齐。
+  cb(lastState)
 }
 
 export function onDismiss(cb) {

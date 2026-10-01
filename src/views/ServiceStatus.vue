@@ -16,10 +16,10 @@ const isError = computed(() => props.phase === 'error')
 </script>
 
 <template>
-  <div class="service-status">
+  <div class="service-status" role="status" aria-live="polite">
     <span class="dot" :class="{ error: isError }" />
     <span>{{ text }}</span>
-    <button v-if="isError" :disabled="busy" @click="$emit('restart')">重试</button>
+    <button v-if="isError" :disabled="busy" aria-label="重试核心服务" @click="$emit('restart')">重试</button>
   </div>
 </template>
 
@@ -33,7 +33,7 @@ const isError = computed(() => props.phase === 'error')
   gap: 9px;
   min-height: 42px;
   font-size: 13px;
-  box-shadow: inset 0 0 0 1px rgb(38 110 92 / .06);
+  box-shadow: inset 0 0 0 1px var(--status-ring);
 }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); flex-shrink: 0; transition: background .2s; animation: pulse 2.4s ease-in-out infinite; }
 .dot.error { background: var(--orange); animation: none; }

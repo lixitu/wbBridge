@@ -21,10 +21,29 @@ const rank = (model) => {
 }
 
 const sorted = computed(() => [...props.models].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name)))
+
+// 键盘导航：↑ / ↓ 在列表内移动选中项（选中即展示详情；Enter / Space 沿用按钮原生行为）。
+function move(event, step) {
+  const rows = Array.from(event.currentTarget.querySelectorAll('[role="option"]'))
+  if (!rows.length) return
+  event.preventDefault()
+  const current = rows.indexOf(document.activeElement)
+  const from = current < 0 ? (step > 0 ? -1 : rows.length) : current
+  const next = Math.min(rows.length - 1, Math.max(0, from + step))
+  rows[next].focus()
+  const model = sorted.value[next]
+  if (model) selected.value = model
+}
 </script>
 
 <template>
-  <section class="models" aria-label="模型列表">
+  <section
+    class="models"
+    role="listbox"
+    aria-label="模型列表"
+    @keydown.down="move($event, 1)"
+    @keydown.up="move($event, -1)"
+  >
     <ModelRow
       v-for="model in sorted"
       :key="model.id"
@@ -44,8 +63,7 @@ const sorted = computed(() => [...props.models].sort((a, b) => rank(a) - rank(b)
 <style scoped>
 .models {
   overflow: auto;
-  flex: 1;
-  min-height: 110px;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 8px;

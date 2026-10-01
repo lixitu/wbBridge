@@ -5,14 +5,15 @@
 //! - `judgeProbe` 只在恰好一个调用、名称为 `Read`、且 `file_path` 含 token 时判通过；
 //! - `formatUnsupported` 区分格式类失败（降级为 chatOnly）与执行类失败（直接失败）；
 //! - `RETRYABLE_PROBE` 只对语义误判重试一次，格式失败与超时不重试；
-//! - `probeModel` 通过共享超时预算（PROBE_TIMEOUT）限制整批探测耗时。
+//! - 每个模型各自持有 60s 的 deadline（首次尝试与重试共用同一个，不重置）。
 
 use crate::protocol::BridgeError;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use uuid::Uuid;
 
-/// 整批探测的超时预算（毫秒），对应 `PROBE_TIMEOUT = 60000`。
+/// 单个模型的探测超时预算（毫秒），对应 `PROBE_TIMEOUT = 60000`。
+/// 每个模型各有一份，重试用的是同一个 deadline 的剩余时间，不是重新计时。
 pub const PROBE_TIMEOUT_MS: u64 = 60_000;
 
 /// 探测请求使用的工具目录，对应 `PROBE_TOOLS`。

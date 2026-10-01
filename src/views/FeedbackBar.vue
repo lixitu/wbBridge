@@ -7,7 +7,7 @@ defineProps({
 </script>
 
 <template>
-  <div id="feedback" role="status" :class="{ error }">{{ text }}</div>
+  <div id="feedback" role="status" aria-live="polite" :class="{ error }">{{ text }}</div>
 </template>
 
 <style scoped>

@@ -19,10 +19,11 @@
 #   • 所有产物先上传为 Actions Artifact，再汇总到 Draft Release，
 #     人工确认后点"Publish release"正式发布。
 # 自动更新：
-#   • bundle.createUpdaterArtifacts 生成更新产物与 .sig 签名
-#   • 签名私钥存 GitHub Variables：TAURI_SIGNING_PRIVATE_KEY
-#     （本地私钥 ~/.tauri/wbBridge-updater.key）
-#   • 注意：Draft Release 未 Publish 前 latest.json 下载 404，属预期
+#   • **尚未接线**：tauri.conf.json 既没有 bundle.createUpdaterArtifacts，也没有
+#     plugins.updater / tauri-plugin-updater 依赖，因此产物里不会出现 .sig 与 latest.json，
+#     本工作流也不再上传或引用它们。将来要接自动更新时，需要同时补：配置项、插件依赖、
+#     更新端点（pubDate/url）、GitHub Variables 里的 TAURI_SIGNING_PRIVATE_KEY(_PASSWORD)，
+#     并把 .sig 的 glob 加回来。
 #   • ⚠ 本工作流自「移除 Node 核心」改造后尚未在 CI 上实际跑通，描述以脚本内容为准。
 # ═══════════════════════════════════════════════════════════════════
 
@@ -42,7 +43,7 @@ permissions:
   contents: write
 
 jobs:
-  # ── 核心测试（Rust：177 单测 + 11 组 JS↔Rust 对拍快照 + 7 条红线）────
+  # ── 核心测试（Rust：179 单测 + 11 组 JS↔Rust 对拍快照 + 7 条红线）────
   test:
     name: 核心测试
     runs-on: ubuntu-latest
@@ -108,8 +109,6 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ vars.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ vars.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           args: --target ${{ matrix.arch }}
           tagName: v__VERSION__
@@ -126,12 +125,8 @@ jobs:
           path: |
             src-tauri/target/${{ matrix.arch }}/release/bundle/**/*.dmg
             src-tauri/target/${{ matrix.arch }}/release/bundle/**/*.app
-            src-tauri/target/${{ matrix.arch }}/release/bundle/**/*.tar.gz
-            src-tauri/target/${{ matrix.arch }}/release/bundle/**/*.sig
             src-tauri/target/release/bundle/**/*.dmg
             src-tauri/target/release/bundle/**/*.app
-            src-tauri/target/release/bundle/**/*.tar.gz
-            src-tauri/target/release/bundle/**/*.sig
 
       - name: 上传到 GitHub Release（仅推 tag 或勾选 create_release 时）
         if: github.event_name == 'push' || inputs.create_release == true
@@ -142,8 +137,6 @@ jobs:
           files: |
             src-tauri/target/**/release/bundle/**/*.dmg
             src-tauri/target/**/release/bundle/**/*.app
-            src-tauri/target/**/release/bundle/**/*.tar.gz
-            src-tauri/target/**/release/bundle/**/*.sig
 
   # ── Windows：NSIS + MSI ──────────────────────────────────────────
   build-windows:
@@ -183,8 +176,6 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ vars.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ vars.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           args: --target ${{ matrix.arch }}
           tagName: v__VERSION__
@@ -201,7 +192,6 @@ jobs:
           path: |
             src-tauri/target/**/release/bundle/**/*.exe
             src-tauri/target/**/release/bundle/**/*.msi
-            src-tauri/target/**/release/bundle/**/*.sig
 
       - name: 上传到 GitHub Release（仅推 tag 或勾选 create_release 时）
         if: github.event_name == 'push' || inputs.create_release == true
@@ -212,7 +202,6 @@ jobs:
           files: |
             src-tauri/target/**/release/bundle/**/*.exe
             src-tauri/target/**/release/bundle/**/*.msi
-            src-tauri/target/**/release/bundle/**/*.sig
 
   # ── Linux：.AppImage + .deb ──────────────────────────────────────
   build-linux:
@@ -257,8 +246,6 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ vars.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ vars.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           args: --target ${{ matrix.arch }}
           tagName: v__VERSION__
@@ -275,7 +262,6 @@ jobs:
           path: |
             src-tauri/target/**/release/bundle/**/*.AppImage
             src-tauri/target/**/release/bundle/**/*.deb
-            src-tauri/target/**/release/bundle/**/*.sig
 
       - name: 上传到 GitHub Release（仅推 tag 或勾选 create_release 时）
         if: github.event_name == 'push' || inputs.create_release == true
@@ -286,5 +272,4 @@ jobs:
           files: |
             src-tauri/target/**/release/bundle/**/*.AppImage
             src-tauri/target/**/release/bundle/**/*.deb
-            src-tauri/target/**/release/bundle/**/*.sig
 

@@ -6,11 +6,65 @@
 
 日期：2026-10-01（本机 macOS，Apple Silicon；Rust 核心 + Vue 面板）
 
+## 全量代码审查与壳↔面板接缝修复（2026-10-01，同日第二轮）
+
+### 已验证（本轮实跑数字）
+
+- `cargo test`（`src-tauri/core/`）→ **197 通过 / 0 失败**：lib 单测 **179** + `js_parity` **11** + `red_lines` **7**。
+  新增的 2 个 lib 单测在 `src-tauri/core/src/orchestration.rs::tests`：
+  `concurrent_chain_registration_never_forks`（8 线程并发登记串行链，断言只有一个无前驱、
+  predecessor 不重复——即写链不得分叉）与 `reused_slot_clone_shares_the_recorded_outcome`
+  （复用进行中 refresh 时，后到者持有的 Slot 克隆必须读得到首个调用者的失败）。
+- `cargo clippy --all-targets`（核心）→ **0 warning**；`cargo clippy --no-deps`（壳）→ **0 warning**。
+- `npx eslint .` → 0 problems；`npm run version:check` → 5 处一致（**1.0.0**，本轮未推进）。
+- `npm run build` → **exit 0，无构建错误**：vite 31 模块（`dist/` 78.76 kB js + 8.40 kB css）→
+  cargo release → `bundle/macos/WB Bridge.app`（6.42 MiB）+ `bundle/dmg/WB Bridge_1.0.0_aarch64.dmg`
+  （3.34 MiB），ad-hoc 签名、跳过公证（无 APPLE_ID/…）。
+
+### 本轮修的缺陷（均为行为修复，逐条读过源码与归档 JS）
+
+- **面板丢状态**：壳把 `activity` / `modelResults` 拆成 `core-activity` 发出，但 `src/core/bridge.js`
+  从未监听它，`core-status` 收到的又是剥掉这两字段的轻量快照 → 逐模型明细与活动文案恒为空。
+  现在 `bridge.js` 缓存最近一次完整状态并把两路合并后下发，`onState` 订阅时直接回放缓存
+  （原先那段 `getCurrent…emit('wb-bridge/replay-request')` 调的是 Tauri 2 里不存在的 API、且全仓
+  无监听者，已删）。事件名与 payload 形状未改。
+- **系统代理开关必然失败**：面板发裸布尔，核心按 `docs/contract.md` 读 `{enabled}` →
+  「代理开关必须是布尔值」。改为 `run('system-proxy', { enabled: $event })`（面板侧对齐契约，
+  核心路由与字段名不动）。
+- **refresh 的 spinner 永不显示**：`busyAction` 是布尔却被与字符串 `'refresh'` 比较。改为持有动作名，
+  并把传给 Boolean prop 的 `:disabled` / `:busy` 统一 `!!busyAction`，避免 Vue 的 prop 类型告警。
+- **托盘吞错**：`src-tauri/src/lib.rs` 两处 `let _ = admin_call(...)` 改为失败时 `eprintln!` 记录原因
+  （GUI 打包后 stderr 不进终端，可观测性有限——面板侧可见的托盘错误提示需要新的展示位，未做）。
+- **refresh 复用把失败说成成功**：后到者只 `wait_for(done)` 就返回 `Ok({count})`；JS 里大家 await 同一个
+  promise、rejection 会传播给每个等待者。`Slot` 增设 `outcome`（Arc 共享，克隆可见），任务先写结果
+  再置 done，复用路径原样返回该结果。
+- **串行写链分叉**：`persist_status` / `chain_sync` 原本「读 predecessor」与「写回链头」分两次加锁，
+  两线程可读到同一个 predecessor 并各自只等它 → 两条分支并发执行、后登记者覆盖先登记者的 Slot、
+  `drain()` 等不到被覆盖的那条写。抽出 `reserve_chain_slot()` 在单次持锁内完成读+登记，
+  status/sync/refresh 三条链统一走它。
+- **文档口径纠正**：探测超时原写「整批共享 60s」，实际（与归档 JS 一致）是**每模型一份 deadline、
+  重试共用**；已改 `AGENTS.md`（3 处）、`probe.rs` 模块注释与常量文档、`red_lines.rs` 断言文案。
+  壳注释里指向已归档 `src/core/src/server.js` 的路径、`server.rs` 的「方案B 阶段二/三」过期术语同步更正。
+
+### 未验证 / 未做（如实标注）
+
+- **GUI 仍未实机启动**：上面的接缝修复全部靠源码与契约推导 + 编译/测试/打包通过，托盘、面板交互、
+  代理开关的实际点击链路未经真实运行验证。
+- **CI 仍未实跑**：`release.yml` 只是静态结构正确；本轮拆掉了它声称但不存在的自动更新产物
+  （`**/*.sig` glob、`TAURI_SIGNING_*` 环境变量、`.tar.gz`），因为 `tauri.conf.json` 既无
+  `bundle.createUpdaterArtifacts` 也无 `plugins.updater` 依赖。**自动更新功能本身仍未接线**。
+- 仍存而未修的已知项：`pick_port()` 先 bind 再 drop 的端口抢占窗口；`[profile.release] panic = "abort"`
+  下任何 panic 直接带走整个应用（无日志）；`.vue` 不在 `npm run lint` 覆盖范围（`eslint.config.js` 只匹配
+  `**/*.{js,mjs}`）；CI 的 `node-version: 22` 与 `engines.node >= 24` 不一致。
+
+---
+
 ## Node → Rust 核心迁移复验（2026-10-01）
 
 ### 已验证
 
-- **测试全绿**：`src-tauri/core/` 下 `cargo test` → **195 通过 / 0 失败**，构成：lib 单测 **177** +
+- **测试全绿**：`src-tauri/core/` 下 `cargo test` → **195 通过 / 0 失败**（该轮基线；同日第二轮修复后为
+  **197**，见上方条目），构成：lib 单测 **177** +
   `tests/js_parity.rs` **11** + `tests/red_lines.rs` **7**（根目录 `npm test` 转发到同一 `cargo test` 命令）。
   - `js_parity.rs` 不再需要 Node：期望值是迁移前用真实 JS 模块录制、冻结在 `src-tauri/core/tests/fixtures/*.json`
     的真相快照（**271 例 / 11 个 fixture 模块**：atomic 10、handoff 34、json 11、model_status 22、platform 10、

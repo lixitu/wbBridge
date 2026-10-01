@@ -1,11 +1,13 @@
 <script setup>
-// 选中模型的详情面板：能力、上下文与最近一次调用的观测。
+// 选中模型的详情面板：常驻右侧分栏（非浮层），头部固定、正文区独立滚动。
 import { computed } from 'vue'
 
 const props = defineProps({
   model: { type: Object, required: true },
   result: { type: Object, default: () => ({}) },
 })
+
+defineEmits(['collapse'])
 
 const lines = computed(() => {
   const r = props.result || {}
@@ -31,32 +33,72 @@ const lines = computed(() => {
 </script>
 
 <template>
-  <section class="details">
-    <strong>{{ model.id }}</strong>
-    <p v-for="(line, i) in lines" :key="i" :class="{ 'error-text': line.error }">{{ line.text }}</p>
+  <section class="details" aria-label="模型详情">
+    <div class="details-head">
+      <strong>{{ model.id }}</strong>
+      <button
+        type="button"
+        class="collapse"
+        title="收起详情（Esc）"
+        aria-label="收起详情"
+        @click="$emit('collapse')"
+      >
+        <span aria-hidden="true">›</span>收起
+      </button>
+    </div>
+    <div class="details-body">
+      <p v-for="(line, i) in lines" :key="i" :class="{ 'error-text': line.error }">{{ line.text }}</p>
+    </div>
   </section>
 </template>
 
 <style scoped>
 .details {
-  padding: 14px 15px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  padding: 12px 14px 14px;
   background: var(--row);
+  border: 1px solid var(--line);
   border-radius: var(--radius-m);
   font-size: 12px;
-  color: var(--muted);
+  color: var(--muted-strong);
   line-height: 1.8;
-  max-height: 190px;
-  overflow: auto;
   user-select: text;
   box-shadow: var(--shadow);
 }
+.details-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  flex-shrink: 0;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 8px;
+}
 strong {
-  display: block;
   font-family: ui-monospace, monospace;
   color: var(--text);
   overflow-wrap: anywhere;
-  margin-bottom: 5px;
+  min-width: 0;
+  padding-top: 3px;
 }
+.collapse {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 8px;
+  font-size: 12px;
+  color: var(--muted-strong);
+  background: transparent;
+  border-color: var(--line);
+}
+.collapse:hover:not(:disabled) { background: var(--green-bg); color: var(--green); }
+.collapse span { font-size: 14px; line-height: 1; }
+.details-body { overflow: auto; min-height: 0; }
 p { margin: 0; }
 .error-text { color: var(--orange); overflow-wrap: anywhere; }
 </style>

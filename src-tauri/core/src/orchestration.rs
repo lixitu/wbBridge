@@ -186,6 +186,19 @@ fn random_hex(bytes: usize) -> String {
 struct Slot {
     id: u64,
     done: watch::Receiver<bool>,
+    /// 本轮任务的结果，供「复用进行中任务」的后到调用者取回（目前只有 refresh 链写入）。
+    /// 用 Arc 是因为克隆 Slot 时后到者必须读到同一个 outcome。
+    outcome: Arc<Mutex<Option<Result<Value, BackendError>>>>,
+}
+
+impl Slot {
+    fn new(id: u64, done: watch::Receiver<bool>) -> Self {
+        Self {
+            id,
+            done,
+            outcome: Arc::new(Mutex::new(None)),
+        }
+    }
 }
 
 /// 串行链的任务编号发生器（statusWrites / syncWrites / refreshing / probeTask 共用）。
@@ -193,6 +206,22 @@ static CHAIN_SEQ: AtomicU64 = AtomicU64::new(1);
 
 fn next_chain_id() -> u64 {
     CHAIN_SEQ.fetch_add(1, Ordering::SeqCst)
+}
+
+/// 在串行链上登记一个任务：在**同一次持锁**里读出前驱、把自己写成新链头。
+///
+/// 必须原子：分两次加锁时两个线程可能都读到同一个前驱、各自只等它，写链就此分叉 —— 两条分支
+/// 并发执行（status.json 不再串行、models.json 的读-改-写互相覆盖），并且后登记的一方会覆盖
+/// 先登记的 Slot，`drain()` 等不到被覆盖的那条写。
+fn reserve_chain_slot(
+    chain: &Arc<Mutex<Option<Slot>>>,
+) -> (Option<Slot>, watch::Sender<bool>, Slot) {
+    let (done_tx, done_rx) = watch::channel(false);
+    let slot = Slot::new(next_chain_id(), done_rx);
+    let mut head = lock(chain);
+    let predecessor = head.clone();
+    *head = Some(slot.clone());
+    (predecessor, done_tx, slot)
 }
 
 /// 活动表条目（对应 `activities` Map 的值）。
@@ -296,10 +325,7 @@ fn persist_status(snapshot: Value) {
     let app = global_app();
     let text = serde_json::to_string_pretty(&snapshot).unwrap_or_default();
     let file = app.status_file.as_ref().clone();
-    let predecessor = lock(&app.status_task).clone();
-    let slot = app.status_task.clone();
-    let (done_tx, done_rx) = watch::channel(false);
-    let id = next_chain_id();
+    let (predecessor, done_tx, _head) = reserve_chain_slot(&app.status_task);
     tokio::spawn(async move {
         if let Some(predecessor) = predecessor {
             let _ = predecessor.done.clone().wait_for(|done| *done).await;
@@ -309,7 +335,6 @@ fn persist_status(snapshot: Value) {
         }
         let _ = done_tx.send(true);
     });
-    *lock(&slot) = Some(Slot { id, done: done_rx });
 }
 
 /// 「更新 + 落盘」一步完成（对应 JS 的单次 `update` 调用点）。
@@ -320,10 +345,7 @@ fn update_and_persist(patch: Value) {
 /// 串行执行 models.json 任务（对应 `syncWrites` 链）。
 fn chain_sync(task: impl std::future::Future<Output = ()> + Send + 'static) {
     let app = global_app();
-    let predecessor = lock(&app.sync_task).clone();
-    let slot = app.sync_task.clone();
-    let (done_tx, done_rx) = watch::channel(false);
-    let id = next_chain_id();
+    let (predecessor, done_tx, _head) = reserve_chain_slot(&app.sync_task);
     tokio::spawn(async move {
         if let Some(predecessor) = predecessor {
             let _ = predecessor.done.clone().wait_for(|done| *done).await;
@@ -331,7 +353,6 @@ fn chain_sync(task: impl std::future::Future<Output = ()> + Send + 'static) {
         task.await;
         let _ = done_tx.send(true);
     });
-    *lock(&slot) = Some(Slot { id, done: done_rx });
 }
 
 /// 等待某条串行写链排空（对应 JS 的 `await syncWrites` / `await statusWrites`）。
@@ -743,7 +764,7 @@ fn start_probes(model_id: Option<Value>, reveal: bool, auto_import: bool) -> Val
         run_probe_batch(selected, pending, reveal, auto_import).await;
         let _ = done_tx.send(true);
     });
-    *lock(&app.probe_task) = Some(Slot { id, done: done_rx });
+    *lock(&app.probe_task) = Some(Slot::new(id, done_rx));
     json!({ "started": true })
 }
 
@@ -985,8 +1006,13 @@ async fn refresh(restart_runtime: bool, use_system_proxy: Option<bool>) -> Resul
     let app = global_app();
     let existing = lock(&app.refresh).clone();
     if let Some(slot) = existing {
-        // 后到的调用复用同一个进行中的 refresh（与 JS 的 promise 复用一致）。
+        // 后到的调用复用同一个进行中的 refresh。JS 里所有调用者 await 的是同一个 promise，
+        // 失败会传播给每一个等待者；这里必须把结果原样取回，否则第二个调用者会把失败显示成成功。
         let _ = slot.done.clone().wait_for(|done| *done).await;
+        if let Some(outcome) = lock(&slot.outcome).clone() {
+            return outcome;
+        }
+        // done 已置却没有结果 = 这一轮没能跑到终点（运行时提前关停等），退回原有的成功口径。
         return Ok(json!({
             "count": app
                 .snapshot()
@@ -1019,13 +1045,13 @@ async fn refresh(restart_runtime: bool, use_system_proxy: Option<bool>) -> Resul
     // 任务在链位登记之后才开始（gate），否则先结束的这一轮会把链位清成 None 再被写回。
     let (gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
     let (result_tx, result_rx) = tokio::sync::oneshot::channel::<Result<Value, BackendError>>();
-    let (done_tx, done_rx) = watch::channel(false);
     let generation = {
         let mut current = lock(&app.refresh_generation);
         *current += 1;
         *current
     };
-    let id = next_chain_id();
+    let (_predecessor, done_tx, slot) = reserve_chain_slot(&app.refresh);
+    let recorded = slot.outcome.clone();
     tokio::spawn(async move {
         let _ = gate_rx.await;
         let outcome = run_refresh(restart_runtime, enabled, proxy_env).await;
@@ -1033,10 +1059,11 @@ async fn refresh(restart_runtime: bool, use_system_proxy: Option<bool>) -> Resul
         if *lock(&global_app().refresh_generation) == generation {
             *lock(&global_app().refresh) = None;
         }
+        // 先写结果、后置 done：复用这一轮的后到者从 done 醒来时一定读得到 outcome。
+        *lock(&recorded) = Some(outcome.clone());
         let _ = result_tx.send(outcome);
         let _ = done_tx.send(true);
     });
-    *lock(&app.refresh) = Some(Slot { id, done: done_rx });
     let _ = gate_tx.send(());
     result_rx
         .await
@@ -1777,4 +1804,61 @@ fn install_signal_handlers() {
         }
         spawn_shutdown(0);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 串行链登记必须原子：并发登记时只允许一个线程拿到「无前驱」。
+    /// 若两个线程读到同一个 predecessor，写链就分叉 —— 两条分支并发执行同一次写，
+    /// 且后登记的一方覆盖先登记的 Slot，`drain()` 等不到被覆盖的那条写。
+    #[test]
+    fn concurrent_chain_registration_never_forks() {
+        let chain: Arc<Mutex<Option<Slot>>> = Arc::new(Mutex::new(None));
+        let mut workers = Vec::new();
+        for _ in 0..8 {
+            let chain = chain.clone();
+            workers.push(std::thread::spawn(move || {
+                let (predecessor, _done_tx, slot) = reserve_chain_slot(&chain);
+                (predecessor.map(|previous| previous.id), slot.id)
+            }));
+        }
+        let pairs: Vec<(Option<u64>, u64)> = workers.into_iter().map(|w| w.join().unwrap()).collect();
+
+        let heads: HashSet<u64> = pairs.iter().map(|(_, id)| *id).collect();
+        assert_eq!(heads.len(), 8, "每个任务都要拿到唯一的链位编号");
+
+        let no_predecessor = pairs.iter().filter(|(previous, _)| previous.is_none()).count();
+        assert_eq!(no_predecessor, 1, "只有第一个登记者可以没有前驱");
+
+        let mut predecessors: Vec<u64> = pairs.iter().filter_map(|(previous, _)| *previous).collect();
+        let before = predecessors.len();
+        predecessors.sort_unstable();
+        predecessors.dedup();
+        assert_eq!(
+            predecessors.len(),
+            before,
+            "出现重复 predecessor = 写链分叉（红线：status.json 必须串行、models.json 不得并发读-改-写）"
+        );
+        assert!(lock(&chain).is_some(), "链头必须指向最后登记的任务");
+    }
+
+    /// 复用进行中 refresh 时，后到者持有的是 Slot 的**克隆**，必须与任务写入的是同一份 outcome。
+    /// JS 里所有调用者 await 同一个 promise，失败同样传播；若克隆不共享，第二个调用者会把
+    /// 失败显示成成功。
+    #[test]
+    fn reused_slot_clone_shares_the_recorded_outcome() {
+        let (_predecessor, _done_tx, slot) = reserve_chain_slot(&Arc::new(Mutex::new(None)));
+        let waiter = slot.clone();
+        assert!(lock(&waiter.outcome).is_none(), "未记录结果时没有可复用的 outcome");
+
+        *lock(&slot.outcome) = Some(Err(BackendError::plain("运行时下载失败")));
+        let reused = lock(&waiter.outcome).clone();
+        match reused {
+            Some(Ok(_)) => panic!("复用者不应看到成功"),
+            Some(Err(error)) => assert_eq!(error.message, "运行时下载失败"),
+            None => panic!("复用者必须读得到首个调用者的失败"),
+        }
+    }
 }

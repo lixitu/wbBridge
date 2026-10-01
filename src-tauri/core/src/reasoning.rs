@@ -68,11 +68,6 @@ pub fn work_buddy_reasoning(model: &Value) -> Value {
     })
 }
 
-/// 内部使用：判断某个 effort 是否映射到了 variant（`prepare()` 需要）。
-pub fn variant_for_effort(model: &Value, effort: &str) -> Option<Value> {
-    reasoning_efforts(model).get(effort).cloned()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

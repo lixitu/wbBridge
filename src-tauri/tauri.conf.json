@@ -14,8 +14,8 @@
     "windows": [
       {
         "title": "WB Bridge",
-        "width": 980,
-        "height": 680,
+        "width": 1120,
+        "height": 720,
         "minWidth": 860,
         "minHeight": 560,
         "resizable": true,
