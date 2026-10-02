@@ -93,6 +93,15 @@ jobs:
         # package.json / tauri.conf.json / Cargo.toml / AGENTS.md 必须同一版本。
         run: node scripts/check-version.mjs
 
+      - name: 运行面板偏好与更新清单单测
+        # 两组都是 node --test、只用 node 内置模块（不引测试框架、不需要 npm ci）：
+        #   • src/core/prefs.test.js —— 凭据字段进不了 localStorage、坏数据回落默认值；
+        #   • scripts/gen-latest-json.test.mjs —— latest.json 唯一写者的缺平台/缺签名/
+        #     mac 漏架构后缀/歧义产物四类失败路径（这些错误 otherwise 只有用户装上才暴露）。
+        run: |
+          node --test src/core/prefs.test.js
+          node --test scripts/gen-latest-json.test.mjs
+
       - name: 校验触发标签与源码版本一致
         # 上一项只比对「同一提交内 5 处落点互相一致」，因此标签指向一份全体为旧版本的
         # 提交时它照样通过 —— v1.0.1 就是这样产出了 WB Bridge_1.0.0_aarch64.dmg，而且那个
@@ -192,6 +201,15 @@ jobs:
           done
           echo "本次补架构后缀（arch=${arch}）的 updater 包：${renamed} 个。"
 
+      - name: 打印产物名（上传前留痕，供人工核对资产名 = tag 版本）
+        # find 用 BSD/GNU 都支持的写法（macOS runner 上没有 GNU find 的 -printf）。
+        shell: bash
+        run: |
+          conf="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          echo "源码版本 = ${conf}，触发引用 = ${GITHUB_REF_NAME}"
+          find src-tauri/target -path '*/release/bundle/*' -type f \
+            \( -name '*.dmg' -o -name '*.app' -o -name '*.app.tar.gz' -o -name '*.sig' \) -print | sort
+
       - name: 上传产物到 Actions Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -273,6 +291,14 @@ jobs:
           # 清单交给末尾的 update-manifest 作业单点写，避免 6 个并发作业互相覆盖。
           includeUpdaterJson: false
 
+      - name: 打印产物名（上传前留痕，供人工核对资产名 = tag 版本）
+        shell: bash
+        run: |
+          conf="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          echo "源码版本 = ${conf}，触发引用 = ${GITHUB_REF_NAME}"
+          find src-tauri/target -path '*/release/bundle/*' -type f \
+            \( -name '*.exe' -o -name '*.msi' -o -name '*.sig' \) -print | sort
+
       - name: 上传产物到 Actions Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -353,6 +379,14 @@ jobs:
           # 清单交给末尾的 update-manifest 作业单点写，避免 6 个并发作业互相覆盖。
           includeUpdaterJson: false
 
+      - name: 打印产物名（上传前留痕，供人工核对资产名 = tag 版本）
+        shell: bash
+        run: |
+          conf="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          echo "源码版本 = ${conf}，触发引用 = ${GITHUB_REF_NAME}"
+          find src-tauri/target -path '*/release/bundle/*' -type f \
+            \( -name '*.AppImage' -o -name '*.AppImage.tar.gz' -o -name '*.deb' -o -name '*.sig' \) -print | sort
+
       - name: 上传产物到 Actions Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -400,6 +434,42 @@ jobs:
 
       - name: 生成 latest.json
         run: node scripts/gen-latest-json.mjs --dir artifacts --out latest.json
+
+      - name: 产物版本自检（结论写进 run summary，供 Release 正文引用）
+        # 汇总六个平台实际收到的安装包，逐个核对文件名里的版本号是否等于源码版本。
+        # v1.0.1 事故的二次网：标签打在不含版本推进的提交上时，test 作业的标签闸门会先红；
+        # 万一闸门被绕过（手动 dispatch、改了 conf 没改标签），这里仍能把错名产物摊在明面上。
+        run: |
+          set -uo pipefail
+          conf="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          total=0; named=0; nover=0; unexpected=0
+          while IFS= read -r f; do
+            [ -n "${f}" ] || continue
+            base="$(basename "${f}")"
+            total=$((total + 1))
+            if [[ "${base}" == *"${conf}"* ]]; then
+              named=$((named + 1))
+              echo "· ${base}"
+            elif [[ "${base}" == *".app.tar.gz" ]]; then
+              nover=$((nover + 1))
+              echo "· ${base}（macOS 更新包名按设计不含版本）"
+            elif [[ "${base}" == *".dmg" ]]; then
+              unexpected=$((unexpected + 1))
+              echo "· ${base}（dmg 名不含本次版本，需人工核对）"
+            else
+              unexpected=$((unexpected + 1))
+              echo "::warning::${base} 的文件名里没有本次版本 ${conf}，且不属于已知的免版本号形态"
+            fi
+          done < <(find artifacts -type f \( -name '*.dmg' -o -name '*-setup.exe' -o -name '*.msi' -o -name '*.AppImage' -o -name '*.AppImage.tar.gz' -o -name '*.deb' -o -name '*.app.tar.gz' \) | sort)
+          echo "统计：安装包 ${total} 个，文件名含 ${conf} 的 ${named} 个，按设计不含版本的 macOS 更新包 ${nover} 个，待人工核对 ${unexpected} 个。"
+          {
+            echo "## 产物版本自检"
+            echo "- 触发引用：\`${GITHUB_REF_NAME}\`（事件 ${GITHUB_EVENT_NAME}）"
+            echo "- 源码版本（\`src-tauri/tauri.conf.json\`）：\`${conf}\`"
+            echo "- 汇总到的安装包：${total} 个 — 文件名带本次版本的 ${named} 个 / macOS 更新包（按设计无版本名）${nover} 个 / 待人工核对 ${unexpected} 个"
+            echo "- 更新清单：\`$(node -p "Object.keys(require('./latest.json').platforms).join(', ')")\`"
+            echo "- 结论：**待人工核对项为 0 时才可 Publish**；一旦安装包名与源码版本不符，先确认标签是否打在含本次版本推进的提交上。"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: 上传到 GitHub Release（仅推 tag 或勾选 create_release 时）
         if: github.event_name == 'push' || inputs.create_release == true

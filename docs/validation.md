@@ -1,10 +1,53 @@
-# WB Bridge v1.0.1 验证记录
+# WB Bridge v1.0.2 验证记录
 
 > 阅读顺序：最新记录在前。自 **2026-10-01** 起核心已从 Node.js sidecar 迁移为 Rust 库（静态链接进壳），
 > 该日期之后的条目描述 Rust 形态；下方的 2026-09-30 条目属于**迁移前的 Node/sidecar 时代**，作为历史
 > 保留原样（其 97 项测试、`src/core/`、`src-tauri/binaries/` 等结论已不再对应当前仓库）。
 
-日期：2026-10-01（本机 macOS，Apple Silicon；Rust 核心 + Vue 面板）
+日期：2026-10-02（本机 macOS，Apple Silicon；Rust 核心 + Vue 壳 + Vue 面板）
+
+## v1.0.2 交付闭环：发布门禁、面板偏好、签名与回滚文档（2026-10-02，同日第一轮）
+
+### 落地的改动
+
+| 项 | 内容 | 落点 |
+|---|---|---|
+| A9 发布链路自证 | 三个 build 作业上传前打印「源码版本 / 触发引用 / bundle 文件名」；`update-manifest` 新增「产物版本自检」步骤，把六平台安装包按「文件名含本次版本 / 按设计不含版本（macOS 更新包）/ 待人工核对」三分类写进 `$GITHUB_STEP_SUMMARY`。**刻意只 `::warning::` 不硬失败**——非 macOS 产物名仍未实测，硬失败会把首跑 CI 全部标红 | `.github/workflows/release.yml` |
+| A8 面板偏好持久化 | 新增 `src/core/prefs.js`：`wb.` 前缀 + **写入前键白名单** + 值字段投影 + 序列化后 2KB 上限 + 存储不可用/抛错静默回落默认值。持久化两项：当前视图（`App.vue` `ref(loadView())` + `watch` 回写）、「启动后自动检查更新」开关与上次**成功**检查时间戳（`update.js` 新增 `setAutoCheck(enabled)`，`startSilentCheck()` 前置 `shouldSilentCheck()` 做 12h 节流），开关 UI 在「关于与更新」 | `src/core/prefs.js`、`src/App.vue`、`src/core/update.js`、`src/views/AboutView.vue` |
+| A6-7 偏好测试 | `src/core/prefs.test.js`（`node --test`，**8 用例**）+ 根脚本 `npm run test:prefs`；不引测试框架、不依赖 DOM（`globalThis.localStorage` + `withStorage(fakeStorage(), fn)`） | `src/core/prefs.test.js`、`package.json` |
+| A6-7b 更新清单测试（本轮追加） | `scripts/gen-latest-json.test.mjs`（`node --test`，**9 用例**）+ `npm run test:manifest`：`spawnSync` 跑真脚本 + `mkdtempSync` 临时产物目录，钉住六平台成功路径（平台键只由目录名 triple 决定、url 空格编码、签名取自 `.sig`）与七类失败/告警路径；版本号现读 `tauri.conf.json`，**不随版本推进失效**。此前这组检查只用一次性 `/tmp` 夹具跑过、未入库、无法复跑，本轮补成仓库内基线并纳入 CI `test` 作业 | `scripts/gen-latest-json.test.mjs`、`package.json`、`.github/workflows/release.yml` |
+| A7 签名预留位 | 「商业签名与公证」表：macOS `bundle.macOS.signingIdentity`（当前 `"-"`）+ 公证**只走环境变量**（Apple ID 路线 `APPLE_ID`/`APPLE_PASSWORD`/`APPLE_TEAM_ID`，或 ASC 路线 `APPLE_API_ISSUER`/`APPLE_API_KEY`/`APPLE_API_KEY_PATH`）、CI 钥匙串四变量；Windows `bundle.windows.certificateThumbprint` + `digestAlgorithm` + `timestampUrl`。键名经官方文档核对（Context7 实读），`tauri.conf.json` 是严格 JSON 不能写注释，故预留位只落在文档 | `docs/wiki/版本与发布.md` |
+| A10 失败路径与回滚 | 四条失败路径表（检查失败 / 下载或安装失败 → **不存在半更新** / 重启走有界停止 / 更新后首启失败报 `core-failed`）+ 5 步手动回滚 + 对应故障排查条目（含「macOS 更新后被 Gatekeeper 重新拦下」） | `docs/wiki/版本与发布.md`、`docs/wiki/常见问题与故障排查.md` |
+| A5 发布日志 | `docs/version/RELEASE-v1.0.md` 顶部新增 v1.0.2 分节；新增 `docs/version/RELEASE-NOTES-v1.0.2.md` 作 GitHub Release 正文；`docs/version/README.md` 索引与落点表更新 | `docs/version/*` |
+| 文档口径更正 | `docs/wiki/已知限制与未验证项.md`：未验证项补第 9（偏好持久化 GUI 未实测）、10（回滚链路未实机）两行，第 2/3/4 行按实测状态改写，「已验证对照」补壳 8 通过 + prefs 8 通过；已知限制第 10/11 行换成当前事实（产品版本 1.0.2、103 个被跟踪文件、v1.0.2 未提交），新增第 15（偏好只两项，并注明代理开关其实由核心持久化在 `settings.json`）与第 16（存储里绝不写凭据）。标签纪律一节按实读换成「远端 `v1.0.1` → `679a2cb`（含版本推进提交 `46c7c56`）、本地标签仍指 `f046208`」 | 三个 wiki 页 + `AGENTS.md` |
+
+### 真实执行的验证（2026-10-02）
+
+| 命令 | 结果 |
+|---|---|
+| `cargo test`（`src-tauri/core/`） | **207 通过 / 0 失败**（lib 187 + `js_parity` 11 + `red_lines` 9） |
+| `cargo clippy --all-targets`（核心） | **0 warning**（`touch src/lib.rs` 强制重检后仍为 0） |
+| `cargo test --lib`（`src-tauri/`） | **8 通过 / 0 失败** |
+| `cargo clippy --no-deps --all-targets`（壳） | **0 warning**（版本改写触发重新检查） |
+| `npm run test:prefs` | **8 通过 / 0 失败** |
+| `npm run test:manifest` | **9 通过 / 0 失败** |
+| `npx eslint .` | **0 problem**（含新增两个测试文件） |
+| `npm run vite:build` | ✓ built（`dist/assets/index-*.js` 100.54 kB / gzip 37.76 kB） |
+| `npm run version:check` | **全部 5 处版本号一致（1.0.2）** |
+| `python3 -c "yaml.safe_load(...)"` | `release.yml` 解析通过，作业 `test / build-macos / build-windows / build-linux / update-manifest`，`test` 作业 8 步（含新增单测步与标签闸门） |
+
+### 未验证（不得伪装）
+
+- ❌ **GUI 从未实机启动**：视图恢复、`autoCheck` 开关的真实 `localStorage` 行为、更新条与重启流程都只有单测 + 构建证据。
+- ❌ `release.yml` **未在 CI 跑过**（新增的产物名打印与自检步骤同样只做过 YAML 结构校验）；GitHub Secrets 是否已配**本机无法核验**（无 `gh`、未联网查证）。
+- ❌ 未构建 v1.0.2 安装包；本机上一次打包发生在 `1.0.1` 源码版本（只出过 macOS aarch64 的 dmg + updater 包 + `.sig`，且 `.app` 未运行）。
+- ❌ 一次真实的「检查 → 下载 → 安装 → 重启 → 首启」与其失败回滚从未走过；需要一次真实的 v1.0.2 → v1.0.3 才能验证。
+
+### 本轮范围决定（如实记录）
+
+- A8 只做计划里**已有 UI 控件**的两项（视图 + 自动检查开关）：计划中的其余项（详情栏收起状态、代理开关、窗口尺寸/位置）要么本就没有 UI、要么需要新依赖 `tauri-plugin-window-state`，其在无 GUI 实测下与 `quit_app` 关停时序的交互无法确认，**未接入**，留待用户决策。
+- 产物名自检选择「告警而非硬失败」，理由同上（非 macOS 命名未实测）。
+- 未提交、未打标签、未推任何东西；未启动 GUI（会写真实的 `~/.workbuddy/models.json`）。
 
 ## updater 接线、真实签名构建与更新清单（2026-10-01，同日第十轮）
 

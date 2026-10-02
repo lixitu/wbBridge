@@ -117,6 +117,14 @@
 5. 浅色主题下 3 处次要文字（`App.vue` 副标题与页脚、`ModelRow.vue` 耗时行）仍用 `--muted`，对比度约 4.01/4.01/3.73，**低于 WCAG AA 的 4.5:1**；既有问题，本版未处理。
 6. 无确定性单测的既有条目：`service.pid` 单实例、探测路径禁用辅助模型转写、转写排除刚失败模型、格式类失败不撤发布、仅回环绑定、目录 `0700` 的失败分支、并发 `refresh()` 去重（依赖 await 交错，难以稳定构造）。
 
+## 🍎 macOS 首次打开（ad-hoc 签名放行）
+
+应用使用 ad-hoc 签名（未做 Apple 公证）。首次打开若被拦截：先尝试打开，再到「系统设置 → 隐私与安全性」点击「仍要打开」；若提示「已损坏」，确认来源可信后执行：
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/WB Bridge.app"
+```
+
 ## 🧭 升级与兼容
 
 - **对外契约未变**：HTTP 路由、错误码、`status.json` 既有字段、IPC 命令名与事件名全部保持 v1.0.0 原样；本版对 `status.json` 只做**加法式**新增（顶层 `usage`），`STATUS_SCHEMA_VERSION` 仍为 `1`。

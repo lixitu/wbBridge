@@ -4,7 +4,7 @@
 // 百分比一律来自 updater 事件的真实字节数，拿不到 contentLength 就不显示数字。
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { dataDir } from '../core/bridge.js'
-import { check, dismiss, install, restart, subscribe } from '../core/update.js'
+import { check, dismiss, install, restart, setAutoCheck, subscribe } from '../core/update.js'
 import FeedbackBar from './FeedbackBar.vue'
 
 defineProps({
@@ -14,7 +14,9 @@ defineProps({
 const version = __APP_VERSION__
 const dir = ref('')
 const dirError = ref(null)
-const update = ref({ status: 'idle', version: '', notes: '', received: 0, total: 0, error: '', checkedAt: 0 })
+const update = ref({
+  status: 'idle', version: '', notes: '', received: 0, total: 0, error: '', checkedAt: 0, autoCheck: true,
+})
 let unsubscribe = null
 
 const busy = computed(() => ['checking', 'downloading'].includes(update.value.status))
@@ -100,6 +102,20 @@ onUnmounted(() => {
         启动后在后台静默检查一次；只有真的发现新版本才会在下面出现更新条。
         下载与安装一律由你点击触发，安装完成后需重启应用生效。
       </p>
+
+      <!-- 自动检查开关是界面偏好（存 prefs，跨重启生效）；关掉只停掉冷启动的静默检查，
+           下面的「检查更新」按钮始终可用。 -->
+      <label class="auto-check">
+        <span>启动后自动检查更新</span>
+        <input
+          id="auto-check"
+          type="checkbox"
+          role="switch"
+          :checked="update.autoCheck"
+          :aria-checked="String(update.autoCheck)"
+          @change="setAutoCheck($event.target.checked)"
+        >
+      </label>
 
       <div v-if="hasBar" class="update-bar">
         <span class="pulse" aria-hidden="true" />
@@ -213,6 +229,49 @@ header { display: flex; justify-content: space-between; gap: var(--sp-3); align-
 .progress { margin-top: var(--sp-3); }
 .progress-text { margin: 6px 0 0; font-size: var(--fs-xs); color: var(--muted-strong); font-variant-numeric: tabular-nums; }
 .update-actions { display: flex; align-items: center; gap: var(--sp-3); margin-top: var(--sp-3); }
+/* 自动检查开关：与侧栏「使用系统代理」同一套开关语言（同样的轨道尺寸、同一批 token）。 */
+.auto-check {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin-top: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  font-size: var(--fs-sm);
+  color: var(--muted-strong);
+  cursor: pointer;
+  transition: background var(--dur-2) var(--ease-standard);
+}
+.auto-check:hover { background: var(--nav-hover-bg); }
+.auto-check input[role=switch] {
+  appearance: none;
+  width: 34px;
+  height: 20px;
+  border-radius: 20px;
+  background: var(--switch-off);
+  cursor: pointer;
+  position: relative;
+  flex-shrink: 0;
+  margin: 0;
+  transition: background var(--dur-2) var(--ease-standard);
+}
+.auto-check input[role=switch]:after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--switch-knob);
+  box-shadow: var(--shadow-s);
+  transition: transform var(--dur-2) var(--ease-emphasis);
+}
+.auto-check input[role=switch]:checked { background: var(--green); }
+.auto-check input[role=switch]:checked:after { transform: translateX(14px); }
+.auto-check input[role=switch]:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 .checked-at { font-size: var(--fs-xs); color: var(--muted-strong); }
 .uptodate { margin-top: var(--sp-3); }
 @keyframes update-rise {

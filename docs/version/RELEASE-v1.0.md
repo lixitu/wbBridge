@@ -4,7 +4,58 @@
 > 命名规则：`RELEASE-v{主版本}.md`；次版本迭代追加到文件顶部新分节。
 > 版本纪律以根目录 `AGENTS.md`「当前基准版本」章节为准，本文件不另立规则。
 > 整理规则：同类问题多次修复的条目合并为一条，统一记述于最终修复版本；被合并的早期版本保留编号与合并指向，不再重复正文。
-> 当前最新版本：**v1.0.1**。
+> 当前最新版本：**v1.0.2**。
+
+---
+
+## v1.0.2 · 📝 待发布
+
+> **状态**: 📝 待发布（改动在工作区，**尚未提交、尚未打标签**；GUI 未实机启动、`release.yml` 未在 CI 跑过、v1.0.2 的安装包未构建）
+> **日期**: 2026-10-02
+> **上一版本**: v1.0.1（远端标签 `v1.0.1` → `679a2cb`，含版本推进提交 `46c7c56`；**本地标签仍指 `f046208`**，同步动作属维护者）
+> **GitHub Release 正文**: [`RELEASE-NOTES-v1.0.2.md`](RELEASE-NOTES-v1.0.2.md)
+> **本版主题**: 自动更新链路接入（updater + process 插件、签名产物、`latest.json` 单一写者）+ 发布链路自证（标签↔版本闸门、产物名自检）+ 面板偏好持久化。
+> **版本推进理由**: 本版新增内容与 v1.0.1 **不同类、不同根因**——把「升级只能靠手动重装」变成「应用内检查 → 下载 → 重启生效」，并给发布链路加上防标签指错的门禁与偏好持久化。**推进动作由维护者本人执行**（工作区 5 处落点已改为 `1.0.2`，`npm run version:check` 通过），Agent 未擅自推进。
+
+### 一、版本号落点（`npm run version:set -- 1.0.2` + `npm run version:check` 实测）
+
+| 位置 | 值 | 说明 |
+|---|---|---|
+| 根 `package.json` → `version` | **1.0.2** | 版本单一来源；本版另加 `test:prefs`、`test:manifest` 脚本 |
+| `src-tauri/tauri.conf.json` → `version` | **1.0.2** | 打包产物版本（安装包名随之为 `WB Bridge_1.0.2_*`）与 `plugins.updater` 清单的 `version` 来源 |
+| `src-tauri/Cargo.toml` → `[package] version` | **1.0.2** | 壳工程同步落点（`src-tauri/Cargo.lock` 内 `wbbridge` 同为 1.0.2） |
+| `AGENTS.md`「当前基准版本」两行 | **1.0.2** | 文档侧同步落点 |
+| 面板 `__APP_VERSION__` | `v1.0.2` | `vite.config.js` 构建期从 `package.json` 注入（「关于与更新」展示），非独立落点 |
+| `src-tauri/core/Cargo.toml` → `version` | `0.1.0`（**未改**） | crate 内部版本，与产品版本有意解耦 |
+| `orchestration.rs` 写入 `status.json` 的 `version` | `0.2.0`（**未改**） | 历史沿革值；`schemaVersion` 仍为 `1`（本版未新增/改名 `status.json` 顶层字段） |
+
+`npm run version:check` 实测输出：**全部 5 处版本号一致（1.0.2）**。
+
+### 二、本版内容（详见 `RELEASE-NOTES-v1.0.2.md` 与 `docs/validation.md` 同日条目）
+
+- **自动更新接线（壳）**：`src-tauri/Cargo.toml` 新增 `tauri-plugin-updater` + `tauri-plugin-process`（官方插件、同一维护方），`lib.rs` 的 builder 链注册两者；`tauri.conf.json` 加 `bundle.createUpdaterArtifacts: true` 与 `plugins.updater`（内嵌 `pubkey`，key ID `126D4E208E0F17BA`；端点 `https://github.com/trexwb/wbBridge/releases/latest/download/latest.json`）；`capabilities/default.json` 只加 `updater:default` + `process:allow-restart`（**刻意不用 `process:default`**：它含 `allow-exit`，会让 WebView 绕过 `quit_app` 的优雅关停链硬杀进程）。
+- **重启路径不再冻窗口**：`RunEvent::ExitRequested` 由事件循环线程上的无界 `graceful_stop` 改为 **`stop_core_bounded`**（复用 `STOP_BUDGET = 8s`）——`process.relaunch()` 也走这条分支，无界停止会让「重启」看起来像卡死。⚠ 该项**无单测覆盖**（需真实 `AppHandle`），效果属必须实机看的一类。
+- **面板更新区**：`src/core/update.js` 状态机（`idle/checking/available/downloading/ready/uptodate/error`，冷启动 5s 后静默检查、静默失败不打扰）+ `src/core/bridge.js` 的 `checkUpdate/downloadUpdate/relaunchApp`（调官方插件命令，联网在 Rust 侧，CSP 无需放宽，**未新增自有 IPC 命令/事件**）；`AboutView.vue` 只在真有新版本时出现更新条，进度百分比只在上游给出 `contentLength` 时显示。
+- **`latest.json` 单一写者**：`scripts/gen-latest-json.mjs`（平台键取自产物**目录名**的 target triple，默认六平台缺一即退出 1）+ CI 末尾 `update-manifest` 作业；三个 build 作业的 `tauri-action` 全部 `includeUpdaterJson: false`（6 个并发作业各写一次会互相覆盖）。macOS 更新包由 CI 补架构后缀（tauri 原名 `WB Bridge.app.tar.gz` 不带版本与架构，两个 mac runner 会同名互相覆盖）。
+- **发布链路自证（A9）**：CI `test` 作业新增**标签↔版本闸门**（`GITHUB_REF_NAME` 去前导 `v` 必须等于 `tauri.conf.json` 的 `version`，否则 exit 1；`workflow_dispatch` 跳过）；三个 build 作业上传前打印 bundle 文件名与源码版本；`update-manifest` 汇总六平台安装包并把「产物版本 = 标签版本」自检三分类写进 run summary（**advisory warning 而非硬失败**，因非 macOS 产物名仍未实测）。
+- **`latest.json` 生成器入库行为基线（A6-7b）**：新增 `scripts/gen-latest-json.test.mjs`（`node --test`，**9 通过**，命令 `npm run test:manifest`），用 `mkdtemp` 临时产物目录跑**真脚本**，钉住「平台键只由 artifact 目录名的 target triple 决定」以及四类必须失败的路径（缺平台 / 缺 `.sig` / mac 资产名漏架构后缀 / 同一平台多个候选目录或互不相干的已签名包），并覆盖 Linux 双层打包时优先取 `.tar.gz` 的降级口径。此前这些结论只在一次性手写夹具里验证过、**未入库**，回归无从保护；现在这类错误的暴露点从「用户装上才发现平台缺席」提前到 CI。测试**不联网**、不读 `src-tauri/target/` 下的真实产物。
+- **面板偏好持久化（A8 + A6-7）**：新增 `src/core/prefs.js`——`localStorage` 键前缀 `wb.`、**写入前键白名单校验** + 值字段投影 + 序列化后 2KB 上限、存储不可用/抛错一律静默降级为默认值；`App.vue` 持久化当前视图，`update.js` 持久化「启动后自动检查更新」开关与上次**成功**检查时间戳（12 小时节流），`AboutView.vue` 提供该开关。凭据类字段（`api-key`、`OPENCODE_SERVER_PASSWORD`、models 文件路径）在设计上不可能进入 `localStorage`，由 `src/core/prefs.test.js`（`node --test`，**8 通过**）钉住，命令 `npm run test:prefs`。
+- **文档（A5 / A7 / A10）**：`.env.example` 写清三个签名环境变量的真实分工（`tauri build|bundle` 只读 `TAURI_SIGNING_PRIVATE_KEY`，值可为私钥全文或**绝对路径**）；`docs/wiki/版本与发布.md` 新增「商业签名与公证（A7 预留位，尚未接入）」「失败路径与回滚」「标签纪律」三节并扩充发布前检查清单；`docs/wiki/常见问题与故障排查.md` 补更新失败/回滚/偏好开关/Gatekeeper 四条；`docs/wiki/已知限制与未验证项.md` 按实测状态更正未验证项与已知限制表。
+
+### 三、基线与验证边界（本版真实执行）
+
+- 核心 `cargo test` → **207 通过 / 0 失败**（lib 187 + `js_parity` 11 + `red_lines` 9）；核心 `cargo clippy --all-targets` → **0 warning**（`touch src/lib.rs` 强制重检后仍为 0）。
+- 壳 `cargo test --lib` → **8 通过 / 0 失败**；壳 `cargo clippy --no-deps --all-targets` → **0 warning**（版本改写触发重新检查，无告警）。
+- `npm run test:prefs` → **8 通过 / 0 失败**；`npm run test:manifest` → **9 通过 / 0 失败**；`npx eslint .` → **0 problem**；`npm run vite:build` → ✓ built；`npm run version:check` → 5 处一致（1.0.2）；`release.yml` YAML 解析通过。两组 JS 测试都已接入 CI 的 `test` 作业。
+- 本机签名构建（发生在 `1.0.1` 源码版本上，产物名因此带 `1.0.1`）：`bundle/dmg/WB Bridge_1.0.1_aarch64.dmg`（3,720,766 B）+ `bundle/macos/WB Bridge.app.tar.gz`（3,595,514 B）与配对 `.sig`，key ID 与配置公钥一致；dmg 只读挂载核对、`codesign --verify --deep --strict` 通过（adhoc + hardened runtime，**未公证**）。
+- ❌ **未验证**：GUI 实机启动与面板交互、v1.0.2 的任何安装包、`release.yml` 在 CI 实跑、`latest.json` 发布后被真实客户端消费、一次完整的「检查 → 下载 → 安装 → 重启 → 首启」与失败回滚、`relaunch` 后带新核心的重启、`localStorage` 在真实 WebView 内的行为、Windows/Linux 产物名与签名、GitHub Secrets 是否已配（本机无 `gh`、未联网核验）。
+
+### 四、兼容与升级口径
+
+- **对外契约未变**：HTTP 路由、错误码、`status.json` 字段（本版无新增/改名）、自有 IPC 命令名与事件名全部保持 v1.0.1 原样；`STATUS_SCHEMA_VERSION` 两侧仍为 `1`。
+- **新增的是插件权限**（`updater:default`、`process:allow-restart`）与两个官方插件依赖，不影响既有命令。
+- **v1.0.1 及更早的用户收不到自动更新**：那一版没有接线更新器（产物无 `.sig`、面板无更新区），必须**手动下载 v1.0.2 安装包覆盖安装一次**；此后 v1.0.2 → v1.0.3 才可能走应用内更新。
+- 数据目录与 WorkBuddy 写入规则不变；`api-key` 沿用，无需重装后重配。
 
 ---
 
