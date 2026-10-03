@@ -39,6 +39,7 @@
 | 面板偏好持久化（`src/core/prefs.js`：当前视图 + 「启动后自动检查更新」开关 + 12h 节流） | ⚠ **逻辑已测、GUI 未实测**。白名单 / 凭据字段投影 / 坏数据回落 / 存储不可用降级 / 超大值拒写由 `npm run test:prefs`（`node --test`）**8 通过 / 0 失败**钉死，eslint 与 `vite build` 均通过；但 `localStorage` 在真实 WebView 里的读写、跨重启恢复视图、关掉开关后冷启动确实不再打端点，都**没在 Tauri GUI 验证过** |
 | 多平台接入 Stage 2（命名空间参数化：`split_namespace`/`join_namespace`/`free_models_in`/`model_target`，`client_model_id` 前缀按命名空间推导） | ✅ **行为零变化，已由既有测试自证**：核心 `cargo test` **222 通过 / 0 失败**（lib 201 + js_parity 11 + red_lines 10），其中 **`js_parity` 11 全绿 + `git diff --stat src-tauri/core/tests/fixtures` 为空**就是「输出逐字节不变」的证明；两侧 clippy **0 warning**、壳 `cargo test --lib` **9 通过**、`version:check` 5 处一致（**1.0.2 未推进**——等价移植属禁止推进情形）。🔴 过程中被既有测试抓到的一处真实回归：原方案想让「未知命名空间原样当前缀」，但 `sync.rs` 的 4 个既有测试（和对拍夹具）用的是 `vendor/gpt` 这类**合成命名空间**，前缀一变输出就变 → 现规则收紧为**只有注册表平台换 `label`，其余一律 `OC`**。`model_target` 对无命名空间 id 的回落（`opencode` + 空 `modelID`）与旧的「截掉前 9 字节」不同，该形态今日不可达，已用单测把两种写法在全部真实 id 上钉成同值 |
 | 多平台接入 Stage 1（`providers.rs` 四平台注册表 + `providers.json` 凭据通道 + 三条 `provider-*` 管理动作） | ⚠ **只有核心与壳侧链路，端到端无效**。已实测：核心 `cargo test` 落地时 **218 通过 / 0 失败**（lib 197 + js_parity 11 + red_lines 10；Stage 2 后为 222/201，见上）、壳 `cargo test --lib` **9 通过**、两侧 clippy **0 warning**、`npm run version:check` 5 处一致（1.0.2）。🔴 **未验证且当前为真**：① 写进 `providers.json` 的 Key **还没有任何消费者**（`isolated_config()` 注入与 `free_models` 注册表驱动属 Stage 3），四平台现在**不会多出一个模型**；② 面板没有入口（Stage 5）；③ 上游 OpenCode 是否把注入的 `provider.<id>` 回显进 `providers.all[]` **仍未实测**，这是 Stage 3 能否复用 `free_models` 的唯一前提；④ 真实 Key 从未在 GUI 输入过、`0600` 只在 unix 断言过。详见 `docs/plans/2026-10-03-upgrade-roadmap-and-v1.0.3-multi-provider-plan.md` 与 `docs/validation.md` 顶部 |
+| 2026-10-03 全量代码复审后的四项最小修复（红线 7 子进程环境、红线「探测路径不得转写」、`status.json` 形状、`modelResults` 并发丢写） | ⚠ **逻辑已测、GUI 与真实并发未实测**。① `runtime.rs` 新增 `allowed_environment`，`default_probe` 与 `start_backend` 里「安装后回读 `--version`」两处一次性子进程调用改为先过 `ENV_ALLOW` 白名单——此前它们走 `run_command(env: None)`，而该分支**不做 `env_clear`**，等于把宿主完整环境（含一切凭据类变量）透传给下载的 OpenCode 进程；`isolated_environment` 提用同一函数，行为不变。② `orchestration.rs::probe_meta()` 让两个探测入口都带 `probe: true`（`chat_only_attempt` 原先传空对象，`backend.rs` 的两处转写闸门都以该标记为开关，探测路径因此**可以**启用辅助模型转写，违反数据红线）。③ `restored_model_results` 把上一份 `status.json` 里**非对象**的 `modelResults` 回落成空表（原先只挡缺失，`"x"` 这类形状会让后续一次写入 panic，而发布配置是 `panic = "abort"` → 整个 GUI 进程没）。④ `apply_patch` 改成只写调用方自己那一键（原先 `record()` 先读整份快照、整体塞回 patch，两个并发请求会互相吞掉对方的 `modelResults`），`update()` 与 `update_with_usage()` 的既有语义不变。✅ 已实测：核心 `cargo test` **227 通过 / 0 失败**（lib 205 + js_parity 11 + red_lines 11，本轮新增 5 项）、两侧 clippy **0 warning**、壳 `cargo test --lib` **9 通过**、三组 JS 单测 **8 / 9 / 13** 通过、eslint 与 `vite:build` 通过、`version:check` 5 处一致（**1.0.3**，按用户要求推进）。🔴 **未验证**：白名单生效后的真实子进程表现与并发写盘效果都要在实机看（属"必须点一遍"类别）；`tests/fixtures` 未改（`git diff --stat` 为空即对拍仍逐字节等价）。⚠ 复审中被**源码推翻**的两条指控不得"顺手修"：serde_json 1.0.151 默认 `remaining_depth: 128` 且未开 `unbounded_depth`，超深请求体是 `TooDeep` 错误而非栈溢出；非流式与流式两条链路在记录前都查了 `signal.is_aborted()`（`server.rs:972`、`server.rs:1074`），socket 关闭时 hyper 还会直接丢弃 handler，`on_result` 不会执行，因此不存在"取消记成功" |
 | `cargo fmt --check` 全绿 | ❌ 未达成（本仓库不以 fmt 为准，勿在无关文件上顺手格式化） |
 
 ## 项目概述与定位
@@ -73,7 +74,7 @@ WB Bridge 是一个**跨平台托盘工具**，通过**隔离的 OpenCode 技术
 | 目的 | 命令 | 执行目录 | 说明 |
 |---|---|---|---|
 | 安装前端依赖 | `npm install` | 仓库根 | 根 `package.json`（devDeps：`@tauri-apps/cli`、`vite`、`@vitejs/plugin-vue`、`eslint`、`@eslint/js`；deps：`vue`） |
-| 运行全部核心测试 | `cargo test`（或 `npm run test`） | `src-tauri/core/` | 基准 **222 通过 / 0 失败**：lib 201 + `js_parity` 11 + `red_lines` 10（约 0.3s，另有 bin/doc-test 0 用例）；壳侧另有 `cargo test --lib`（`src-tauri/`）**9 通过 / 0 失败**（其中 `shell_action_routes_match_the_core_contract` 逐项对齐 8 条动作） |
+| 运行全部核心测试 | `cargo test`（或 `npm run test`） | `src-tauri/core/` | 基准 **227 通过 / 0 失败**：lib 205 + `js_parity` 11 + `red_lines` 11（约 0.3s，另有 bin/doc-test 0 用例）；壳侧另有 `cargo test --lib`（`src-tauri/`）**9 通过 / 0 失败**（其中 `shell_action_routes_match_the_core_contract` 逐项对齐 8 条动作） |
 | 运行面板偏好测试 | `npm run test:prefs` | 仓库根 | = `node --test src/core/prefs.test.js`，基准 **8 通过 / 0 失败**（白名单/凭据字段投影/视图清洗/坏数据回落/存储不可用降级/超大值拒写/静默检查节流）；只测 `src/core/prefs.js`，不联网、不编译 Rust |
 | 运行更新清单生成测试 | `npm run test:manifest` | 仓库根 | = `node --test scripts/gen-latest-json.test.mjs`，基准 **9 通过 / 0 失败**；用临时产物目录跑真脚本，钉住六平台成功路径与缺平台/缺签名/漏架构后缀/歧义产物等失败路径。**严禁**改成真实联网或读仓库 `src-tauri/target/` 下的产物 |
 | 运行 updater 签名注入测试 | `npm run test:updater-key` | 仓库根 | = `node --test scripts/with-updater-key.test.mjs`，基准 **13 通过 / 0 失败**；钉住 env 文件取值优先级（进程环境 > `.env.local` > `.env` > `~/.tauri/wbBridge{,-updater}.env`，**显式空口令压过文件里的口令**、`~/…` 先展开）、内联位的两种形态（单行 base64 全文 vs `.key` 文件路径 → 读成全文并 **trim**，尾部换行会让 tauri 报 `Invalid symbol 10`）、路径注入后删除与之互斥的 `_PATH`、明文钥显式置空口令、加密钥缺口令**只告警不阻断**、公钥配对**只认配置里第一条且只告警**、`buildCommand` 的三种入参形态、CLI 在**相对路径**调用下确实执行且**任何输出都不回显密钥**。接线断言：`tauri:build` 确实经本包装器、`build` 链 `make:dmg`、`release.yml` 把私钥读成 `vars.` 且调用 `npm run tauri:build`（不再有 `tauri-action`、不再有私钥前置步骤）、`plugins.updater.pubkey` **恰好一条公钥**、`bundle.targets` **不含 dmg**。**不联网、不调 tauri CLI、不读 `~/.tauri`、不碰真实私钥**（用合成的假 base64 串与临时目录） |
@@ -209,7 +210,7 @@ wbBridge/
 ```
 
 > **为什么核心是 `src-tauri/core/` 而不是并进壳的单个 crate**：核心仍是独立 crate（`wbbridge-core`，
-> 且是**独立 workspace**），壳通过 `path = "core"` 依赖把它静态编进同一进程。这样核心的 222 个测试
+> 且是**独立 workspace**），壳通过 `path = "core"` 依赖把它静态编进同一进程。这样核心的 227 个测试
 > 不必编译 tauri/webkit 依赖图（CI 的 Linux 测试任务因此无需装 libwebkit2gtk），`wbbridge-core`
 > 也能单独构建出可执行文件做进程级冒烟；同时全部 Rust 代码物理位置都在 `src-tauri/` 下。
 > 合并成单 crate 会把这三点全部丢掉，故不采用。
@@ -302,11 +303,11 @@ start_backend
 
 | 模块 | 关键公开项 | 职责 |
 |---|---|---|
-| `orchestration.rs` | `run(StartOptions)`、`StartOptions{data_dir,port,handle_signals}`、`set_exit_hook`、`HELP`、`ALREADY_RUNNING`；内部 `update_and_persist`、`sync_published`、`drain_sync`、`record`、`usable_models`、`attach_translator`、`start_probes`、`drop_pending`、`refresh`、`read_models`、`import_models`、`shutdown`、`startup_sequence`、`bootstrap`、`watch_runtime`、`spawn_parent_watchdog`、`note_activity`、`update_with_usage`、`accumulate_usage`、`fresh_usage`、`resolve_api_key`、`write_secret_file`、`providers_io`、`provider_status`、`set_provider_key`、`clear_provider_key`、`provider_id`、`provider_key_input` | 编排与生命周期（对应旧 `main.js`；`record` 经 `update_with_usage` 串行写盘，并累加 `status.json` 顶层 `usage`；三个 `provider-*` 动作的处理器把同步 IO 挪进 `spawn_blocking`，入参校验留在外壳之前以便映射成 400） |
+| `orchestration.rs` | `run(StartOptions)`、`StartOptions{data_dir,port,handle_signals}`、`set_exit_hook`、`HELP`、`ALREADY_RUNNING`；内部 `update_and_persist`、`sync_published`、`drain_sync`、`record`、`usable_models`、`attach_translator`、`start_probes`、`drop_pending`、`refresh`、`read_models`、`import_models`、`shutdown`、`startup_sequence`、`bootstrap`、`watch_runtime`、`spawn_parent_watchdog`、`note_activity`、`update_with_usage`（第三参 `model_result` **只写调用方自己那一键**）、`apply_patch`、`update`、`probe_meta`（探测元信息，`probe: true` 是探测路径禁转写的开关点）、`restored_model_results`（非对象形状回落空表）、`accumulate_usage`、`fresh_usage`、`resolve_api_key`、`write_secret_file`、`providers_io`、`provider_status`、`set_provider_key`、`clear_provider_key`、`provider_id`、`provider_key_input` | 编排与生命周期（对应旧 `main.js`；`record` 经 `update_with_usage` 串行写盘，并累加 `status.json` 顶层 `usage`；三个 `provider-*` 动作的处理器把同步 IO 挪进 `spawn_blocking`，入参校验留在外壳之前以便映射成 400） |
 | `server.rs` | `Server::new(key)` 链式注入 → `build() -> (Router, ServerControl)`、`serve`、`ACTION_ROUTES`（**8 条**）、`route_for`/`method_for`、`MAX_BODY_BYTES`、`MAX_CONCURRENT_REQUESTS`、`DEFAULT_HEARTBEAT`、`REQUEST_BODY_TIMEOUT`、`AbortController/AbortSignal`、`ResultRecord`、`Handlers`、`BoxFuture`、类型别名 `CompleteFn/ModelsFn/AdminFn/…` | HTTP 路由与鉴权：`GET /health`、`GET /v1/models`、`POST /admin/{probe,system-proxy,import,refresh,shutdown,provider-status,set-provider-key,clear-provider-key}`、`POST /v1/chat/completions`。三个 `provider-*` 动作的处理器类型都是 `AdminFn`（收整份请求体），其中 `provider-status` 与 `refresh` 一样**不读请求体** |
 | `protocol.rs` | `BridgeError`（`with`/`status`/`code`）、`prepare`、`PreparedRequest`、`decode`、`completion`/`completion_with`、`send_sse`、`random_hex_id`/`random_uuid`、`parse_image_data_url` | OpenAI 兼容入参校验、信封解码、响应组装、SSE |
 | `backend.rs` | `Backend`（`complete`、`set_translator`）、`native_permissions()`、`free_models`（= `free_models_in(providers, OPENCODE_NAMESPACE)` 的包装）、`free_models_in(providers, namespace)`、`model_target(model)`、`shrink_permission`、`to_bridge_error` | OpenCode HTTP 客户端、事件流、原生审批拦截、免费模型发现（命名空间已参数化） |
-| `runtime.rs` | `find_runtime`、`isolated_config()`、`isolated_environment`、`ENV_ALLOW`、`start_backend`/`Started`、`stop_backend`、`runtime_candidates`、`compare_versions`、`generate_password`、`RuntimeOptions`、`FetchFn/LatestFn/…` | 运行时定位/下载/校验/启动与隔离配置 |
+| `runtime.rs` | `find_runtime`、`isolated_config()`、`isolated_environment`、`allowed_environment`（`ENV_ALLOW` 白名单过滤，**每一次 spawn 都必须先过它**，含 `--version` 这类一次性调用）、`ENV_ALLOW`、`start_backend`/`Started`、`stop_backend`、`runtime_candidates`、`compare_versions`、`generate_password`、`RuntimeOptions`、`FetchFn/LatestFn/…` | 运行时定位/下载/校验/启动与隔离配置 |
 | `probe.rs` | `PROBE_TIMEOUT_MS`、`probe_tools`、`probe_body`、`judge_probe`、`format_unsupported`、`retryable_probe_codes`、`probe_model`、`probe_failure`、`should_retry` | 模型探测协议与判定 |
 | `providers.rs` | `PROVIDERS`（**四家平台的复核过集合**：`modelscope` / `siliconflow-cn` / `tencent-tokenhub` / `zhipuai`）、`Provider{id,label,npm,base_url}`、`PROVIDERS_FILE`（`providers.json`）、`MAX_KEY_CHARS`、`find`/`check_key`/`read_keys`/`status`/`set_key`/`clear_key` | 多平台接入的注册表（唯一真相，随版本发布、不做远程拉取）与 `providers.json` 凭据通道：读盘容错（坏文件＝没配过）、写盘走 `sync::atomic_write`（临时文件 `0600` 独占创建再 rename）、`status()` 只回 `id/label/configured` |
 | `repair.rs` | `REPAIR_SYSTEM`、`client_conventions`、`raw_material`、`tool_catalog`、`repair_body`、`extract_json`、`translator_request`、`resend_prompt`、`RepairDeps`、`repair` | 格式修复与辅助模型转写 |
@@ -376,10 +377,10 @@ start_backend
 
 ### 测试规范
 
-- 核心测试全部用 Rust：`cargo test`（`src-tauri/core/`）。基线 **222 通过 / 0 失败**：
-  - lib 单元测试 201（含 `src/*.rs` 内 `#[cfg(test)]`；其中 `providers.rs` 7 项覆盖注册表唯一性、空目录状态、set/read/clear 往返与只删指定平台、状态与落盘文件都不含 Key、坏输入不落盘、损坏或外来形态按「未配置」读；Stage 2 另加 4 项：`model_status.rs` 的「前缀只跟注册表走、`opencode`/无命名空间一律 `OC`」与「拆合无损且与旧的定长截串逐个同值」、`backend.rs` 的「`free_models_in` 选对命名空间且包装同值」与「`model_target` 拆 `{providerID, modelID}`」）；
+- 核心测试全部用 Rust：`cargo test`（`src-tauri/core/`）。基线 **227 通过 / 0 失败**：
+  - lib 单元测试 205（含 `src/*.rs` 内 `#[cfg(test)]`；其中 `providers.rs` 7 项覆盖注册表唯一性、空目录状态、set/read/clear 往返与只删指定平台、状态与落盘文件都不含 Key、坏输入不落盘、损坏或外来形态按「未配置」读；Stage 2 另加 4 项：`model_status.rs` 的「前缀只跟注册表走、`opencode`/无命名空间一律 `OC`」与「拆合无损且与旧的定长截串逐个同值」、`backend.rs` 的「`free_models_in` 选对命名空间且包装同值」与「`model_target` 拆 `{providerID, modelID}`」；2026-10-03 代码复审修复另加 4 项，均在 `orchestration.rs`：探测元信息必须带 `probe` 标记、上一份 `modelResults` 非对象时回落空表、并发请求各写自己那一键不互相吞、合并时对非对象 map 自愈）；
   - `tests/js_parity.rs` 11（每模块一组，比较 `tests/fixtures/*.json` 冻结的 `expected`）；**等价重构的验证方式就是以这 11 项全绿 + `git diff --stat src-tauri/core/tests/fixtures` 为空为准，不得改夹具**；
-  - `tests/red_lines.rs` 10（运行期红线守卫；`provider_registry_is_reviewed_and_status_echoes_no_key_material` 钉死四平台 id 集合、https-only、`npm` 形态，以及写入真实 Key 后 `status()` 序列化里既无 Key 也无 `apiKey`）。
+  - `tests/red_lines.rs` 11（运行期红线守卫；`provider_registry_is_reviewed_and_status_echoes_no_key_material` 钉死四平台 id 集合、https-only、`npm` 形态，以及写入真实 Key 后 `status()` 序列化里既无 Key 也无 `apiKey`；`version_probe_child_environment_only_passes_the_allow_list` 钉死 `--version` 这类一次性子进程调用同样只透传 `ENV_ALLOW` 白名单）。
   壳（`src-tauri/`）另有 `cargo test --lib` **9 通过**：日志尾部读取 4 项 + `shell_action_routes_match_the_core_contract`
   （断言 `ADMIN_ROUTES` 与核心 `ACTION_ROUTES` 逐项一致）+ 退出链路 3 项（`repeated_quit_requests_stop_only_once`、
   `a_quit_requested_shutdown_is_not_reported_as_failure`、`service_down_reports_only_real_failures`）
@@ -511,12 +512,12 @@ start_backend
 
 | 项 | 值 | 来源 |
 |---|---|---|
-| 版本单一来源 | **1.0.2** | 根 `package.json` 的 `version` |
-| 壳工程同步落点 | **1.0.2** | `src-tauri/tauri.conf.json` 与 `src-tauri/Cargo.toml` 的 `[package] version` |
+| 版本单一来源 | **1.0.3** | 根 `package.json` 的 `version` |
+| 壳工程同步落点 | **1.0.3** | `src-tauri/tauri.conf.json` 与 `src-tauri/Cargo.toml` 的 `[package] version` |
 | 核心 crate 内部版本 | **0.1.0** | `src-tauri/core/Cargo.toml`（`wbbridge-core --version` 输出，与产品版本解耦，**不得"顺手对齐"**） |
 | 状态内置版本 | `0.2.0` | `src-tauri/core/src/orchestration.rs` 写入 `status.json` 的 `version`（沿自上游参考实现，界面上可见） |
 | 上游调研基线 | `0.2.5` | `docs/research/upstream-architecture.md` |
-| 测试基线 | **222 通过 / 0 失败**（lib 201 + js_parity 11 + red_lines 10，约 0.3s）；壳 `cargo test --lib` 9 通过；JS 侧 `test:prefs` 8 + `test:manifest` 9 + `test:updater-key` 13 通过（合计 30） | `src-tauri/core/` 下 `cargo test`、`src-tauri/` 下 `cargo test --lib`、仓库根三个 `npm run test:*` |
+| 测试基线 | **227 通过 / 0 失败**（lib 205 + js_parity 11 + red_lines 11，约 0.3s）；壳 `cargo test --lib` 9 通过；JS 侧 `test:prefs` 8 + `test:manifest` 9 + `test:updater-key` 13 通过（合计 30） | `src-tauri/core/` 下 `cargo test`、`src-tauri/` 下 `cargo test --lib`、仓库根三个 `npm run test:*` |
 | 迁移前 JS 基线 | 97 通过 / 0 失败（node v24.21.0） | 仓库外归档 `backup/wbBridge-node-20261001/core/test/` |
 | 运行时基线 | OpenCode 版本由 registry 最新版决定（不固定）；核心不再需要 Node | `src-tauri/core/src/runtime.rs` |
 

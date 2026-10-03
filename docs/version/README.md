@@ -26,6 +26,7 @@
 
 | 文件 | 覆盖版本 | 状态 |
 |------|---------|------|
+| [v1.0.3 GitHub Release 正文](RELEASE-NOTES-v1.0.3.md) | v1.0.3（多平台接入 Stage 1 + Stage 2、四项安全/数据红线修复、清单 url 空格→点修复与 CI 资产对账闸门） | 📝 待发布：**尚未构建、未打标签**；版本落点（`package.json` / `src-tauri/Cargo.toml` / `Cargo.lock` / `tauri.conf.json` / `AGENTS.md`）仍未提交——按铁律先提交、再在该提交上打 `v1.0.3` |
 | [v1.0 日志](RELEASE-v1.0.md) | v1.0.2（当前基准版本）＋ v1.0.1 ＋ v1.0.0 基线快照，最新在前 | 📝 待发布 |
 | [v1.0.2 GitHub Release 正文](RELEASE-NOTES-v1.0.2.md) | v1.0.2（含 2026-10-03 追加的「渲染与轮询降耗」与「签名注入链路重写 + 单条公钥 + hdiutil dmg」两节） | 📝 标记待维护者定夺（标签 `v1.0.2` 已打出、**Release 已 Publish、23 个资产**；GUI 与更新链路未实机验证，同轮 `latest.json` 的 url 缺陷已修脚本、线上那份待重传） |
 | [v1.0.1 GitHub Release 正文](RELEASE-NOTES-v1.0.1.md) | v1.0.1 | 代码已并入 `main`（`679a2cb`）、远端标签已指向含版本推进的提交；**是否真的发布过 Release / 跑过 CI 未经核验** |
