@@ -19,6 +19,8 @@ import AboutView from './views/AboutView.vue'
 
 const state = ref({})
 const selected = ref(null)
+// 详情无结果时共享同一个空对象：引用稳定，ModelDetails 不被无关状态推送触发更新。
+const EMPTY_RESULT = {}
 // 当前视图：与 SideBar 的 item.id 一一对应（'models' | 'logs' | 'usage' | 'workbuddy' | 'about'）。
 // 视图状态由根组件持有，侧栏只派发切换事件，避免两处各存一份选中态。
 // 初值来自 prefs（上次停留的视图）；非法或已删除的视图名会在读取时回落 'models'。
@@ -194,7 +196,7 @@ onUnmounted(() => {
         <ModelDetails
           v-if="selected"
           :model="selected"
-          :result="(state.modelResults || {})[selected.id] || {}"
+          :result="(state.modelResults || {})[selected.id] || EMPTY_RESULT"
           @collapse="dismiss"
         />
       </div>

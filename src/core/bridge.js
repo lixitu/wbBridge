@@ -9,6 +9,39 @@ let started = false
 // 轻量快照与明细两路必须合并后再交给订阅者。
 let lastState = {}
 
+// 帧级合并发布：壳对同一帧变化连发 core-status + core-activity 两个事件，
+// 若各自立刻 publish，根状态会被赋值两次、整树渲染两趟（探测期间成倍）。
+// 改为把事件按到达顺序折算成状态操作入队，每帧最多 flush 一次，
+// 渲染次数从「每事件一次」降为「每帧一次」。
+// 对**订阅者**而言合并语义与逐个执行等价（status=替换、activity=合并、failed=替换，FIFO 保序、
+// 后者覆盖前者）；但 `lastState` 要到帧末才更新，所以事件到达与 flush 之间的**同步读取点**
+// 会读到旧一帧——目前是 `action()` 里的 `lastState.modelsFile` 与 `onState()` 的首次回放。
+// 影响是极小概率多弹一次文件选择框 / 晚一帧的快照，下一帧自愈；新增同步读取点时必须想到这条。
+const pendingOps = []
+let flushScheduled = false
+
+const scheduleFlush = typeof window.requestAnimationFrame === 'function'
+  ? window.requestAnimationFrame.bind(window)
+  : (cb) => setTimeout(cb, 16)
+
+// rAF 在窗口不可见时会被暂停（本项在 WKWebView 里的真实停摆行为**未实测**）。
+// 因此替换型 op 入队前先清空队列：它的 payload 整体替换状态，前面排队的 op 的产出必然被丢弃，
+// 清空与逐条折叠严格等价，却让队列长度天然封顶（否则最小化期间每 ~0.5s 堆两个持有整份
+// payload 的闭包，恢复显示时一帧内全部折叠）。
+function enqueue(op, replaces = false) {
+  if (replaces) pendingOps.length = 0
+  pendingOps.push(op)
+  if (flushScheduled) return
+  flushScheduled = true
+  scheduleFlush(() => {
+    flushScheduled = false
+    const ops = pendingOps.splice(0)
+    let next = lastState
+    for (const applyOp of ops) next = applyOp(next)
+    publish(next)
+  })
+}
+
 function publish(next) {
   lastState = next
   listeners.state.forEach(cb => cb(next))
@@ -18,15 +51,15 @@ function ensureBridge() {
   if (started) return
   started = true
   const { listen } = window.__TAURI__.event
-  listen('core-status', event => publish(event.payload || {})).catch(console.error)
-  listen('core-activity', event => publish({ ...lastState, ...(event.payload || {}) })).catch(console.error)
+  listen('core-status', event => enqueue(() => event.payload || {}, true)).catch(console.error)
+  listen('core-activity', event => enqueue(prev => ({ ...prev, ...(event.payload || {}) }))).catch(console.error)
   listen('core-failed', event => {
     const payload = event.payload || {}
-    publish({
+    enqueue(() => ({
       phase: 'error',
       message: payload.message || '核心服务启动失败',
       models: [], modelResults: {}, availableModels: [],
-    })
+    }), true)
   }).catch(console.error)
   listen('tauri://blur', () => listeners.dismiss.forEach(cb => cb())).catch(console.error)
 }

@@ -29,7 +29,8 @@
 | `src-tauri/core` 独立进程冒烟（真实下载 OpenCode → 隔离启动 → `/agent` 校验 → 刷新 8 个免费模型 → 探测通过 → 鉴权 401/403 → `/v1/models` → 优雅关停） | ✅ 已在一次性数据目录实测通过 |
 | `cargo clippy --all-targets`（src-tauri/core）/ `cargo clippy --no-deps`（src-tauri） | ✅ 0 warning |
 | 实际启动 GUI（`npm run tauri:dev` / 打包后的 .app）并操作托盘与面板 | ❌ **未实测**。壳改动只能以「编译通过 + 核心独立运行行为」为证据，必须显式告知用户未做 GUI 验证 |
-| 本轮壳侧改动（async 命令 + `spawn_blocking`、启动失败反复播报 `core-failed`、`startup_error`、**关窗即退出 `quit_app`**） | ❌ **同样未做 GUI 实测**，证据只有 `cargo clippy --no-deps --all-targets` 0 warning 与 `cargo test --lib`（`src-tauri/`）8 通过。关窗行为、托盘驻留取消、macOS 红按钮语义都属**必须实机点一遍**的类别 |
+| 本轮壳侧改动（async 命令 + `spawn_blocking`、启动失败反复播报 `core-failed`、`startup_error`、**关窗即退出 `quit_app`**） | ❌ **同样未做 GUI 实测**，证据只有 `cargo clippy --no-deps --all-targets` 0 warning 与 `cargo test --lib`（`src-tauri/`）9 通过。关窗行为、托盘驻留取消、macOS 红按钮语义都属**必须实机点一遍**的类别 |
+| 轮询与渲染降耗（壳 `status.json` 的 `(mtime, 长度)` 前置过滤、核心去掉未使用的 `brotli` 解压、面板 `bridge.js` 帧级合并、列表/详情 props 引用稳定） | ⚠ **复审后已修掉两处会丢状态的缺陷并补单测**（2026-10-03 代码复审，见 `docs/validation.md`）：`meta.modified()` 取不到时**不再启用快路径**（原先 `unwrap_or(UNIX_EPOCH)` 会让长度不变的改写被永久跳过、面板状态冻结），恢复运行分支**同时作废 stamp**（原先只清 `last`，会吞掉「重启后内容可能与故障前逐字节相同也要重推」这道保障）。面板侧配套：替换型事件入队前先清空队列（窗口不可见、rAF 停摆时原先无上限增长），并把「合并语义完全等价」的注释更正为「订阅者等价、`lastState` 滞后一帧」。降耗效果与 rAF 在 WKWebView 的真实停摆**仍未实机验证** |
 | 迁移后产出安装包 | ⚠ **只有 macOS aarch64 已实测**。本机 `npm run build` 产出 `src-tauri/target/release/bundle/dmg/WB Bridge_1.0.1_aarch64.dmg`（3,720,766 B）与 updater 包 `bundle/macos/WB Bridge.app.tar.gz`（3,595,514 B，**文件名不带版本与架构**，正是 CI 里必须补架构后缀的那个实测事实）+ 配对 `.sig`；dmg 已只读挂载核对、`codesign --verify --deep --strict` 通过（adhoc + hardened runtime，**未公证**）。其余五平台（macOS x86_64 / Windows / Linux）**只能靠 CI 产出**，本机不具备交叉构建条件 |
 | updater 接线（`tauri-plugin-updater` + `tauri-plugin-process`、`createUpdaterArtifacts`、`plugins.updater` 端点与公钥、面板更新区、CI 的 `.sig` glob 与 `update-manifest` 作业） | ⚠ **部分已验证**。已验证：壳编译与 clippy、`scripts/gen-latest-json.mjs` 的**已入库行为基线测试**（`npm run test:manifest` → 9 通过：六平台成功路径 + 缺签名/重复目录/目录缺失/漏架构后缀/双层打包/互不相干包等失败路径）、workflow YAML 结构、**本机真实签名构建**（`tauri build --bundles app` 产出 `WB Bridge.app.tar.gz` + 配对 `.sig`，签名 key ID 与配置公钥一致）。**仍未验证**：Windows/Linux 产物的真实文件名与签名、`latest.json` 上传到真实 Release 后的下载与安装、`relaunch()` 之后壳能否带已更新的核心正常重启（属必须实机点一遍的类别） |
 | `RunEvent::ExitRequested` 改走 `stop_core_bounded`（原为事件循环线程上无界的 `graceful_stop`） | ❌ **无单测覆盖**（需要真实 `AppHandle`）。依据仅是 `stop_core` 最坏 ~17s 的既有预算与 `STOP_BUDGET = 8s` 的复用；重启/退出时窗口不再冻住的**效果必须实机看** |
@@ -69,7 +70,7 @@ WB Bridge 是一个**跨平台托盘工具**，通过**隔离的 OpenCode 技术
 | 目的 | 命令 | 执行目录 | 说明 |
 |---|---|---|---|
 | 安装前端依赖 | `npm install` | 仓库根 | 根 `package.json`（devDeps：`@tauri-apps/cli`、`vite`、`@vitejs/plugin-vue`、`eslint`、`@eslint/js`；deps：`vue`） |
-| 运行全部核心测试 | `cargo test`（或 `npm run test`） | `src-tauri/core/` | 基准 **207 通过 / 0 失败**：lib 187 + `js_parity` 11 + `red_lines` 9（约 0.3s，另有 bin/doc-test 0 用例）；壳侧另有 `cargo test --lib`（`src-tauri/`）**8 通过 / 0 失败** |
+| 运行全部核心测试 | `cargo test`（或 `npm run test`） | `src-tauri/core/` | 基准 **207 通过 / 0 失败**：lib 187 + `js_parity` 11 + `red_lines` 9（约 0.3s，另有 bin/doc-test 0 用例）；壳侧另有 `cargo test --lib`（`src-tauri/`）**9 通过 / 0 失败** |
 | 运行面板偏好测试 | `npm run test:prefs` | 仓库根 | = `node --test src/core/prefs.test.js`，基准 **8 通过 / 0 失败**（白名单/凭据字段投影/视图清洗/坏数据回落/存储不可用降级/超大值拒写/静默检查节流）；只测 `src/core/prefs.js`，不联网、不编译 Rust |
 | 运行更新清单生成测试 | `npm run test:manifest` | 仓库根 | = `node --test scripts/gen-latest-json.test.mjs`，基准 **9 通过 / 0 失败**；用临时产物目录跑真脚本，钉住六平台成功路径与缺平台/缺签名/漏架构后缀/歧义产物等失败路径。**严禁**改成真实联网或读仓库 `src-tauri/target/` 下的产物 |
 | 静态检查 | `cargo clippy --all-targets` | `src-tauri/core/` | 必须保持 0 warning |
@@ -300,8 +301,8 @@ start_backend
 | `platform.rs` | `data_directory`/`data_directory_with`、`DATA_DIR_NAME`、`runtime_package`、`host_platform`/`host_arch`、路径原语 | 平台路径与运行时包名 |
 | `atomic.rs` | `replace_with_retry`/`replace_with_retry_with`、`ReplaceError`、`DELAYS`、`TRANSIENT_CODES`、`node_code_for_io` | 原子替换（Windows 共享冲突重试） |
 | `json.rs` | `parse_json`、`Env`、`truthy`、`strict_eq`、`js_stringify`/`js_stringify_pretty`、`number_from_f64`、`type_of` 等 | 容错 JSON + JS 语义等价原语 |
-| `src-tauri/src/lib.rs` | `core_action`、`restart_core`、`core_running`、`data_dir_path`、`read_log`（`generate_handler` 五命令；前两个是 **async 命令**，阻塞的 key 轮询与回环 HTTP 走 `spawn_blocking`；`read_log` 无参数、只读数据目录内运行日志的尾部，返回 `{text, truncated, bytes}`）、事件 `core-status`（轻量快照）/ `core-activity`（activity + modelResults）/ `core-failed`（**故障期间每 ~4s 重播**，面板晚注册监听也能收到）、`start_core`/`stop_core`/`watch_status`/`service_down`/`restart_core_with`/`build_tray`/`quit_app`/`stop_core_bounded`/`show_main`/`admin_call`（`on_window_event` 的 `CloseRequested` → `quit_app`，即**关窗即退出**，全平台一致） | 托盘壳：生命周期、IPC、状态轮询、退出预算 |
-| `src/core/bridge.js` | `action(name, value)`、`onState(cb)`、`onDismiss(cb)`、`readLog()`、`dataDir()`、`checkUpdate()`、`downloadUpdate(onProgress)`、`relaunchApp()` | 面板与壳/插件的唯一边界（invoke + listen + 插件全局绑定）；`readLog`/`dataDir` 是**只读**调用，不接受路径入参、不写文件。`check()` 返回的 Update 句柄只留在模块内（组件拿的是可序列化快照 `{version, notes}`） |
+| `src-tauri/src/lib.rs` | `core_action`、`restart_core`、`core_running`、`data_dir_path`、`read_log`（`generate_handler` 五命令；前两个是 **async 命令**，阻塞的 key 轮询与回环 HTTP 走 `spawn_blocking`；`read_log` 无参数、只读数据目录内运行日志的尾部，返回 `{text, truncated, bytes}`）、事件 `core-status`（轻量快照）/ `core-activity`（activity + modelResults）/ `core-failed`（**故障期间每 ~4s 重播**，面板晚注册监听也能收到）、`start_core`/`stop_core`/`watch_status`/`service_down`/`restart_core_with`/`build_tray`/`quit_app`/`stop_core_bounded`/`show_main`/`admin_call`（`on_window_event` 的 `CloseRequested` → `quit_app`，即**关窗即退出**，全平台一致）、`status_read_needed`（`watch_status` 的 `(mtime, 长度)` 前置过滤判定，**只在拿得到 mtime 时**才允许跳过读内容；有单测守卫） | 托盘壳：生命周期、IPC、状态轮询、退出预算 |
+| `src/core/bridge.js` | `action(name, value)`、`onState(cb)`、`onDismiss(cb)`、`readLog()`、`dataDir()`、`checkUpdate()`、`downloadUpdate(onProgress)`、`relaunchApp()` | 面板与壳/插件的唯一边界（invoke + listen + 插件全局绑定）；`readLog`/`dataDir` 是**只读**调用，不接受路径入参、不写文件。`check()` 返回的 Update 句柄只留在模块内（组件拿的是可序列化快照 `{version, notes}`）。三个 `core-*` 事件走**帧级合并**（`requestAnimationFrame` 每帧最多 flush 一次；替换型事件入队前先清空队列），因此对订阅者语义等价、但 **`lastState` 滞后一帧**——新增**同步读 `lastState`** 的代码（如 `action('import')` 里的 `lastState.modelsFile`）必须容忍这一帧延迟 |
 | `src/core/update.js` | `subscribe(cb)`、`check({silent})`、`install()`、`restart()`、`dismiss()`、`setAutoCheck(enabled)`、`startSilentCheck()` | 更新状态机（`idle`/`checking`/`available`/`downloading`/`ready`/`uptodate`/`error`）；冷启动 5s 后**按偏好与 12h 节流**静默检查，静默失败不打扰用户，上次检查时间戳只在**成功**打到端点后写入。视图不得自行持有状态 |
 | `src/core/prefs.js` | `VIEW_IDS`、`DEFAULTS`、`SILENT_CHECK_MIN_INTERVAL_MS`、`isAllowedKey(key)`、`readPref(key)`、`writePref(key, value)`、`loadView()`/`saveView(id)`、`loadUpdatePref()`/`saveAutoCheck(enabled)`/`saveCheckedAt(ts)`、`shouldSilentCheck(pref, now, minInterval)`、`sanitizeView`/`sanitizeUpdate` | 面板偏好的**唯一**读写边界：键前缀 `wb.` + 写入前键白名单 + 值字段投影 + 序列化后 2KB 上限 + 存储不可用/抛错一律静默回落默认值。**凭据类字段（`api-key`、`OPENCODE_SERVER_PASSWORD`、models 文件路径）不在白名单内，结构上落不进 `localStorage`** |
 | `src/core/activity.js` | `activityText(...)` | 活动文案统一（托盘与面板共用） |
@@ -361,9 +362,10 @@ start_backend
   - lib 单元测试 187（含 `src/*.rs` 内 `#[cfg(test)]`）；
   - `tests/js_parity.rs` 11（每模块一组，比较 `tests/fixtures/*.json` 冻结的 `expected`）；
   - `tests/red_lines.rs` 9（运行期红线守卫）。
-  壳（`src-tauri/`）另有 `cargo test --lib` **8 通过**：日志尾部读取 4 项 + `shell_action_routes_match_the_core_contract`
+  壳（`src-tauri/`）另有 `cargo test --lib` **9 通过**：日志尾部读取 4 项 + `shell_action_routes_match_the_core_contract`
   （断言 `ADMIN_ROUTES` 与核心 `ACTION_ROUTES` 逐项一致）+ 退出链路 3 项（`repeated_quit_requests_stop_only_once`、
-  `a_quit_requested_shutdown_is_not_reported_as_failure`、`service_down_reports_only_real_failures`）。
+  `a_quit_requested_shutdown_is_not_reported_as_failure`、`service_down_reports_only_real_failures`）
+  + `status_read_needed_only_skips_when_mtime_is_known`（`status.json` 轮询快路径：只在拿得到 mtime 且 `(mtime, 长度)` 未变时才允许跳过读取）。
 - **JS 侧只有两个测试套件，都用 `node --test`（不引测试框架、不依赖 DOM，基线合计 17 通过 / 0 失败）**：
   - `npm run test:prefs` = `node --test src/core/prefs.test.js` → **8 通过**：`prefs.js` 的键白名单、值字段投影（凭据类字段绝不落 `localStorage`）、坏数据回落默认值、存储不可用/抛错时静默降级、超大值拒写、静默检查 12h 节流。测试用 `globalThis.localStorage` 取值 + `withStorage(fakeStorage(...), fn)` 注入假存储来跑。
   - `npm run test:manifest` = `node --test scripts/gen-latest-json.test.mjs` → **9 通过**：`latest.json` 唯一写者的六平台成功路径（平台键只由 artifact **目录名**的 target triple 决定、url 空格编码、签名内容取自配对 `.sig`）与七类必须失败/告警的路径（缺平台、缺 `.sig`、mac 资产名漏架构后缀、同平台两目录、判不了平台的目录、Linux 双层打包、同目录互不相干的两个已签名包）。用 `spawnSync` 跑真脚本 + `mkdtempSync` 临时产物目录，**不联网、不碰真实产物**，版本号现读 `tauri.conf.json` 因此不随版本推进失效。
@@ -495,7 +497,7 @@ start_backend
 | 核心 crate 内部版本 | **0.1.0** | `src-tauri/core/Cargo.toml`（`wbbridge-core --version` 输出，与产品版本解耦，**不得"顺手对齐"**） |
 | 状态内置版本 | `0.2.0` | `src-tauri/core/src/orchestration.rs` 写入 `status.json` 的 `version`（沿自上游参考实现，界面上可见） |
 | 上游调研基线 | `0.2.5` | `docs/research/upstream-architecture.md` |
-| 测试基线 | **207 通过 / 0 失败**（lib 187 + js_parity 11 + red_lines 9，约 0.3s）；壳 `cargo test --lib` 8 通过；JS 侧 `test:prefs` 8 + `test:manifest` 9 通过 | `src-tauri/core/` 下 `cargo test`、`src-tauri/` 下 `cargo test --lib`、仓库根两个 `npm run test:*` |
+| 测试基线 | **207 通过 / 0 失败**（lib 187 + js_parity 11 + red_lines 9，约 0.3s）；壳 `cargo test --lib` 9 通过；JS 侧 `test:prefs` 8 + `test:manifest` 9 通过 | `src-tauri/core/` 下 `cargo test`、`src-tauri/` 下 `cargo test --lib`、仓库根两个 `npm run test:*` |
 | 迁移前 JS 基线 | 97 通过 / 0 失败（node v24.21.0） | 仓库外归档 `backup/wbBridge-node-20261001/core/test/` |
 | 运行时基线 | OpenCode 版本由 registry 最新版决定（不固定）；核心不再需要 Node | `src-tauri/core/src/runtime.rs` |
 

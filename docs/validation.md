@@ -6,6 +6,84 @@
 
 日期：2026-10-02（本机 macOS，Apple Silicon；Rust 核心 + Vue 壳 + Vue 面板）
 
+日期：2026-10-03（本机 macOS，Apple Silicon；Rust 核心 + Vue 壳 + Vue 面板）
+
+## v1.0.2 追加：上一节降耗改动的代码复审与修正（2026-10-03，不推进版本号）
+
+复审方式：两个独立 `code-reviewer` 子代理**并行**复审上一节的 7 个改动文件（互不告知对方结论），主 Agent 再对两条 🔴 逐条实读源码确认后落地修正。**只修被查出的缺陷，未做任何重构**。
+
+### 查出的缺陷与修正
+
+| 级别 | 缺陷（复审前） | 修正 | 落点 |
+|---|---|---|---|
+| 🔴 会冻结面板状态 | `meta.modified().unwrap_or(UNIX_EPOCH)`：拿不到 mtime 时 stamp 退化成 `(EPOCH, 长度)`，此后**长度不变的改写被永久跳过**，面板再收不到任何 `core-status` | 改 `meta.modified().ok().map(...)`，stamp 变 `Option`；抽出 `status_read_needed(stamp, last_stamp)`：**`stamp` 为 `None` 时不启用快路径**，一律回落读内容 | `src-tauri/src/lib.rs` |
+| 🔴 吞掉既有保障 | 恢复运行分支只 `last.clear()`，未作废 `last_stamp`；而该分支注释的整条理由就是「重启后 `status.json` 可能与故障前逐字节相同，不重置就永远不会再推送」，粗粒度 mtime 文件系统上这条保障被快路径抵消 | 补 `last_stamp = None` | 同上 |
+| 🟠 队列无界 | rAF 在窗口不可见时暂停，替换型事件持续入队 → 队列只增不减；且原注释称「与逐个执行完全等价」过头 | `enqueue(op, replaces)`：替换型 op 入队前 `pendingOps.length = 0`（与逐条折叠严格等价且天然封顶）；注释改为**只对订阅者等价**——`lastState` 在帧末才更新，`action()` 读 `lastState.modelsFile` 与 `onState()` 首帧重放会看到上一帧，下一帧自愈 | `src/core/bridge.js` |
+| 🟠 不实的技术声明 | 「npm registry 仍回 gzip」是上游改动方的转述；「base64 两份来自 reqwest/hyper-util」在壳 workspace 不成立 | 用 `curl -H 'Accept-Encoding: gzip, br'` **实测两个白名单源**：registry **元数据**均回 `content-encoding: gzip`，**tarball** 是 `application/octet-stream` 且**不带** `content-encoding` → brotli 确无用；`Cargo.lock` 实读确认核心 workspace 两份（`0.22.1`←reqwest、`0.23.1`←hyper-util），**壳 workspace 有三份**（多出 `0.21.7`←`swift-rs`），注释因此限定范围并补上「壳仍经 `tauri-codegen` 引入 brotli，装机体积收益不等同」的口径边界 | `src-tauri/core/Cargo.toml` |
+| 🟡 文档口径 | 三处声明已写出「完全等价 / 零渲染损耗 / 纯属体积浪费」 | 随上两条同步改写，并把新增的未验证项（WKWebView 里 rAF 的真实暂停行为、mtime 粗粒度是否真的命中）显式标注 | `AGENTS.md`、`docs/version/*`、`docs/wiki/*` |
+
+### 复审同时判定为正确、未改动的点
+
+- `watch_status` 里读内容失败不会污染 stamp（`last_stamp` 只在成功读后记录）；
+- `EMPTY_RESULT` 共享空对象安全（无任何写入路径）；
+- `ModelList.vue` 的 `props.activity || []` **不是冗余**（壳在停机时确实下发 `activity: null`）；
+- 未新增 IPC 命令 / 事件、未碰 `prefs.js` 白名单、无外部请求、锁文件仅随 feature 变化；
+- 版本号按纪律保持 **1.0.2**。
+
+### 真实执行的验证（修正后复跑）
+
+| 命令 | 结果 |
+|---|---|
+| `cargo test`（`src-tauri/core/`） | **207 通过 / 0 失败**（lib 187 + `js_parity` 11 + `red_lines` 9） |
+| `cargo clippy --all-targets`（核心） | **0 warning** |
+| `cargo test --lib`（`src-tauri/`） | **9 通过 / 0 失败**（8 → 9，新增 `status_read_needed_only_skips_when_mtime_is_known`：`None/Some→true`、`None/None→true`、同 stamp→false、mtime 变→true、长度变→true、`Some/None→true`） |
+| `cargo clippy --no-deps --all-targets`（壳） | **0 warning** |
+| `npm run test:prefs` | **8 通过 / 0 失败** |
+| `npm run test:manifest` | **9 通过 / 0 失败** |
+| `npx eslint .` | **0 problem** |
+| `npm run vite:build` | ✓ built（`dist/assets/index-B75qEZKZ.js` 100.87 kB / gzip 37.95 kB） |
+| `npm run version:check` | **5 处一致（1.0.2）** |
+
+### 仍未验证（不得伪装）
+
+- ❌ **GUI 仍未实机启动**：轮询快路径的真实命中情况、粗粒度 mtime 文件系统、帧级合并后面板的视觉与交互表现，全部只有「编译 + 单测 + 构建」证据。
+- ❌ 新增单测只钉住 `status_read_needed` 的**判定表**，不覆盖 `watch_status` 的完整循环（那需要真实 `AppHandle` 与文件系统）。
+- ❌ rAF 在 WKWebView 后台窗口是否真的暂停**未实测**（封顶改动让两种答案都安全，但收益大小依赖它）。
+- ❌ 上一节的「无单测覆盖」结论已由本轮的 1 项壳单测部分收窄，其余部分仍然成立。
+
+---
+
+## v1.0.2 追加：渲染与轮询降耗（2026-10-03，不推进版本号）
+
+> ⚠️ **本节已被上方「代码复审与修正」条目部分修正**：其中「两者都没变即跳过」（缺 mtime 不可得的守卫）、「合并语义与逐个执行等价 / 零渲染损耗」「npm registry 仍回 gzip（实测，指改动方自己的声明）」「本轮改动无单测覆盖」四项表述以修正后的版本为准；本节按下文原样保留，作为改动当时的记录（只增不改）。
+
+### 落地的改动
+
+| 项 | 内容 | 落点 |
+|---|---|---|
+| 壳侧轮询降耗 | `watch_status` 原先每 500ms 都 `read_to_string` 整份 `status.json`（实测 8.6 KB）再逐字节比对；改为先用 `(mtime, 长度)` 前置过滤，两者都没变即跳过读取，只有变了才读内容；`stamp` 只在成功读到内容后记录，避免读取失败的那一轮被误当稳态 | `src-tauri/src/lib.rs` |
+| 核心去掉未使用的 brotli 解压 | `reqwest` 移除 `brotli` feature：npm registry 在 `Accept-Encoding: gzip, br` 下仍回 gzip（实测），本地 OpenCode 不压缩，brotli 解压链纯属体积浪费；依赖树随之移除 brotli 相关 crate。同处留注 `base64 = "0.22"` 为何不动（依赖树里的两份来自 `reqwest` 0.22 与 `hyper-util` 0.23，由上游固定） | `src-tauri/core/Cargo.toml`、`src-tauri/Cargo.lock`、`src-tauri/core/Cargo.lock` |
+| 面板帧级合并发布 | `core-status` / `core-activity` / `core-failed` 三类事件改为按到达顺序折算成状态操作入队 + `requestAnimationFrame` 每帧最多 flush 一次（合并语义与逐个执行等价：status=替换、activity=合并、failed=替换；渲染从「每事件一次」降为「每帧一次」，窗口隐藏时 rAF 暂停、零渲染损耗；无 rAF 环境回落 `setTimeout(cb, 16)`） | `src/core/bridge.js` |
+| 行级 / 详情 props 引用稳定 | 无结果的行与详情共用同一个 `EMPTY_RESULT` 空对象（不随父级重渲染换引用，`ModelRow` / `ModelDetails` 只在自身数据真正变化时更新）；「请求中」判断由逐行 `activity.some()`（行数 × 活动数、每趟渲染重做）改为一次成 `Set` 后 `has()` | `src/views/ModelList.vue`、`src/App.vue` |
+
+- **版本号**：本追加属同一未发布版本（v1.0.2）内的打磨，未引入新功能、无新根因修复，**不推进版本号**，`npm run version:check` 复验 5 处落点仍一致（1.0.2）。
+- ⚠️ 本轮改动**无单测覆盖**，GUI 仍未实机启动，渲染 / 轮询收益需实机确认（未验证项见 `docs/wiki/已知限制与未验证项.md`）。
+
+### 真实执行的验证（2026-10-03 复跑）
+
+| 命令 | 结果 |
+|---|---|
+| `cargo test`（`src-tauri/core/`） | **207 通过 / 0 失败**（lib 187 + `js_parity` 11 + `red_lines` 9） |
+| `cargo test --lib`（`src-tauri/`） | **8 通过 / 0 失败** |
+| `cargo clippy --all-targets`（核心）/ `cargo clippy --no-deps --all-targets`（壳） | 均 **0 warning** |
+| `npm run test:prefs` | **8 通过 / 0 失败** |
+| `npm run test:manifest` | **9 通过 / 0 失败** |
+| `npx eslint .` | **0 problem** |
+| `npm run vite:build` | ✓ built（`dist/assets/index-*.js` 100.84 kB / gzip 37.94 kB） |
+| `npm run version:check` | **5 处一致（1.0.2）** |
+
+---
+
 ## v1.0.2 交付闭环：发布门禁、面板偏好、签名与回滚文档（2026-10-02，同日第一轮）
 
 ### 落地的改动

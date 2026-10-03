@@ -272,12 +272,27 @@ fn service_down(state: &AppState) -> Option<(String, bool)> {
     None
 }
 
+/// status.json 这一轮是否需要真读内容。快路径**只在拿得到 mtime 时**才允许跳过：
+/// `stamp` 为 `None`（文件系统不暴露 mtime，如某些网络挂载 / FUSE）时必须回落到读内容，
+/// 否则 stamp 恒定、长度不变的改写会被永久跳过，面板状态就此冻结。
+fn status_read_needed(
+    stamp: Option<(std::time::SystemTime, u64)>,
+    last_stamp: Option<(std::time::SystemTime, u64)>,
+) -> bool {
+    stamp.is_none() || stamp != last_stamp
+}
+
 /// 轮询核心写的 status.json：内容变化即推送事件、同步托盘勾选态，并监督核心任务是否已结束。
 fn watch_status(app: AppHandle) {
     thread::spawn(move || {
         let state = app.state::<AppState>();
         let file = state.data_dir.join("status.json");
         let mut last = String::new();
+        // 上一次成功读取时的 (mtime, 长度)：稳态下核心不写盘、内容一成不变，
+        // 原先每 500ms 仍要 read_to_string 一次（实测文件 8.6 KB）再整份比对。
+        // 先用 mtime + 长度做便宜的前置过滤，两者都不变才跳过；拿不到 mtime 时为 None，
+        // 快路径自动失效（见 status_read_needed）。
+        let mut last_stamp: Option<(std::time::SystemTime, u64)> = None;
         let mut warned = false;
         // 已向面板播报的故障原因：原因变化或攒满一个重播窗口才再发，避免每 500ms 刷屏。
         let mut announced: Option<String> = None;
@@ -303,15 +318,26 @@ fn watch_status(app: AppHandle) {
                 }
                 continue;
             }
-            // 恢复运行：清掉故障播报标记并还原托盘 tooltip，同时作废「上一份内容」缓存 ——
-            // 重启后写出的 status.json 可能与故障前逐字节相同，不重置就永远不会再推送。
+            // 恢复运行：清掉故障播报标记并还原托盘 tooltip，同时作废「上一份内容」与「上一次
+            // stamp」两重缓存 —— 重启后写出的 status.json 可能与故障前逐字节相同，不重置就
+            // 永远不会再推送；只清 `last` 而留下 stamp，这道保障会被快路径吞掉。
             if announced.take().is_some() {
                 last.clear();
+                last_stamp = None;
                 if let Some(tray) = state.tray.lock().unwrap().as_ref() {
                     let _ = tray.set_tooltip(Some("WB Bridge"));
                 }
             }
+            // 先用 (mtime, 长度) 做便宜的前置过滤：核心只在变化时写盘，稳态下这两者都不动，
+            // 就不必每 500ms 再 read_to_string 一次整份内容（实测 status.json 8.6 KB）
+            // 后再逐字节比对。stamp 只在成功读到内容之后记录，避免读失败的那一轮被跳过。
+            let Ok(meta) = fs::metadata(&file) else { continue };
+            let stamp = meta.modified().ok().map(|mtime| (mtime, meta.len()));
+            if !status_read_needed(stamp, last_stamp) {
+                continue;
+            }
             let Ok(text) = fs::read_to_string(&file) else { continue };
+            last_stamp = stamp;
             if text == last {
                 continue;
             }
@@ -843,5 +869,29 @@ mod tests {
         let (message, by_exit) = service_down(&failed).expect("启动失败必须报故障");
         assert!(!by_exit, "启动失败不是「核心已退出」");
         assert_eq!(message, "核心启动失败：端口不可用");
+    }
+
+    /// status.json 快路径的判定：只有在「拿得到 mtime 且 (mtime, 长度) 与上次一致」时才允许跳过。
+    /// 重点保护两件事：mtime 不可得时必须回落读内容（否则长度不变的改写被永久跳过、面板冻结），
+    /// 以及 mtime 或长度任一变化都要重读（重启后内容可能与故障前逐字节相同，靠的就是这道判定）。
+    #[test]
+    fn status_read_needed_only_skips_when_mtime_is_known() {
+        use std::time::UNIX_EPOCH;
+        let first = (UNIX_EPOCH, 8u64);
+        let later = (UNIX_EPOCH + std::time::Duration::from_secs(1), 8u64);
+        let resized = (UNIX_EPOCH, 9u64);
+
+        assert!(
+            status_read_needed(None, Some(first)),
+            "文件系统不暴露 mtime 时不得启用快路径"
+        );
+        assert!(
+            status_read_needed(None, None),
+            "首轮且拿不到 mtime 时必须读"
+        );
+        assert!(!status_read_needed(Some(first), Some(first)), "mtime 与长度都没变才允许跳过");
+        assert!(status_read_needed(Some(later), Some(first)), "mtime 变了必须重读");
+        assert!(status_read_needed(Some(resized), Some(first)), "长度变了必须重读");
+        assert!(status_read_needed(Some(first), None), "没有上次记录时必须读（含恢复运行后重置 stamp 的情形）");
     }
 }

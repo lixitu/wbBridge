@@ -22,6 +22,10 @@ path = "src/main.rs"
 #   getrandom         —— protocol.js 的 randomUUID（call id / chatcmpl id）
 serde_json = { version = "1.0", features = ["preserve_order"] }
 regex = "1"
+# 保持 0.22：本 workspace 的依赖树里两份 base64 分别来自 reqwest(0.22) 与 hyper-util(0.23)
+# （实读 src-tauri/core/Cargo.lock），这两份由上游固定，本 crate 改成哪一版都消不掉重复，
+# 故不为此改动。注意口径范围只是**核心 workspace**：壳 workspace 的 Cargo.lock 里是三份
+# （另有一份 0.21.x 由 tauri 侧的 swift-rs 引入），那部分不受本行影响、也不该在这里声称。
 base64 = "0.22"
 # protocol.js 的 randomUUID（v4，密码学安全，由 OS CSPRNG 驱动）
 uuid = { version = "1", features = ["v4"] }
@@ -51,8 +55,17 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 #   tar       —— 从 tarball 中取出 package/bin/<binary>
 #   url       —— 复刻 WHATWG URL 的 origin / pathname 语义
 #   percent-encoding —— URL 路径中的 session id 编码
+# 压缩只要 gzip，不放 brotli（2026-10-03 用 curl 实读两个白名单源的响应头，带
+# `Accept-Encoding: gzip, br`）：
+#   • registry 元数据 —— npmjs 与 npmmirror 都回 `content-encoding: gzip`；
+#   • tarball —— npmjs 直连与 npmmirror 的 302 CDN 目标都是 `application/octet-stream`
+#     且**不带 content-encoding**（.tgz 原样传输，gzip 由下面的 flate2 解）。
+# 即 brotli 在真实链路上从不被用到；本地回环的 OpenCode 响应同样不压缩。去掉它可少编进
+# brotli + brotli-decompressor（+ 各自 alloc-* 依赖）。
+# ⚠ 口径边界：这是**核心 crate 自身**依赖树的收益；壳的产物里 brotli 仍会经 tauri-codegen
+# （前端资产压缩）引入，故安装包总体积不会因此等量减少。
 reqwest = { version = "0.12", default-features = false, features = [
-    "json", "stream", "rustls-tls", "gzip", "brotli",
+    "json", "stream", "rustls-tls", "gzip",
 ] }
 futures = "0.3"
 sha2 = "0.10"

@@ -13,6 +13,13 @@ const props = defineProps({
 
 const selected = defineModel('selected', { type: Object, default: null })
 
+// 行级 props 引用稳定：无结果的行共享同一个空对象（不随父级重渲染换引用），
+// ModelRow 只在自身数据真正变化时更新，不被 usage 等无关字段的状态推送波及。
+const EMPTY_RESULT = {}
+const resultOf = (id) => props.results[id] || EMPTY_RESULT
+// 请求中集合一次成 Set：逐行 some() 是 行数 × 活动数，且每趟渲染都重做。
+const activeModels = computed(() => new Set((props.activity || []).map(a => a.model)))
+
 const waiting = (id) => props.probe?.running && props.probe?.pending?.includes(id)
 const rank = (model) => {
   if (waiting(model.id)) return 1
@@ -48,10 +55,10 @@ function move(event, step) {
       v-for="model in sorted"
       :key="model.id"
       :model="model"
-      :result="results[model.id] || {}"
+      :result="resultOf(model.id)"
       :waiting="waiting(model.id)"
       :probing="probe?.current === model.id"
-      :in-request="!!activity?.some(a => a.model === model.id)"
+      :in-request="activeModels.has(model.id)"
       :available="available.includes(model.id)"
       :selected="selected?.id === model.id"
       @toggle="selected = selected?.id === model.id ? null : model"

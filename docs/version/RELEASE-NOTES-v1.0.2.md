@@ -7,6 +7,18 @@
 
 ---
 
+> ## 🍎 macOS 用户请先看这条：首次打开若提示「已损坏」，执行下面这行命令
+>
+> 本应用为 **ad-hoc 签名、未做 Apple 公证**，macOS 首次打开（以及更新后再次替换镜像时）可能被 Gatekeeper 拦截。提示「**已损坏**」且你已确认安装包来源可信时，在「终端」执行：
+>
+> ```sh
+> xattr -dr com.apple.quarantine "/Applications/WB Bridge.app"
+> ```
+>
+> 若只是被拦截、未报「已损坏」：先尝试打开 → 「系统设置 → 隐私与安全性」→ 点「仍要打开」。原理与更多情形见下文「macOS 首次打开（ad-hoc 签名放行）」小节。
+
+---
+
 ## ⚠ 发布状态（请如实阅读）
 
 - ❌ **桌面 GUI 从未实机启动**：更新区、重启链路、偏好持久化都只有编译 / 单测 / 构建证据。
@@ -14,7 +26,7 @@
 - ❌ **一次真实的「检查 → 下载 → 安装 → 重启 → 首启」从未走过**；`latest.json` 上传到真实 Release 后的消费路径、Windows / Linux 产物名与签名同样未实测。
 - ⚠️ **推标签之前必须先配好 GitHub Secrets**（`TAURI_SIGNING_PRIVATE_KEY` + 空的密码），否则三个平台作业都会在生成 updater 产物那一步失败。
 - ✅ 已实测（本机、源码版本 `1.0.1` 时）：签名构建产出 `bundle/macos/WB Bridge.app.tar.gz`（3,595,514 B）+ 配对 `.sig`，签名 key ID 与 `tauri.conf.json` 内嵌公钥一致（`126D4E208E0F17BA`）；`bundle/dmg/WB Bridge_1.0.1_aarch64.dmg`（3,720,766 B）只读挂载核对 + `codesign --verify --deep --strict` 通过（adhoc + hardened runtime，**未公证**）。
-- ✅ 已实测（本轮）：核心 `cargo test` **207 通过 / 0 失败**、核心与壳 `cargo clippy` **0 warning**、壳 `cargo test --lib` **8 通过**、`npm run test:prefs` **8 通过**、`npm run test:manifest` **9 通过**、`npx eslint .` **0 problem**、`npm run vite:build` 成功、`npm run version:check` **5 处一致（1.0.2）**。
+- ✅ 已实测（本轮）：核心 `cargo test` **207 通过 / 0 失败**、核心与壳 `cargo clippy` **0 warning**、壳 `cargo test --lib` **9 通过**、`npm run test:prefs` **8 通过**、`npm run test:manifest` **9 通过**、`npx eslint .` **0 problem**、`npm run vite:build` 成功、`npm run version:check` **5 处一致（1.0.2）**。
 
 ---
 
@@ -45,6 +57,17 @@
 - 持久化两项：**当前视图**（重启后回到上次视图）与**「启动后自动检查更新」开关**（在「关于与更新」里，关掉后冷启动不再自动打端点，手动「检查更新」仍可用）；自动检查按 **12 小时**节流，时间戳只在**成功**查到清单/确认已是最新后写入。
 - **凭据零落盘**：`api-key`、`OPENCODE_SERVER_PASSWORD`、WorkBuddy 配置文件路径等在设计上无法进入 `localStorage`（白名单不含它们，且值投影会丢弃未知字段），由 8 项 `node --test` 用例钉住 → `npm run test:prefs`。
 
+## ⚡ 渲染与轮询降耗（2026-10-03 追加）
+
+探测 / 高频状态推送期间，面板与壳各有一段「稳态下白干活」的开销。本项只优化既有路径，**不新增任何功能、不改对外契约与数据口径**：
+
+1. **面板：帧级合并发布**（`src/core/bridge.js`）。壳对同一帧变化会连发 `core-status` + `core-activity` 两个事件，此前各自立即 `publish`，根状态被赋值两次、整树渲染两趟（探测期间成倍）。改为把事件按到达顺序折算成状态操作入队（`status` = 替换、`activity` = 合并、`failed` = 替换），用 `requestAnimationFrame` **每帧最多 flush 一次**，渲染次数由「每事件一次」降为「每帧一次」（非浏览器环境回落 `setTimeout(…, 16)`）。**对订阅者而言合并语义与逐个执行等价**（FIFO 保序、后者覆盖前者），但 `lastState` 要到帧末才更新，事件到达与 flush 之间的同步读取点会读到旧一帧（目前是「导入 WorkBuddy」读的 `lastState.modelsFile` 与 `onState` 的首次回放，下一帧自愈）。替换型事件入队前先清空队列——它的 payload 整体替换状态，前面排队的 op 必然被丢弃，清空与逐条折叠等价，同时让队列长度封顶（否则窗口不可见、rAF 停摆期间会持续堆积持有整份 payload 的闭包）。
+2. **面板：行级 / 详情 props 引用稳定**（`src/views/ModelList.vue`、`src/App.vue`）。无结果的行与详情共用同一个空对象（`EMPTY_RESULT`），不随父级重渲染换引用，`ModelRow` / `ModelDetails` 只在自身数据真变化时更新，不再被 `usage` 等无关字段的状态推送波及；「请求中」判断由逐行 `some()`（行数 × 活动数、每趟重渲染都重做）改为一次生成 `Set` 后 `Set.has()`。
+3. **壳：`status.json` 轮询降耗**（`src-tauri/src/lib.rs`）。`watch_status` 每 500ms 原本都会 `read_to_string` 整份 `status.json`（实测 8.6 KB）再逐字节比对。改为先用 `(mtime, 长度)` 做便宜的前置过滤，两者都没变就直接跳过，只有变了才真正读内容；`stamp` 只在**成功读到内容之后**记录，避免「读失败的那一轮」被当成稳态跳过。快路径**只在拿得到 mtime 时启用**——文件系统不暴露 mtime 时一律回落读内容，否则长度不变的改写会被永久跳过；「核心恢复运行」分支同时作废 `last` 与 `stamp`，保住「重启后内容即使逐字节相同也要重推」这道既有保障。该判定有单测守卫（`status_read_needed_only_skips_when_mtime_is_known`）。
+4. **核心：去掉未使用的 brotli 解压**（`src-tauri/core/Cargo.toml` + 两份 `Cargo.lock`）。`reqwest` 的 `brotli` feature 被拆除。2026-10-03 用 `curl -H 'Accept-Encoding: gzip, br'` 实读两个白名单源：registry **元数据**都回 `content-encoding: gzip`，而 **tarball**（npmjs 直连与 npmmirror 跳转后的 CDN 目标）是 `application/octet-stream` 且不带 `content-encoding`（`.tgz` 原样传输，gzip 由 `flate2` 解）；本地回环的 OpenCode 响应同样不压缩——即 brotli 在真实链路上从不被用到，去掉它也不改变 sha512 完整性校验的语义。核心依赖树随之移除 `brotli` + `brotli-decompressor` + `alloc-no-stdlib` / `alloc-stdlib`。⚠ 口径边界：这是**核心 crate 自身**依赖树的收益，壳的产物里 brotli 仍会经 `tauri-codegen`（前端资产压缩）引入，安装包总体积不会因此等量减少。同处留注说明 `base64 = "0.22"` 为何不动：**核心 workspace** 的依赖树里两份 base64 分别来自 `reqwest`(0.22) 与 `hyper-util`(0.23)，由上游固定，改本 crate 版本消不掉重复（壳 workspace 是三份，多出的一份来自 tauri 侧 `swift-rs`，与本行无关）。
+
+**版本号未推进（仍为 1.0.2）**：本轮属同一未发布版本内的渲染 / 轮询降耗与同日复审修正，未引入新功能分支、也无新的根因修复，按仓库版本纪律（同日同模块追加、无新逻辑分支的打磨）不满足末位 +1 的前提。⚠️ 降耗的**实际收益**仍需在 GUI 实机（探测 + 高频推送）确认：面板帧合并没有 JS 单测，`watch_status` 整条循环也仍需真实 `AppHandle` 才能覆盖（新单测只守卫快路径的判定）；rAF 在 WKWebView 中最小化 / 隐藏时的真实停摆行为同样未实测。
+
 ## 🧾 文档
 
 - `.env.example`：写清三个签名变量的真实分工（`tauri build|bundle` **只读** `TAURI_SIGNING_PRIVATE_KEY`，值可为私钥全文或绝对路径；`TAURI_SIGNING_PRIVATE_KEY_PATH` 只对 `tauri signer sign` 生效）。
@@ -57,7 +80,7 @@
 | 项 | v1.0.1 | v1.0.2 |
 |---|---|---|
 | 核心 `cargo test` | 207（lib 187 + js_parity 11 + red_lines 9） | **207（同）** |
-| 壳 `cargo test --lib` | 8 | **8** |
+| 壳 `cargo test --lib` | 8 | **9**（+1：`status.json` 轮询快路径判定） |
 | `cargo clippy --all-targets`（核心 / 壳） | 0 warning | **0 warning** |
 | 面板偏好 `npm run test:prefs` | —（本版新增） | **8 通过 / 0 失败** |
 | 更新清单生成 `npm run test:manifest` | —（本版新增，此前只用手写一次性夹具跑过、未入库） | **9 通过 / 0 失败** |
@@ -65,7 +88,7 @@
 
 两组 JS 测试都用 `node --test`（不引测试框架）、不联网，并已加入 CI 的 `test` 作业（「运行面板偏好与更新清单单测」一步）。
 
-核心与壳的测试基线本版**未变**：改动集中在壳的插件注册与退出分支、面板与 CI/脚本层，核心行为无回归即可（仍按要求全量跑过并如实报数）。
+核心测试基线本版**未变**（改动集中在壳的插件注册与退出分支、面板与 CI/脚本层，核心行为无回归即可，仍按要求全量跑过并如实报数）；壳侧从 8 增至 **9**，多出的那一项守卫 2026-10-03 复审发现的轮询快路径缺陷。
 
 ## 🍎 macOS 首次打开（ad-hoc 签名放行）
 
