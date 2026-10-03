@@ -8,6 +8,152 @@
 
 日期：2026-10-03（本机 macOS，Apple Silicon；Rust 核心 + Vue 壳 + Vue 面板）
 
+## v1.0.2 追加：签名注入链路重写 + 单条公钥 + hdiutil dmg（2026-10-03，不推进版本号）
+
+> 本节记录同日**对上一节「updater 签名接线」的重写**，并**更正**上一节里被当作项目事实的两处结论（`--check-only` 前置自检、`plugins.updater.pubkey`「两条公钥＝轮换白名单」）。上一节按「只增不改」保留原样，其被推翻之处已就地以「同日再更正」标注指向本节。
+
+### 起因：上一节留下的三处不对
+
+1. `scripts/with-updater-key.mjs` 被写成「本地手跑的签名**自检**工具，不接入 build/CI，有 `--check-only`、判形态、比 key ID、真跑试签」——同日决定完全对齐参考项目（fastenerTradeWorkbench / lockPass），改为 **build 链路上的签名注入包装器**。
+2. `plugins.updater.pubkey`「内嵌两条公钥＝minisign 轮换白名单，换钥无需改配置」是**错的**（见下「关键更正」）。
+3. macOS 的 `.dmg` 此前依赖 Tauri 的 create-dmg（末尾走 AppleScript），无 GUI 的 CI runner 上会失败。
+
+### 关键更正：只有一条公钥生效（源码结论）
+
+实读 `tauri-plugin-updater` 2.13 的 `verify_signature()` → `minisign-verify` 0.2.5 的 `PublicKey::decode()`：它只读解码文本的**前两行**，后面的公钥框被**静默丢弃**，所以**只有第一条生效**；`tauri build` 那条 does-not-match 告警比对的也正是同一第一条。当时提交在 `tauri.conf.json` 里的其实**只有** `126D4E208E0F17BA`（属 2026-10-03 已从 `~/.tauri/` 消失的 20261001 钥），而签名用的是当前采用的 9-30 钥 `~/.tauri/wbBridge-updater.key`（key ID `2B11F78BEA8A43F`，口令非空），于是既触发 `The updater secret key from TAURI_SIGNING_PRIVATE_KEY does not match the public key from plugins > updater > pubkey` 告警、签出的 `.sig` 又会被客户端判无效。**修复＝`plugins.updater.pubkey` 现只嵌 `2B11F78BEA8A43F` 这一条**（已改 `tauri.conf.json`）。
+
+- 🔴 **换钥必须同一次发布里同步换 pubkey**，且老客户端只认它自己内嵌的那条 → 换钥那次发布必须落在老版本还能升级通过的版本上。
+- ✅ **本次替换不锁死任何已发布版本**：`git show v1.0.1:src-tauri/tauri.conf.json` 无 `plugins.updater`、其 `Cargo.toml` 无 `tauri-plugin-updater`、`bundle.createUpdaterArtifacts` 缺席——两个已打标签（v1.0.0 / v1.0.1）都**早于 updater 接线**，`126D4E208E0F17BA` 从未进入交付给用户的二进制；**v1.0.2 是第一个带自动更新通道的产物**。
+
+### 落地的改动
+
+| 项 | 内容 | 落点 |
+|---|---|---|
+| 注入包装器 | `with-updater-key.mjs` 重写为**只注入、不前置校验**：不再判形态、不再试签、配对不符也**只告警不阻断**；`--check-only` 已移除，`resolveKey`/`checkKeyShape`/`configuredKeyIds`/`readConfiguredKeyIds`/`checkPairing`/`classifySignerError`/`dryRunSign` 等导出随之删除。当前导出：`KEY_CONTENT_NAME`/`KEY_PATH_NAME`/`KEY_PASSWORD_NAME`、`ROOT`、`DEFAULT_KEY_PATH`、`ENV_FILES`、`parseEnvFile`、`expandHome`、`loadEnvFiles`、`firstConfiguredKeyId`、`keyIdFromPubFile`、`isInlineKeyShape`、`injectKey`、`buildCommand`、`main(argv)` | `scripts/with-updater-key.mjs` |
+| 取值与归一 | 优先级 **进程环境 > 仓库 `.env.local` > `.env` > `~/.tauri/wbBridge.env` > `~/.tauri/wbBridge-updater.env` > 兜底 `~/.tauri/wbBridge-updater.key`**；逐项打印来源文件名；显式空口令压过文件；`~/` 由脚本展开。`.key` 路径坐落 `TAURI_SIGNING_PRIVATE_KEY` 时读成内联全文并 **trim**（尾部换行会让 tauri 报 `Invalid symbol 10`）；注入后删除互斥的 `TAURI_SIGNING_PRIVATE_KEY_PATH`；明文钥**显式**置空口令（否则无 TTY 下 `Device not configured (os error 6)`）。密钥与口令绝不打印，只输出来源与公开 key ID | 同上 |
+| 接入构建 | `npm run tauri:build` = `node scripts/with-updater-key.mjs tauri build`；`npm run build` = `vite:build && tauri:build && make:dmg` | `package.json` |
+| macOS dmg | `npm run make:dmg` = `bash scripts/make-dmg.sh`：`hdiutil create -volname <productName> -srcfolder <stage: app + Applications 软链> -ov -format UDZO` → `bundle/dmg/<productName>_<version>_<arch>.dmg`；架构取 `TARGET_TRIPLE` 前缀（CI 交叉目标必须传，否则 `uname -m` 是 runner 架构），非 macOS 退出 0；`bundle.targets` 从 `"all"` 改显式 `["app","nsis","msi","appimage","deb"]` | `scripts/make-dmg.sh`、`src-tauri/tauri.conf.json` |
+| CI | 撤除 `tauri-apps/tauri-action`；build 作业跑 `npm run tauri:build -- --target <triple>`（macOS 另加 `npm run make:dmg` + 补架构后缀改名）；Release 由 `softprops/action-gh-release` 建，`tag_name: v<version>` 现读 `tauri.conf.json`；签名变量取自仓库级 **Variables**（`vars.TAURI_SIGNING_PRIVATE_KEY` 存私钥全文、`vars.TAURI_SIGNING_PRIVATE_KEY_PASSWORD`），**无私钥前置步骤**。⚠ Variables 是明文值（设置页可见、日志不打码），故工作流绝不 echo；想换回 Secrets 只需 `vars.`→`secrets.` | `.github/workflows/release.yml` |
+| 单测 | `npm run test:updater-key` 由 9 → **13** 用例（钉住取值优先级 / 内联两形态归一与 trim / 删互斥 `_PATH` / 明文钥显式空口令 / 加密钥缺口令只告警 / 配对只认配置第一条且只告警 / `buildCommand` 三形态 / CLI 相对调用执行且不回显密钥 / 接线断言：`tauri:build` 经本包装器、`build` 链 `make:dmg`、`release.yml` 读 `vars.` 且调 `npm run tauri:build`（无 tauri-action、无前置步骤）、`pubkey` **恰好一条**、`bundle.targets` **不含 dmg**）；三组 JS 套件合计 **30**。CI test 步骤改名「运行面板偏好、更新清单与签名注入单测」 | `scripts/with-updater-key.test.mjs` |
+| 文档同步 | `README.md`、`docs/version/README.md`、`docs/version/RELEASE-v1.0.md`、`RELEASE-NOTES-v1.0.2.md`、`AGENTS.md`、`.env.example` 均按上述更正（注入包装器、单条公钥、hdiutil dmg、CI 去 tauri-action） | 六处文档 |
+
+### 告警甄别（都是预期，无需修）
+
+- `Warn skipping app notarization, no APPLE_ID & APPLE_PASSWORD & APPLE_TEAM_ID or APPLE_API_KEY & APPLE_API_ISSUER & APPLE_API_KEY_PATH environment variables found`＝预期：ad-hoc 签名（`signingIdentity: "-"`）、无 Developer ID/公证凭据，两个参考项目同样带着它出货，`spctl` 据此判定 rejected。
+- pubkey does-not-match 告警**已消失**（本机 2026-10-03 构建不再打印）。
+- macOS 27 上 `hdiutil create/attach/detach` 打 `deprecated ... use diskutil image` 警告，产物正常，刻意保留 hdiutil。
+
+### 真实执行的验证（2026-10-03 本轮）
+
+| 命令 / 操作 | 结果 |
+|---|---|
+| 零环境变量下 `npm run tauri:build -- --bundles app` | **退出 0**，打印「已注入内联签名私钥（来自 `wbBridge-updater.key`）→ 公钥配对 OK（`2B11F78BEA8A43F`）→ 加密态私钥 + 已提供口令」，私钥路径与口令取自仓库 `.env.local`；产出 `bundle/macos/WB Bridge.app.tar.gz`（3,596,811 B）+ `.sig`（428 B） |
+| `.sig` 逐字节解码（base64 解出取签名者 key ID） | ＝ **`2B11F78BEA8A43F`** ＝ 配置 pubkey 里唯一那条 |
+| `npm run make:dmg` | 产出 `bundle/dmg/WB Bridge_1.0.2_aarch64.dmg`（约 3.9 MB）；只读挂载内含 `WB Bridge.app` + `Applications`；`codesign --verify --deep --strict` 通过（Signature=adhoc / TeamIdentifier 未设） |
+| `npm run test:updater-key` | **13 通过 / 0 失败** |
+| `npm run test:prefs` / `npm run test:manifest` | **8 通过** / **9 通过**（三组合计 30） |
+| `cargo test`（核心）/ `cargo test --lib`（壳） | **207 通过 / 0 失败** / **9 通过**（Rust 未改，复跑确认未破坏） |
+| `npx eslint .` | **0 problem** |
+| `npm run vite:build` | ✓ built |
+| `npm run version:check` | **5 处一致（1.0.2）**，本轮**未推进版本号** |
+| `python3 -c "yaml.safe_load(...)"` / `bash -n scripts/make-dmg.sh` | release.yml 解析通过 / make-dmg.sh 语法干净 |
+
+### 仍未验证（不得伪装）
+
+- ❌ **完整 CI 一轮**（六平台产物 + `latest.json` + 一次真实升级）仍未跑通；Windows/Linux 产物名与签名未实测。
+- ❌ 发布后的 `latest.json` 被真实客户端下载/安装、`relaunch()` 后带更新核心的重启未走通。
+- ❌ **GUI 从未实机启动**。
+- ⚠ 仓库根只有 `.env.local`（无 `.env`，`0644`、含私钥路径与口令、`.gitignore` 已忽略、`git ls-files` 确认未入库），是否 `chmod 600` 由用户决定；Agent 不改 `.env.local` 与 `~/.tauri`。版本保持 **1.0.2**，未推进。
+
+---
+
+## v1.0.2 追加：updater 签名接线与 CI 首轮失败定位（2026-10-03，不推进版本号）
+
+### 起因与根因
+
+GitHub Actions 首次实跑在签名那一步报：
+
+```
+Error failed to decode secret key: incorrect updater private key password: Missing comment in secret key
+```
+
+文案带「password」，**但不是口令问题**。本机用一个临时 payload + `tauri signer sign` 做了 **14 组形态复现**，把 tauri 的解码报错逐条钉到成因：
+
+| 喂进去的东西 | tauri 报什么 |
+|---|---|
+| **空值** | `incorrect updater private key password: Missing comment in secret key`（＝本次 CI 的那条） |
+| 正确私钥 + 尾部多一个换行 | `failed to decode base64 secret key: Invalid symbol 10, offset 348` |
+| 中间插一个空格 / 折成两行 | `Invalid symbol 32, offset 80` / `Invalid symbol 10, offset 172` |
+| 私钥全文外面多包一层 base64、把私钥全文当路径传、base64(公钥) | `Missing encoded key in secret key` |
+| 直接拿 `.pub` 当私钥 | `failed to fill whole buffer` |
+| 加密钥 + 空口令 / 错口令 | `Wrong password for that key` |
+| 正确私钥 + 正确口令 | **签成功**（说明钥材料与「空口令」都不是本次故障的原因） |
+| ⚠ 尾部截到 344 字符 / 开头去掉 4 字符 | **静默签成功**（形态检查抓不住，只有真跑一次试签才抓得住） |
+
+CI 取到空值的机制：私钥当时只配在 GitHub **Secrets**，而三个 build 作业没声明 `environment:`——环境级 Secret 对作业不可见，`${{ secrets.X }}` 展开成空串（与上游 `tauri-action#658` 的结论一致）。加上 `createUpdaterArtifacts: true` 时 tauri 要**跑完整套 Rust 编译**才在打包那一步去解私钥，于是一次配置错误要烧掉十几分钟才暴露。
+
+### 用户的三项决定（本轮据此落地）
+
+1. **就用 9-30 那把旧钥** `~/.tauri/wbBridge-updater.key`（`0600`、**口令非空**、key ID `2B11F78BEA8A43F`）。
+   - ⚠ 由此**更正** `AGENTS.md` 与 `docs/wiki/版本与发布.md` 里此前那条错误记录（「密码未知且与现 pubkey 不配对，已弃用」）——旧结论来自**整串比较 pubkey**。**〔2026-10-03 同日再更正：本条当时写的「`plugins.updater.pubkey` 内嵌两条公钥＝minisign 轮换白名单、因此 `tauri.conf.json` 不需要任何改动」是错的，以顶部「签名注入链路重写」条目为准：实读 `tauri-plugin-updater`/`minisign-verify` 源码，`verify_signature` 只解码并使用**第一条**公钥，后面的公钥框被静默丢弃；当时配置里其实只有 `126D4E208E0F17BA`（属已消失的 20261001 钥），签名用的却是 `2B11F78BEA8A43F`，于是构建告警 does-not-match 且签出的 `.sig` 会被客户端判无效。修复＝把 `pubkey` 换成**真正签名那把**的公钥，现配置只有 `2B11F78BEA8A43F`，**需要改 `tauri.conf.json`**。〕**
+   - ⚠ 20261001 那把（`126D4E208E0F17BA`）本日发现**已从 `~/.tauri/` 消失**（`.DS_Store` mtime 显示当天有 Finder 操作，回收站因 TCC 权限读不到）。Agent 全程只对 `~/.tauri` 做过只读命令，未删未改。
+2. **CI 改用仓库级 Variables**（`vars.TAURI_SIGNING_PRIVATE_KEY{,_PASSWORD}`）对齐参考项目 fastenerTradeWorkbench。⚠ 代价已在 workflow 顶部注释与两处文档如实记录：**Variables 是明文值**（设置页可见、日志**不打码**），因此工作流绝不 echo 这两项，包装脚本只输出形态结论、长度与公开 key ID。
+3. **要一个本地包装脚本**（对齐参考项目的 `with-updater-key.mjs`）。
+
+### 落地的改动
+
+| 项 | 内容 | 落点 |
+|---|---|---|
+| 签名自检脚本 | 新增 `scripts/with-updater-key.mjs`：按 **进程环境 > `.env.local` > `.env`** 汇齐私钥与口令（逐项独立回落、**逐项打印来源**；`~/…` 先展开；环境变量里**存在** `_PASSWORD` 即按显式处理，显式空串＝无口令、不再回落文件）→ ① 形态校验 ② 同目录 `.pub` 的 key ID 必须在配置白名单内（不在即**失败关闭**）③ **真跑一次 `tauri signer sign`**（临时目录 `mkdtemp` + 签完即删，密钥与口令**只经环境**传给子进程、不进 argv、不打印）→ 全过才继续后接的命令。`--check-only` 只自检不构建。**定位为本地手跑工具**（2026-10-03 用户决定：不接入 `npm run build`、不作为 CI 步骤） | `scripts/with-updater-key.mjs` |
+| 前置单测 | 新增 `scripts/with-updater-key.test.mjs`（`node --test`，**9 用例**）+ `npm run test:updater-key`：取值优先级 / 显式空口令压过文件 / `~` 展开 / 四类非法形态 / key ID 白名单解析 / 配对失败关闭 / 四条解码报错→成因映射 / **CLI 在相对路径下确实执行**且空值与路径型私钥在试签前退出 1（**报错不回显密钥**）/ 接线断言（`release.yml` 把私钥读成 `vars.`、**不含**任何私钥前置步骤、`npm run build` **不**经本脚本）。不联网、不调 tauri CLI、不碰真实私钥 | `scripts/with-updater-key.test.mjs`、`package.json` |
+| `npm run build` 维持裸构建 | `build` 保持 `vite:build && tauri build`；前置自检脚本 `scripts/with-updater-key.mjs` 为**本地手跑工具**（`--check-only`），不接入 `npm run build`、也不作为 CI 步骤（2026-10-03 用户决定） | `package.json` |
+| CI 变量 | 三个 build 作业的 `TAURI_SIGNING_PRIVATE_KEY{,_PASSWORD}` 从 `secrets.` 改 `vars.`（`GITHUB_TOKEN` 不变）；顶部注释整段重写（Variables 与其明文代价、口令非空、两条 key ID 白名单、空值→`Missing comment` 的映射）。⚠ 三个 build 作业**不含**私钥前置校验步骤——一度加过，同日按用户决定撤除（私钥在位与否由维护者自行确认，这类配置错仍要等到打包那一步才暴露） | `.github/workflows/release.yml` |
+| CI 单测步骤 | test 作业那一步改名「运行面板偏好、更新清单与签名自检单测」，追加 `node --test scripts/with-updater-key.test.mjs` | `.github/workflows/release.yml` |
+| 文档同步 | `AGENTS.md`（签名与发布一节整体更正 + 验证边界表两行 + 命令清单与模块清单与测试规范与基线表与交付约定）、`.env.example`（重写为「不必 export、包装脚本自取；口令非空；CI 用 Variables」）、`docs/wiki/版本与发布.md`（报错→成因对照表 + 前置脚本 + 密钥现状更正 + 发布检查清单两项）、`docs/wiki/常见问题与故障排查.md`（新增「CI 报 `Missing comment in secret key`」条目） | 五处文档 |
+
+### 写脚本过程中查出并修掉的自身缺陷（都有单测钉住）
+
+| 缺陷 | 表现 | 修正 |
+|---|---|---|
+| CLI 入口守卫用 `file://${process.argv[1]}` | `node scripts/with-updater-key.mjs --help` **静默无输出、退出 0**——argv[1] 是相对路径，永远不相等，而 CI 与 `npm run build` 正是相对调用，前置等于没跑 | 改 `pathToFileURL(process.argv[1]).href` 比较 |
+| `.env.local` 与 `.env` 优先级反了 | `Object.assign` 循环把 `.env` 排在后，`.env` 盖住了 `.env.local` | 顺序改「低优先在前」`['.env', '.env.local']` |
+| 不展开 `~` | 仓库 `.env.local` 里存的就是 `~/.tauri/…key`，被当成私钥全文，误报「形态不对（含非 base64 字符）」，本地构建直接挡死 | 新增 `expandHome()`，路径存在才按路径读 |
+| 私钥与口令**混搭来源**不可见 | 钥来自进程环境、口令却回落到 `.env.local` 里另一把钥的口令，tauri 只报「Wrong password」，看不出哪项错 | `resolveKey` 返回 `fromPlace` / `passwordFrom`，试签那行同时打印两个来源（**只打印来源，不打印值**）；并让「显式存在的空口令变量」压过文件 |
+| key ID 位数断言过严 | 配置里 9-30 那条 ID 实为 **15 位**十六进制（minisign 不补前导零，`02B11F78…` 打成 `2B11F78…`），`{16}` 直接把真实配置判为非法 | 放宽为 `{15,16}` 并在测试注释里写明原因 |
+
+### 真实执行的验证（2026-10-03 本轮）
+
+| 命令 / 操作 | 结果 |
+|---|---|
+| `npm run test:updater-key` | **9 通过 / 0 失败** |
+| `npm run test:prefs` / `npm run test:manifest` | **8 通过 / 0 失败**、**9 通过 / 0 失败** |
+| `cargo test`（`src-tauri/core/`） | **207 通过 / 0 失败**（lib 187 + `js_parity` 11 + `red_lines` 9）——本轮未改 Rust，复跑确认未破坏 |
+| `cargo test --lib`（`src-tauri/`） | **9 通过 / 0 失败** |
+| `npx eslint .` | **0 problem**（先前查出的 1 个 `no-useless-assignment` 属被取代的早期草稿 `scripts/with-signing-key.*`，已移出仓库到 `/tmp/wbbridge-superseded-drafts/`，未删除） |
+| `npm run vite:build` | ✓ built（`dist/assets/index-B75qEZKZ.js` 100.87 kB / gzip 37.95 kB） |
+| `npm run version:check` | **5 处一致（1.0.2）**，本轮**未推进版本号** |
+| `python3 -c "yaml.safe_load(...)"` | 解析通过；作业 `test / build-macos / build-windows / build-linux / update-manifest`；三个 build 作业的步骤序列为「安装前端依赖 → 构建 Tauri 应用 → …」（**已无**私钥前置步骤，`grep -c '前置校验 updater 私钥' release.yml` = 0），test 作业含三组 `node --test` 那一步 |
+| `node scripts/with-updater-key.mjs --help` | 输出用法并退出 0（修正入口守卫后复验） |
+| **一次性新钥**（临时目录里 `tauri signer generate` 现生成，用完即删）走 inline 形式 | 「形态 OK（348 字符）→ 配对跳过 + 告警 → **试签 OK** → 退出 0」 |
+| 同一把一次性钥改**路径形式** | 「配对：不匹配 — 公钥 `<ID>` 不在配置名单 126D4E208E0F17BA / 2B11F78BEA8A43F 内，签出的 .sig 客户端验签必失败」→ **退出 1**（失败关闭，符合预期） |
+| **真实 9-30 钥**（不设任何环境变量，回落仓库 `.env.local` 的路径与口令） | 「来源 `.env.local` 的 `TAURI_SIGNING_PRIVATE_KEY_PATH`，形态 OK → **配对 OK（`2B11F78BEA8A43F` 在名单内）→ 试签 OK → 退出 0**」 |
+
+### 未验证（不得伪装）
+
+- ❌ 改完的 `release.yml` **没有在 CI 上跑过第二轮**：`vars.` 切换、前置步骤、以及「配好 Variables 后整条 `tauri build` 能否签出可验签的 `.sig`」全部待下一轮 CI。
+- ❌ 未产出任何 v1.0.2 安装包；本机上一次打包仍发生在 `1.0.1` 源码版本。
+- ❌ GUI 从未实机启动；`latest.json` 上传到真实 Release 后的下载/安装、`relaunch()` 后的重启链路均未走通。
+- ❌ 「试签 OK」只证明**这把钥 + 这个口令可用**，不等于产物签名已被客户端验证（那要等一次真实的 v1.0.2 → v1.0.3）。
+
+### 待用户操作（Agent 不得代做）
+
+1. 在 GitHub 仓库 **Settings → Secrets and variables → Actions → Variables**（**仓库级**，不是环境级）配两项：`TAURI_SIGNING_PRIVATE_KEY` ＝ `~/.tauri/wbBridge-updater.key` 的**全文**（CI  runner 上没有本机家目录，路径无效）、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` ＝ 该钥口令。⚠ Variables 明文可见、日志不打码；如不接受这个暴露面，把 `release.yml` 里的 `vars.` 改回 `secrets.`（配到**仓库级 Secrets**，或给作业声明 `environment:`），脚本与命令都不用动。
+2. 是否 `chmod 600` 仓库根 `.env.local`（当前 `0644`、内含私钥路径与口令、已被 `.gitignore` 忽略且 `git ls-files` 确认未入库），以及 `~/.tauri/wbBridge.env`（同样 `0644`）。
+3. 20261001 那把私钥是否还要找回；找回后若要继续用它，`tauri.conf.json` 的 pubkey 已含其公钥，无需改动。
+4. 提交、打标签 `v1.0.2`、推远端、点 Publish——全部由用户决定与执行（本轮所有改动**尚未提交**）。
+
+---
+
 ## v1.0.2 追加：上一节降耗改动的代码复审与修正（2026-10-03，不推进版本号）
 
 复审方式：两个独立 `code-reviewer` 子代理**并行**复审上一节的 7 个改动文件（互不告知对方结论），主 Agent 再对两条 🔴 逐条实读源码确认后落地修正。**只修被查出的缺陷，未做任何重构**。

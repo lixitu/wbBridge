@@ -10,7 +10,7 @@
 
 ## v1.0.2 · 📝 待发布
 
-> **状态**: 📝 待发布（改动在工作区，**尚未提交、尚未打标签**；GUI 未实机启动、`release.yml` 未在 CI 跑过、v1.0.2 的安装包未构建）
+> **状态**: 📝 待发布（改动在工作区，**尚未提交、尚未打标签**；GUI 未实机启动；`release.yml` 于 2026-10-03 **首次实跑、止步于 updater 签名步骤**（私钥变量取到空值，已修接线，完整一轮仍未跑通）；v1.0.2 的安装包未构建）
 > **日期**: 2026-10-02
 > **上一版本**: v1.0.1（远端标签 `v1.0.1` → `679a2cb`，含版本推进提交 `46c7c56`；**本地标签仍指 `f046208`**，同步动作属维护者）
 > **GitHub Release 正文**: [`RELEASE-NOTES-v1.0.2.md`](RELEASE-NOTES-v1.0.2.md)
@@ -46,9 +46,9 @@
 
 - 核心 `cargo test` → **207 通过 / 0 失败**（lib 187 + `js_parity` 11 + `red_lines` 9）；核心 `cargo clippy --all-targets` → **0 warning**（`touch src/lib.rs` 强制重检后仍为 0）。
 - 壳 `cargo test --lib` → **9 通过 / 0 失败**；壳 `cargo clippy --no-deps --all-targets` → **0 warning**（版本改写触发重新检查，无告警）。
-- `npm run test:prefs` → **8 通过 / 0 失败**；`npm run test:manifest` → **9 通过 / 0 失败**；`npx eslint .` → **0 problem**；`npm run vite:build` → ✓ built；`npm run version:check` → 5 处一致（1.0.2）；`release.yml` YAML 解析通过。两组 JS 测试都已接入 CI 的 `test` 作业。
+- `npm run test:prefs` → **8 通过 / 0 失败**；`npm run test:manifest` → **9 通过 / 0 失败**；`npm run test:updater-key` → **9 通过 / 0 失败**（2026-10-03 签名接线轮新增，见下方第六节）；`npx eslint .` → **0 problem**；`npm run vite:build` → ✓ built；`npm run version:check` → 5 处一致（1.0.2）；`release.yml` YAML 解析通过。三组 JS 测试都已接入 CI 的 `test` 作业。
 - 本机签名构建（发生在 `1.0.1` 源码版本上，产物名因此带 `1.0.1`）：`bundle/dmg/WB Bridge_1.0.1_aarch64.dmg`（3,720,766 B）+ `bundle/macos/WB Bridge.app.tar.gz`（3,595,514 B）与配对 `.sig`，key ID 与配置公钥一致；dmg 只读挂载核对、`codesign --verify --deep --strict` 通过（adhoc + hardened runtime，**未公证**）。
-- ❌ **未验证**：GUI 实机启动与面板交互、v1.0.2 的任何安装包、`release.yml` 在 CI 实跑、`latest.json` 发布后被真实客户端消费、一次完整的「检查 → 下载 → 安装 → 重启 → 首启」与失败回滚、`relaunch` 后带新核心的重启、`localStorage` 在真实 WebView 内的行为、Windows/Linux 产物名与签名、GitHub Secrets 是否已配（本机无 `gh`、未联网核验）。
+- ❌ **未验证**：GUI 实机启动与面板交互、v1.0.2 的任何安装包、`release.yml` 在 CI **跑完整一轮**（2026-10-03 首跑已在签名步骤失败并定位，见第六节）、`latest.json` 发布后被真实客户端消费、一次完整的「检查 → 下载 → 安装 → 重启 → 首启」与失败回滚、`relaunch` 后带新核心的重启、`localStorage` 在真实 WebView 内的行为、Windows/Linux 产物名与签名、GitHub Variables 是否已配（本机无 `gh`、未联网核验）。
 
 ### 四、兼容与升级口径
 
@@ -72,9 +72,33 @@
 - 🟠 **修 4（注释与事实不符）**：「合并语义与逐个执行**完全**等价」不成立——订阅者侧等价，但 `lastState` 要到帧末才更新，事件到达与 flush 之间的**同步读取点**（`action()` 里的 `lastState.modelsFile`、`onState()` 的首次回放）会读到旧一帧。按最小改动只更正注释、不改逻辑（影响是极小概率多弹一次文件选择框，下一帧自愈）。
 - 🟡 **修 5（依赖注释的事实修正）**：`base64` 注释的「依赖树里的两份」口径**只对核心 workspace 成立**（实读 `src-tauri/core/Cargo.lock`：0.22.1 ← reqwest、0.23.1 ← hyper-util；壳 workspace 是**三份**，另有一份 0.21.7 ← `swift-rs`），注释已限定范围。「npm registry 回 gzip」本轮**独立复测**（`curl -H 'Accept-Encoding: gzip, br'`）：两白名单源的元数据均 `content-encoding: gzip`，而 tarball（npmjs 直连、npmmirror 的 CDN 目标）均为 `application/octet-stream` 且**不带 content-encoding**——即 brotli 在真实链路上从不被用到，去掉它不影响 sha512 校验语义。另补口径边界：这是**核心 crate 自身**依赖树的收益，壳产物里 brotli 仍会经 `tauri-codegen` 引入，安装包总体积不会因此等量减少。
 - ✅ **复审确认无恙的项**（不再重复怀疑）：`service_down` 分支 emit `core-failed` 后直接 `continue`，故障期间不发 `core-status`，故 FIFO 折叠不会出现「status 洗掉 error」；`EMPTY_RESULT` 共享单例安全（`ModelRow.vue`、`ModelDetails.vue` 对 `props.result` 全为只读取值）；`props.activity || []` **不是冗余**（壳在缺键时会发 `activity: null`，prop 默认值拦不住 null）；两份 Cargo.lock 无多删漏删（核心恰好移除 brotli/brotli-decompressor/alloc-stdlib/alloc-no-stdlib，壳只删 async-compression 的一行引用）；未新增 IPC 命令或事件名、未写 localStorage、未引入外部请求、未推进版本号。
-- ⚠️ **仍无单测的项**：新补的 `status_read_needed_only_skips_when_mtime_is_known` 只覆盖快路径**判定**；`watch_status` 整条循环仍需真实 `AppHandle`，面板帧合并也没有 JS 单测（JS 侧仍只有 `test:prefs` 8 + `test:manifest` 9 两套）。
+- ⚠️ **仍无单测的项**：新补的 `status_read_needed_only_skips_when_mtime_is_known` 只覆盖快路径**判定**；`watch_status` 整条循环仍需真实 `AppHandle`，面板帧合并也没有 JS 单测（JS 侧本轮仍只有 `test:prefs` 8 + `test:manifest` 9 两套；同日稍后的签名接线轮另加 `test:updater-key` 9，见下方第六节）。
 - **验证（2026-10-03 复审后复跑）**：核心 `cargo test` **207 通过 / 0 失败**、壳 `cargo test --lib` **9 通过 / 0 失败**（8 → 9，新增上述快路径判定）、核心与壳 `cargo clippy` **0 warning**、`npm run test:prefs` **8 通过**、`npm run test:manifest` **9 通过**、`npx eslint .` **0 problem**、`npm run vite:build` ✓ built（`dist/assets/index-*.js` 100.87 kB / gzip 37.95 kB）、`npm run version:check` **5 处一致（1.0.2）**。细节见 `docs/validation.md` 2026-10-03 条目与 [`RELEASE-NOTES-v1.0.2.md`](RELEASE-NOTES-v1.0.2.md)。
 - ⚠️ 渲染 / 轮询收益仍需实机确认：GUI 从未启动，rAF 在 WKWebView 中最小化 / `hide()` 下的真实停摆行为未实测。
+
+### 六、2026-10-03 追加（不推进版本号）：updater 签名接线与 CI 首轮失败定位
+
+- **起因**：`release.yml` 首次实跑在签名那步报 `failed to decode secret key: incorrect updater private key password: Missing comment in secret key`。本机用 **14 组形态**复现把 tauri 的解码报错逐条钉到成因，结论：**这句就是「私钥变量取到空值」**，不是口令错（当时私钥只配在 GitHub Secrets，而 build 作业没声明 `environment:`，环境级 Secret 对作业不可见 → 展开成空串）。且因 `createUpdaterArtifacts: true` 时 tauri 要跑完整套 Rust 编译才在打包那步解私钥，一次配置错误要烧十几分钟才暴露。
+- **三项用户决定**：① **就用 9-30 那把旧钥** `~/.tauri/wbBridge-updater.key`（`2B11F78BEA8A43F`，口令非空）；② CI 变量**改用仓库级 Variables** 对齐参考项目 fastenerTradeWorkbench（⚠ 明文值、日志不打码，代价已写进 workflow 顶部注释与两处 wiki，随时可 `vars.`→`secrets.` 换回）；③ **要本地包装脚本**。
+- **由此更正一条既有错误记录**：`AGENTS.md` 与 `docs/wiki/版本与发布.md` 此前称 9-30 钥「密码未知、与现 pubkey 不配对、已弃用」——那是**整串比较 pubkey** 造成的误判。~~`plugins.updater.pubkey` 解开后内嵌**两条**公钥（`126D4E208E0F17BA` / `2B11F78BEA8A43F`，minisign 支持多条＝轮换白名单），本机实测该钥「形态 OK → 配对 OK → **试签 OK**」，**`tauri.conf.json` 无需改动**。~~ ⚠ **本条的「两条公钥＝轮换白名单、无需改配置」结论已于同日（2026-10-03 第二轮）被源码推翻**：`verify_signature` → `PublicKey::decode` 只认 pubkey 的**第一条**，当时配置里其实只有 `126D4E208E0F17BA`（属已消失的 20261001 钥），签名用的却是 `2B11F78BEA8A43F`，于是构建告警 does-not-match、`.sig` 会被客户端判无效；修复＝`pubkey` 改为**仅 `2B11F78BEA8A43F` 一条**，**需要改 `tauri.conf.json`**。详见下方「七」。⚠ 另一把 `wbBridge-updater-20261001.key` 本日发现**已从 `~/.tauri/` 消失**（Agent 全程只读，未删未改；找回与否属用户决策）。
+- **新增签名自检脚本** `scripts/with-updater-key.mjs`（**本地手跑工具，不接入 build 与 CI**，2026-10-03 用户决定）：取值（**进程环境 > `.env.local` > `.env`**，逐项独立回落、逐项打印来源，`~/…` 展开，显式空口令压过文件）→ ① 形态（单行 base64、解出首行须是 `untrusted comment`）② 同目录 `.pub` 的 key ID 必须在配置白名单内（不在即**失败关闭**）③ **真跑一次 `tauri signer sign`**（`mkdtemp` 临时目录、签完即删，钥与口令只经环境传子进程、不进 argv、不打印）→ 全过才 exec `tauri build`；`--check-only` 只前置不构建。`npm run build` 保持 `vite:build && tauri build`（前置脚本为本地手跑工具，不接入 build 与 CI，2026-10-03 用户决定）。
+- **CI 改动**：三个 build 作业的签名变量 `secrets.` → `vars.`（`GITHUB_TOKEN` 不变）；test 作业那一步扩为三组 `node --test`；顶部注释整段重写（含 Variables 的明文代价、口令非空、两条 key ID 白名单、空值→`Missing comment` 的映射）。⚠ 曾给三个 build 作业在 `npm ci` 之后各加一步「前置校验 updater 私钥」跑 `--check-only`，**同日按用户决定撤除**——CI 不再校验私钥，脚本留作本地自检。
+- **新测试** `npm run test:updater-key`（`node --test`，**9 通过 / 0 失败**）：钉住取值优先级 / 显式空口令 / `~` 展开 / 四类非法形态 / key ID 解析 / 配对失败关闭 / 四条报错→成因映射 / **CLI 相对路径下确实执行**且空值与路径型私钥在试签前退出 1（**报错不回显密钥**）/ `release.yml` 与 `package.json` 的接线。**不联网、不调 tauri CLI、不碰真实私钥**。
+- **写脚本过程中查出并修掉的自身缺陷**（全部补了单测）：入口守卫 `file://${argv[1]}` 在**相对调用**下永不成立（→ `--help` 静默无输出、退出 0，等于前置没跑）；`.env` 与 `.env.local` **优先级写反**；不展开 `~` 导致本地 `.env.local` 的路径形式被误判「形态不对」；私钥与口令**来源混搭**时只报「口令不对」无法归因（→ 逐项打印来源）；key ID 断言过严（配置里那条实为 **15 位**十六进制，minisign 不补前导零）。
+- **本轮真实执行**：`test:updater-key` **9 通过**、`test:prefs` **8**、`test:manifest` **9**、核心 `cargo test` **207 通过 / 0 失败**（Rust 未改动，复跑确认未破坏）、壳 `cargo test --lib` **9**、`npx eslint .` **0 problem**、`npm run vite:build` ✓ built、`npm run version:check` **5 处一致（1.0.2）**、`release.yml` YAML 解析通过，且三个 build 作业步骤里**都不含**私钥前置步骤（撤除后复验）。**前置本身用真 minisign 跑过**：一次性新钥 inline ⇒「配对跳过 + 告警 → 试签 OK → 退出 0」；同钥路径形式 ⇒「key ID 不在白名单 → 退出 1」；真实 9-30 钥（回落仓库 `.env.local`）⇒「配对 OK → 试签 OK → 退出 0」。
+- ❌ **仍未验证**：改完的 `release.yml` **没有在 CI 跑第二轮**（`vars.` 切换、配好变量后整条 `tauri build` 能否签出可被客户端验签的 `.sig`；私钥配置错误在 CI 里仍要等到打包那一步才暴露，因为已不设前置）；「试签 OK」只证明**这把钥 + 这个口令可用**，不等于产物签名已被验证。「待用户操作」清单（配 GitHub 仓库级 Variables 的私钥全文与非空口令、是否 `chmod 600 .env.local`、是否找回 20261001 钥、提交与打标签）见 `docs/validation.md` 同日条目。
+
+### 七、2026-10-03 追加（不推进版本号）：签名注入链路重写 + 单条公钥 + hdiutil dmg
+
+> 同日第二轮，**重写并部分更正**上方「六」的签名链路。「六」按「历史只增不改」保留原样，其被推翻处（两条公钥＝轮换白名单）已在该节就地标注作废。
+
+- **`scripts/with-updater-key.mjs` 从「本地手跑的签名自检工具」重写为 `npm run tauri:build` 的签名注入包装器**：`npm run tauri:build` = `node scripts/with-updater-key.mjs tauri build`、`npm run build` = `vite:build && tauri:build && make:dmg`，**已接入 build 与 CI**。取值优先级扩为 **进程环境 > 仓库 `.env.local` > `.env` > `~/.tauri/wbBridge.env` > `~/.tauri/wbBridge-updater.env` > 兜底 `~/.tauri/wbBridge-updater.key`**（逐项打印来源、`~` 由脚本展开、显式空口令压过文件）；把 `.key` 路径读成内联全文并 trim 注入 `TAURI_SIGNING_PRIVATE_KEY`（删互斥的 `_PATH`）、明文钥显式置空口令，再 exec 目标命令。**`--check-only` 与「形态→配对→试签」前置全部撤除**，不判形态、不试签、配对不符只告警不阻断；早前的 `resolveKey`/`checkKeyShape`/`configuredKeyIds`/`readConfiguredKeyIds`/`checkPairing`/`classifySignerError`/`dryRunSign` 导出删除。
+- 🔴 **关键更正（推翻「六」）**：`plugins.updater.pubkey` 并非「两条公钥＝轮换白名单」——实读 `tauri-plugin-updater` 2.13 `verify_signature()` → `minisign-verify` 0.2.5 `PublicKey::decode()`，**只有第一条生效**，后面的公钥框被静默丢弃。当时配置里其实只有 `126D4E208E0F17BA`（已消失的 20261001 钥），签名用的是 `2B11F78BEA8A43F`，于是告警 does-not-match、`.sig` 客户端验签必失败。修复＝`pubkey` 现**只嵌 `2B11F78BEA8A43F`**，**改了 `tauri.conf.json`**。规则：换钥必须同一次发布同步换 pubkey，老客户端只认内嵌那条。本次替换**不锁死任何已发布版本**（v1.0.0 / v1.0.1 都早于 updater 接线，`126D4E208E0F17BA` 从未进入交付的二进制；v1.0.2 是第一个带更新通道的产物）。
+- **macOS `.dmg` 改由 hdiutil**：`bundle.targets` 从 `"all"` 改显式 `["app","nsis","msi","appimage","deb"]`；`npm run make:dmg`（`scripts/make-dmg.sh`，`hdiutil create -format UDZO`，架构取 `TARGET_TRIPLE` 前缀、非 mac 跳过）→ `bundle/dmg/<productName>_<version>_<arch>.dmg`。原因：Tauri 的 create-dmg 末尾用 AppleScript，无 GUI 的 CI runner 会失败。
+- **CI**：撤除 `tauri-apps/tauri-action`；build 作业跑 `npm run tauri:build -- --target <triple>`（macOS 另加 `make:dmg` + 补架构后缀改名）；Release 由 `softprops/action-gh-release` 建、`tag_name` 现读 `tauri.conf.json`；签名变量取仓库级 **Variables**（明文值，工作流绝不 echo，`vars.`→`secrets.` 即可换回），**不设私钥前置步骤**。
+- **测试基线**：`npm run test:updater-key` 由 9 → **13** 用例（钉住注入语义与接线断言），三组 JS 套件合计 **30**（prefs 8 + manifest 9 + updater-key 13），Rust 基线不变（核心 207、壳 9）；CI test 步骤改名「运行面板偏好、更新清单与签名注入单测」。
+- **本轮真实执行（2026-10-03）**：零环境变量下 `npm run tauri:build -- --bundles app` **退出 0**（从 `.env.local` 取私钥路径 + 口令，打印「已注入内联签名私钥（来自 `wbBridge-updater.key`）→ 公钥配对 OK（`2B11F78BEA8A43F`）→ 加密态私钥 + 已提供口令」），产 `bundle/macos/WB Bridge.app.tar.gz`（3,596,811 B）+ `.sig`（428 B，逐字节解出的签名者 key ID = `2B11F78BEA8A43F` = 配置唯一那条）；`npm run make:dmg` 产 `bundle/dmg/WB Bridge_1.0.2_aarch64.dmg`（约 3.9 MB，只读挂载含 `WB Bridge.app` + `Applications`，`codesign --verify --deep --strict` 通过、adhoc / 无 TeamID）；`test:updater-key` **13**、`test:prefs` **8**、`test:manifest` **9**、核心 `cargo test` **207**、壳 `cargo test --lib` **9**、`eslint` **0 problem**、`vite:build` ✓、`version:check` **5 处一致（1.0.2）**、`release.yml` YAML 解析通过、`bash -n scripts/make-dmg.sh` 干净。告警甄别：`Warn skipping app notarization…`＝预期（ad-hoc、无公证凭据），pubkey does-not-match **已消失**，macOS 27 的 hdiutil `deprecated…use diskutil image` 只是警告。
+- ❌ **仍未验证**：完整 CI 一轮（六平台 + `latest.json` + 一次真实升级）、Windows/Linux 产物名与签名、发布后 `latest.json` 的下载安装、`relaunch()` 后带更新核心的重启、GUI 实机启动。版本保持 **1.0.2**（本轮为签名/发布链路与文档重写，未引入新功能根因，不推进版本号）。
 
 ---
 

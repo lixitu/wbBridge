@@ -36,9 +36,9 @@ WB Bridge 是一个**跨平台托盘应用**（Tauri 2 桌面壳 + 同进程内�
 | `cargo clippy`（核心 `--all-targets` / 壳 `--no-deps`） | 0 warning |
 | 产品版本 | **1.0.2**（唯一来源：根 `package.json`；`npm run version:check` 5 处落点一致） |
 | 实际启动 GUI 并操作托盘与面板 | **未实测**（仅编译、独立核心冒烟、面板在浏览器引擎内经 CDP 实测） |
-| 迁移后产出安装包 | 仅 **macOS aarch64** 曾在本机产出（`1.0.1` 源码版本的 dmg，未运行 `.app`）；**v1.0.2 产物尚未构建**，其余五平台只能由 CI 产出 |
-| `.github/workflows/release.yml` 在 CI 跑通 | **未跑通**（仅做过本地 YAML 结构校验） |
-| 代码签名 / 公证 | 未做（macOS 为 ad-hoc 签名） |
+| 迁移后产出安装包 | 仅 **macOS aarch64** 曾在本机产出。2026-10-03 按 `npm run build` 的三环节跑通：updater 包 `WB Bridge.app.tar.gz`（3,596,811 B）+ 配对 `.sig`（428 B，签名者 key ID = 配置 pubkey 那条 `2B11F78BEA8A43F`），`.dmg` 由 `npm run make:dmg`（hdiutil）产出 `WB Bridge_1.0.2_aarch64.dmg`（约 3.9 MB，只读挂载核对 + `codesign --verify --deep --strict` 通过，**未运行 `.app`、未公证**）。其余五平台只能由 CI 产出 |
+| `.github/workflows/release.yml` 在 CI 跑通 | ⚠ **2026-10-03 首次实跑，止步于 updater 签名步骤**（私钥变量取到空值）；签名变量改走仓库级 **Variables**，构建改走 `npm run tauri:build`（签名注入包装器）+ `npm run make:dmg`，**不再用 `tauri-apps/tauri-action`**，Release 由 `softprops/action-gh-release` 以现读配置的 `tag_name: v<版本>` 创建（CI 不设私钥前置校验步骤）。六平台产物 + `latest.json` 的完整一轮**仍未跑通** |
+| 代码签名 / 公证 | 未做（macOS 为 ad-hoc 签名，构建期那条 `Warn skipping app notarization …` 属**预期**） |
 
 完整清单见[已知限制与未验证项](已知限制与未验证项)。
 

@@ -14,13 +14,13 @@
 
 | 系统 | 状态 | 安装包 |
 |---|---|---|
-| macOS 10.15+（Apple Silicon） | 迁移前（Node sidecar 版）已本机构建并冒烟；Rust 版尚未产出过安装包，GUI 未实机启动 | `WB Bridge_1.0.1_aarch64.dmg`（待重新构建） |
+| macOS 10.15+（Apple Silicon） | Rust 版已本机产出 1.0.2 的 dmg 与 updater 包（2026-10-03，hdiutil 生成），GUI 未实机启动 | `WB Bridge_1.0.2_aarch64.dmg`（本机 `npm run make:dmg` 产出） |
 | Windows 10/11 x64 | CI 构建，待实机验证 | `WB Bridge_1.0.1_x64-setup.exe` |
 | Linux x64 | CI 构建，待实机验证 | `.AppImage` / `.deb` |
 
 推送 `v*` 标签后 GitHub Actions 自动构建六平台（macOS ARM/Intel、Windows x64/ARM、Linux x64/ARM）安装包并发布 Release。
 
-> ⚠ 如实说明：核心 Rust 化后重写的 `.github/workflows/release.yml` **从未在 CI 上实际运行过**，目前只在本地做过 YAML 结构校验；下表与上文的历史构建结论均属迁移前记录。
+> ⚠ 如实说明：核心 Rust 化后重写的 `.github/workflows/release.yml` **首次实跑发生在 2026-10-03，止步于 updater 签名步骤**（私钥变量取到空值）；签名变量随后改走仓库级 **Variables**，构建改走 `npm run tauri:build`（`scripts/with-updater-key.mjs` 的**签名注入包装器**，已接入 build 与 CI）+ `npm run make:dmg`（hdiutil），**不再用 `tauri-apps/tauri-action`**、CI **不设**私钥前置校验步骤，六平台产物 + `latest.json` 的**完整一轮仍未跑通**；下表与上文的历史构建结论均属迁移前记录。
 
 ### macOS 首次打开
 
@@ -41,19 +41,24 @@ xattr -dr com.apple.quarantine "/Applications/WB Bridge.app"
 
 ## 从源码构建
 
-依赖：Rust stable（壳 `rust-version = 1.77`、核心 `1.75`）、Node.js **24+**（`engines.node >= 24`，**只**用于 Vite 构建面板与两个版本号脚本）、各平台 Tauri 系统依赖（Linux 需 webkit2gtk 等）。
+依赖：Rust stable（壳 `rust-version = 1.77`、核心 `1.75`）、Node.js **24+**（`engines.node >= 24`，**只**用于 Vite 构建面板与仓库根的 `scripts/*.mjs` 脚本，核心运行不依赖它）、各平台 Tauri 系统依赖（Linux 需 webkit2gtk 等）。
 
 ```sh
 npm install
 npm test             # 核心测试：cargo test --manifest-path src-tauri/core/Cargo.toml（207 项 = 187 单测 + 11 JS 对拍 + 9 红线）
+npm run test:prefs   # 面板偏好单测（node --test，8 项，不联网）
+npm run test:manifest# 更新清单生成单测（node --test，9 项，用临时产物目录跑真脚本）
+npm run test:updater-key # 签名注入单测（node --test，13 项，不碰 ~/.tauri）
 npm run rust:check   # cargo check 核心
 npm run lint         # eslint .（面板）
 cargo clippy --all-targets --manifest-path src-tauri/core/Cargo.toml   # 核心门禁：0 warning
 cargo clippy --no-deps --manifest-path src-tauri/Cargo.toml     # 壳门禁：0 warning
 npm run dev          # 开发运行（tauri dev，构建期由 beforeDevCommand 拉起 vite:dev）
-npm run build        # 桌面应用构建（vite:build && tauri build，产物在 src-tauri/target/release/bundle/）
+npm run build        # 桌面应用构建（vite:build && tauri:build && make:dmg；tauri:build = node scripts/with-updater-key.mjs tauri build 的签名注入包装器，产物在 src-tauri/target/*/release/bundle/）
 npm run version:check # 校验 5 处版本号落点一致
 ```
+
+> ⚠ 自己从源码构建时需要 updater 签名私钥：`tauri.conf.json` 打开了 `bundle.createUpdaterArtifacts`，构建入口 `npm run build` = `vite:build && tauri:build && make:dmg`，其中 `npm run tauri:build` = `node scripts/with-updater-key.mjs tauri build`（2026-10-03 完全对齐参考项目后的写法）。该包装器**只做签名注入、不做前置校验**：按「进程环境 > 仓库 `.env.local` > `.env` > `~/.tauri/wbBridge.env`、`~/.tauri/wbBridge-updater.env` > 兜底 `~/.tauri/wbBridge-updater.key`」汇齐私钥与口令（逐项打印来源文件名、`~/` 由脚本展开、显式空口令压过文件），把 `.key` 路径读成内联全文注入 `tauri build` 只认的 `TAURI_SIGNING_PRIVATE_KEY`（并删掉与之互斥的 `_PATH`），然后 exec 目标命令。它**不判形态、不试签、公私钥配对不符也只告警不阻断**，全程只输出来源与公开的 key ID、绝不回显密钥与口令；拿不到私钥时，要等整套 Rust 编译跑完才在打包那一步失败。自己签就生成一把（`npm run tauri -- signer generate -p '' -w ~/.tauri/my.key`）并把 `plugins.updater.pubkey` 换成自己的公钥——**配置里只有一条公钥、`verify_signature` 也只认第一条**（此前「拼两条＝轮换白名单」的说法已被源码推翻），换钥必须同步换 pubkey，否则产物的 `.sig` 与配置公钥不配对、客户端验签必失败；只是想出安装包不要更新链，可临时关掉 `createUpdaterArtifacts`。细节见[版本与发布](docs/wiki/版本与发布.md)。
 
 核心也可脱离桌面壳单独运行（同一份编排代码）：
 
@@ -78,10 +83,10 @@ src/            控制面板（Vue 3 + Vite：index.html / main.js / App.vue）
 src/styles/     面板全局样式
 dist/           Vite 构建产物（tauri.conf.json 的 frontendDist）
 src-tauri/      Tauri 2 壳：窗口/托盘/核心生命周期/IPC 命令/状态推送（bundle.externalBin 为空）
-scripts/        仅版本号脚本（bump-version.mjs / check-version.mjs）
+scripts/        构建/发布辅助脚本（bump-version.mjs / check-version.mjs 版本号，gen-latest-json.mjs 更新清单，with-updater-key.mjs 是 tauri:build 的签名注入包装器〔已接入 build 与 CI，只注入不前置校验〕，make-dmg.sh 用 hdiutil 出 macOS 的 .dmg）
 vite.config.js  前端构建配置（root: src，outDir: ../dist，dev 端口 41990）
 docs/           验证记录（validation.md）、版本日志（version/）、接口契约（contract.md）、上游调研（research/）
-.github/        CI（release.yml：核心测试 + 三平台六架构构建；迁移后尚未实际运行）
+.github/        CI（release.yml：核心测试 + 三平台六架构构建；2026-10-03 首次实跑止步于签名步骤，完整一轮仍未跑通）
 ```
 
 ## 与上游实现（Electron 版）的差异

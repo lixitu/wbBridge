@@ -32,20 +32,64 @@
 #       Windows *-setup.exe(.sig)（MSI 不参与更新）
 #       Linux   官方文档写 *.AppImage(.sig)；bundler 是否额外打一层 *.AppImage.tar.gz
 #               只能等首次 CI 跑出来核对，生成脚本对两种形态都接受（同时带签名时取 .tar.gz 并告警）。
-#   • 签名私钥走 GitHub Secrets：TAURI_SIGNING_PRIVATE_KEY（**内联私钥全文**）
-#     与 TAURI_SIGNING_PRIVATE_KEY_PASSWORD；公钥内嵌 src-tauri/tauri.conf.json 的
-#     plugins.updater.pubkey（当前 key ID 126D4E208E0F17BA，2026-10-01 新生成的 wbBridge 专用钥）。
-#     **私钥绝不入库、不进日志。**
-#     ⚠ 实测（本机 1.0.1 / tauri-cli 2.12）：`tauri build` **只读 TAURI_SIGNING_PRIVATE_KEY**
-#     （值可以是私钥全文，也可以是私钥文件路径）；TAURI_SIGNING_PRIVATE_KEY_PATH 只对
-#     `tauri signer sign` 生效。未配置该 Secret 时 createUpdaterArtifacts 会让构建直接失败，
-#     而不是静默产出一批没有 .sig 的更新包。
-#   • latest.json 由末尾的 update-manifest 作业单点生成（scripts/gen-latest-json.mjs）。
-#     tauri-action 自己也会有感生成一份（includeUpdaterJson），但那是 6 个并发作业各写一次，
-#     两台 macOS runner 几乎同时收尾时清单会静默漏掉一个平台，故显式关掉。
+#   • 签名链路（2026-10-03 完全对齐参考项目 fastenerTradeWorkbench / lockPass）：
+#       构建一律走 `npm run tauri:build` = `node scripts/with-updater-key.mjs tauri build`。
+#       包装器**只做注入、不做前置校验**（不判形态、不试签、不因配对不符挡住构建）：
+#       按「进程环境 → 仓库 .env.local / .env → ~/.tauri/wbBridge.env、~/.tauri/wbBridge-updater.env
+#       → 兜底 ~/.tauri/wbBridge-updater.key」汇齐私钥与口令，把路径形式读成内联全文
+#       （`tauri build` 只认 TAURI_SIGNING_PRIVATE_KEY；内联与 TAURI_SIGNING_PRIVATE_KEY_PATH 互斥，
+#       注入后删掉后者），明文私钥则**显式**置空口令（否则无 TTY 时 CLI 会交互式询问并以
+#       「Device not configured (os error 6)」失败）。私钥与口令全程不打印，只输出来源文件名与公开的 key ID。
+#   • 私钥走 GitHub **Repository Variables**（不是 Secrets）：vars.TAURI_SIGNING_PRIVATE_KEY
+#     （**内联私钥全文**）与 vars.TAURI_SIGNING_PRIVATE_KEY_PASSWORD；公钥内嵌
+#     src-tauri/tauri.conf.json 的 plugins.updater.pubkey。
+#     ⚠ 2026-10-03 按用户决定对齐参考项目改用 Variables，代价如实记录在这里：Variables 是
+#       **明文可见**的（Settings → Environments/Variables 页面直接显示值，日志里也**不会**像
+#       Secrets 那样被自动打码）。因此本工作流**绝不得**把这两个变量 echo / 打印 /
+#       写进 $GITHUB_STEP_SUMMARY。私钥仍绝不入库。想换回 Secrets 只需把下面的 vars. 改回
+#       secrets.，包装器与命令都不用动。
+#     ⚠ 口令必须真的填进变量：当前这把钥（~/.tauri/wbBridge-updater.key，2026-09-30 生成）
+#       **带口令**，口令留空即「Wrong password for that key」。
+#     ⚠ 变量取到**空值**时 tauri 报「failed to decode secret key: incorrect updater private key
+#       password: Missing comment in secret key」——这句看着像口令错，实际是空值（本机 14 组形态复现
+#       钉死了这个映射），而且它要等整套 Rust 编译跑完、在打包那一步才炸。
+#       ⚠ 2026-10-03 用户决定：**不在 CI 里设私钥前置校验步骤**（私钥与口令是否在位由维护者自行确认）。
+#       未配置该变量时 createUpdaterArtifacts 会让构建直接失败，而不是静默产出一批没有 .sig 的更新包。
+#   • pubkey 里只有**一条**公钥，且必须是签这批 .sig 的那把（当前 key ID 2B11F78BEA8A43F）：
+#       2026-10-03 实读 tauri-plugin-updater 2.13 与 minisign-verify 0.2.5 的源码，纠正了此前写进文档的
+#       错误结论——客户端 verify_signature 走**单个** PublicKey::decode，它只读解码文本的前两行，
+#       所以「把两把公钥拼进同一个 pubkey」**不等于**轮换白名单，只有第一条生效。此前提交在配置里的
+#       **只有** 126D4E208E0F17BA 一条（属已丢失的 20261001 那把钥），而签名用的是 2B11F78BEA8A43F，
+#       于是 `tauri build` 打「The updater secret key from TAURI_SIGNING_PRIVATE_KEY does not match the
+#       public key from plugins > updater > pubkey」，且这样签出的 .sig 客户端必判无效。
+#       修复 = 把 pubkey 换成真正签名那把的公钥（已完成）。**换钥必须同步换 pubkey**，
+#       且已发布的老客户端只认它自己内嵌的那条——所以换钥只能配一次「老版本还能收到最后一次更新」的发布。
+#       ✅ 本次替换不影响任何已发布版本：v1.0.0 / v1.0.1 两个标签都**早于 updater 接线**
+#         （v1.0.1 的 tauri.conf.json 无 plugins.updater、Cargo.toml 无 tauri-plugin-updater、
+#          无 createUpdaterArtifacts），126D4E208E0F17BA 从未进入交付给用户的二进制。
+#   • macOS 的 .dmg 由 scripts/make-dmg.sh 用 **hdiutil** 生成（`npm run make:dmg`；CI 里给它
+#     TARGET_TRIPLE 以选中对应 target 目录下的 bundle）：Tauri 自带的 create-dmg 末尾要用 AppleScript
+#     美化窗口，在无 GUI / 无 Finder 自动化授权的 CI 上会失败，所以 bundle.targets 已不含 dmg，
+#     改为显式列表 ["app","nsis","msi","appimage","deb"]（本平台不适用的目标由打包器跳过）。
+#   • 构建时那条「Warn skipping app notarization, no APPLE_ID & APPLE_PASSWORD & APPLE_TEAM_ID
+#     or APPLE_API_KEY & APPLE_API_ISSUER & APPLE_API_KEY_PATH environment variables found」
+#     属**预期、无需修**：本项目是 ad-hoc 签名（tauri.conf.json 的 bundle.macOS.signingIdentity "-"）、
+#     没有 Developer ID 证书也没有公证凭据，两个参考项目同样带着这条警告出货。
+#   • latest.json 由末尾的 update-manifest 作业**单点**生成（scripts/gen-latest-json.mjs）：
+#     三个 build 作业只跑 `tauri build` 产出 bundle 与 .sig，谁都不写清单，
+#     不会出现「6 个并发写者互相覆盖、静默漏平台」。
+#   • Release 现在由 softprops/action-gh-release 创建（2026-10-03 起不再用 tauri-action）：
+#     各作业的 tag_name / release_name 都由「读取版本号」步骤现读 src-tauri/tauri.conf.json 拼成
+#     v<版本>，所以 workflow_dispatch 勾选 create_release 时也不会把分支名当标签开出第二个 Release。
 #   • Draft 未 Publish 前 releases/latest/download/latest.json 返回 404 属预期：
 #     更新通道只在人工点完「Publish release」之后生效。
-#   • ⚠ 本工作流自「移除 Node 核心」改造后尚未在 CI 上实际跑通，描述以脚本内容为准。
+#   • ⚠ 本工作流自「移除 Node 核心」改造后**从未完整跑通一轮**：2026-10-03 首次实跑止步于 build 作业的
+#     updater 签名步骤（私钥变量取到空值）；六平台产物与 latest.json 的实际形态仍以脚本内容为准、待首跑核对。
+#     ✅ 同日已在**本机**把该链路等价跑通（非 CI）：`tauri:build -- --bundles app` 退出 0 产出
+#     `WB Bridge.app.tar.gz`(3,596,811 B) + `.sig`(428 B，签名者 key ID 逐字节解出 = 2B11F78BEA8A43F =
+#     配置 pubkey 那条)，`make:dmg` 产出 `WB Bridge_1.0.2_aarch64.dmg`（只读挂载含 app + Applications，
+#     codesign --verify --deep --strict 通过）。仍未验证的仍然是：CI 上 Variables 取到的值、其余五平台产物名、
+#     latest.json 落到真实 Release 后的下载与升级。
 # ═══════════════════════════════════════════════════════════════════
 
 name: Release Build (Tauri)
@@ -93,20 +137,26 @@ jobs:
         # package.json / tauri.conf.json / Cargo.toml / AGENTS.md 必须同一版本。
         run: node scripts/check-version.mjs
 
-      - name: 运行面板偏好与更新清单单测
-        # 两组都是 node --test、只用 node 内置模块（不引测试框架、不需要 npm ci）：
+      - name: 运行面板偏好、更新清单与签名注入单测
+        # 三组都是 node --test、只用 node 内置模块（不引测试框架、不需要 npm ci，也不碰真实私钥）：
         #   • src/core/prefs.test.js —— 凭据字段进不了 localStorage、坏数据回落默认值；
         #   • scripts/gen-latest-json.test.mjs —— latest.json 唯一写者的缺平台/缺签名/
         #     mac 漏架构后缀/歧义产物四类失败路径（这些错误 otherwise 只有用户装上才暴露）。
+        #   • scripts/with-updater-key.test.mjs —— `npm run tauri:build` 的签名注入器（取值优先级、
+        #     路径读成内联全文并删掉互斥的 _PATH、明文钥显式置空口令、只告警的首条公钥配对、
+        #     命令拼装契约），并断言接线：package.json 的 tauri:build 确实经本脚本、本工作流把私钥读成
+        #     vars.（而非取不到值的环境 Secret）且确实调用 npm run tauri:build、配置里只有一条生效公钥。
+        #     ⚠ 只测纯函数与接线，不读 ~/.tauri、不试签、不执行构建。
         run: |
           node --test src/core/prefs.test.js
           node --test scripts/gen-latest-json.test.mjs
+          node --test scripts/with-updater-key.test.mjs
 
       - name: 校验触发标签与源码版本一致
         # 上一项只比对「同一提交内 5 处落点互相一致」，因此标签指向一份全体为旧版本的
         # 提交时它照样通过 —— v1.0.1 就是这样产出了 WB Bridge_1.0.0_aarch64.dmg，而且那个
         # 安装包不含最近 4 个提交。这里补上唯一能抓住该错误的闸门。
-        # 版本还会决定 tauri-action 的 tagName: v__VERSION__，不一致就会同时开出两个 Release。
+        # 版本还决定各作业上传 Release 时用的标签名（v<conf 版本>），不一致就会开出两个 Release。
         # workflow_dispatch 时 GITHUB_REF_NAME 是分支名，不参与比较，故只在推标签时运行。
         if: github.event_name == 'push'
         run: |
@@ -119,7 +169,7 @@ jobs:
           fi
           echo "标签与源码版本一致，可继续构建。"
 
-  # ── macOS：.app + .dmg（ad-hoc 签名）────────────────────────────
+  # ── macOS：.app（tauri）+ .dmg（hdiutil，ad-hoc 签名）──────────────
   build-macos:
     name: macOS (${{ matrix.arch }})
     needs: test
@@ -155,22 +205,24 @@ jobs:
         run: npm ci
 
       - name: 构建 Tauri 应用
-        uses: tauri-apps/tauri-action@v0
+        # 走 npm run tauri:build（= `node scripts/with-updater-key.mjs tauri build`），由包装器把私钥
+        # 归一成 tauri build 只认的内联 TAURI_SIGNING_PRIVATE_KEY。--bundles app 是因为 .dmg 改由
+        # 下一步的 hdiutil 生成（Tauri 的 create-dmg 走 AppleScript，无 GUI 的 runner 上会失败）。
+        # CI 里私钥与口令由 Repository Variables 透传；没配或取到空值时 createUpdaterArtifacts
+        # 会让构建在那一步失败，而不是静默产出一批没有 .sig 的更新包。
+        # ⚠ 变量是明文值、日志不打码，所以这里只透传，绝不 echo。
+        run: npm run tauri:build -- --target ${{ matrix.arch }} --bundles app
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # updater 私钥（内联全文）；未配置时 createUpdaterArtifacts 会让构建直接失败，
-          # 而不是静默产出一批没有签名的产物。
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          args: --target ${{ matrix.arch }}
-          tagName: v__VERSION__
-          releaseName: 'WB Bridge v__VERSION__'
-          releaseBody: 'WB Bridge — 让 WorkBuddy 使用 OpenCode 免费模型。'
-          releaseDraft: true
-          prerelease: false
-          # 清单交给末尾的 update-manifest 作业单点写，避免 6 个并发作业互相覆盖。
-          includeUpdaterJson: false
+          TAURI_SIGNING_PRIVATE_KEY: ${{ vars.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ vars.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: 生成 .dmg（hdiutil，CI 可用）
+        # 产物 src-tauri/target/<triple>/release/bundle/dmg/WB Bridge_<version>_<arch>.dmg。
+        # TARGET_TRIPLE 必须传：交叉目标时 uname -m 反映的是 runner 架构，会拿错 bundle 目录、
+        # 并把 x86_64 的包标成 aarch64。
+        run: npm run make:dmg
+        env:
+          TARGET_TRIPLE: ${{ matrix.arch }}
 
       - name: 给 macOS 更新包补架构后缀
         # 实测：tauri 产出的 updater 包叫「WB Bridge.app.tar.gz」，既不带版本也不带架构，
@@ -201,6 +253,13 @@ jobs:
           done
           echo "本次补架构后缀（arch=${arch}）的 updater 包：${renamed} 个。"
 
+      - name: 读取版本号（Release 标签名）
+        # softprops 默认把触发引用当标签名：workflow_dispatch 时那是**分支名**，会凭空建出一个
+        # 名为 dev 的标签与 Release。这里现读配置版本拼出 v<版本>，推 tag 时与已有标签同名、无副作用。
+        id: ver
+        shell: bash
+        run: echo "version=$(node -p "require('./src-tauri/tauri.conf.json').version")" >> "$GITHUB_OUTPUT"
+
       - name: 打印产物名（上传前留痕，供人工核对资产名 = tag 版本）
         # find 用 BSD/GNU 都支持的写法（macOS runner 上没有 GNU find 的 -printf）。
         shell: bash
@@ -217,11 +276,9 @@ jobs:
           if-no-files-found: warn
           path: |
             src-tauri/target/${{ matrix.arch }}/release/bundle/**/*.dmg
-            src-tauri/target/${{ matrix.arch }}/release/bundle/**/*.app
             src-tauri/target/${{ matrix.arch }}/release/bundle/**/*.app.tar.gz
             src-tauri/target/${{ matrix.arch }}/release/bundle/**/*.sig
             src-tauri/target/release/bundle/**/*.dmg
-            src-tauri/target/release/bundle/**/*.app
             src-tauri/target/release/bundle/**/*.app.tar.gz
             src-tauri/target/release/bundle/**/*.sig
 
@@ -229,12 +286,15 @@ jobs:
         if: github.event_name == 'push' || inputs.create_release == true
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          release_name: WB Bridge v${{ steps.ver.outputs.version }}
+          body: WB Bridge — 让 WorkBuddy 使用 OpenCode 免费模型。
           draft: true
+          prerelease: false
           generate_release_notes: true
           # 更新包与 .sig 必须进 Release：latest.json 里的 url 指的就是这些资产。
           files: |
             src-tauri/target/**/release/bundle/**/*.dmg
-            src-tauri/target/**/release/bundle/**/*.app
             src-tauri/target/**/release/bundle/**/*.app.tar.gz
             src-tauri/target/**/release/bundle/**/*.sig
 
@@ -274,22 +334,21 @@ jobs:
         run: npm ci
 
       - name: 构建 Tauri 应用
-        uses: tauri-apps/tauri-action@v0
+        # 走 npm run tauri:build（= `node scripts/with-updater-key.mjs tauri build`），由包装器把私钥
+        # 归一成 tauri build 只认的内联 TAURI_SIGNING_PRIVATE_KEY；口令缺失时包装器只告警，
+        # 真正的失败仍由打包器给出。
+        # bundle.targets 里的 app/dmg/appimage/deb 在本平台不适用，由打包器自行跳过。
+        # ⚠ 变量是明文值、日志不打码，所以这里只透传，绝不 echo。
+        run: npm run tauri:build -- --target ${{ matrix.arch }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # updater 私钥（内联全文）；未配置时 createUpdaterArtifacts 会让构建直接失败，
-          # 而不是静默产出一批没有签名的产物。
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          args: --target ${{ matrix.arch }}
-          tagName: v__VERSION__
-          releaseName: 'WB Bridge v__VERSION__'
-          releaseBody: 'WB Bridge — 让 WorkBuddy 使用 OpenCode 免费模型。'
-          releaseDraft: true
-          prerelease: false
-          # 清单交给末尾的 update-manifest 作业单点写，避免 6 个并发作业互相覆盖。
-          includeUpdaterJson: false
+          TAURI_SIGNING_PRIVATE_KEY: ${{ vars.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ vars.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: 读取版本号（Release 标签名）
+        # 与 macOS 作业同因：不让 softprops 在 workflow_dispatch 时把分支名当标签。
+        id: ver
+        shell: bash
+        run: echo "version=$(node -p "require('./src-tauri/tauri.conf.json').version")" >> "$GITHUB_OUTPUT"
 
       - name: 打印产物名（上传前留痕，供人工核对资产名 = tag 版本）
         shell: bash
@@ -313,7 +372,11 @@ jobs:
         if: github.event_name == 'push' || inputs.create_release == true
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          release_name: WB Bridge v${{ steps.ver.outputs.version }}
+          body: WB Bridge — 让 WorkBuddy 使用 OpenCode 免费模型。
           draft: true
+          prerelease: false
           generate_release_notes: true
           # NSIS 安装包 + .sig 是更新链路的资产；MSI 只给人工安装用，不参与 updater。
           files: |
@@ -362,22 +425,20 @@ jobs:
         run: npm ci
 
       - name: 构建 Tauri 应用
-        uses: tauri-apps/tauri-action@v0
+        # 走 npm run tauri:build（= `node scripts/with-updater-key.mjs tauri build`），由包装器把私钥
+        # 归一成 tauri build 只认的内联 TAURI_SIGNING_PRIVATE_KEY。make:dmg 在本平台是空跳过，
+        # 所以这里不需要额外一步。
+        # ⚠ 变量是明文值、日志不打码，所以这里只透传，绝不 echo。
+        run: npm run tauri:build -- --target ${{ matrix.arch }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # updater 私钥（内联全文）；未配置时 createUpdaterArtifacts 会让构建直接失败，
-          # 而不是静默产出一批没有签名的产物。
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          args: --target ${{ matrix.arch }}
-          tagName: v__VERSION__
-          releaseName: 'WB Bridge v__VERSION__'
-          releaseBody: 'WB Bridge — 让 WorkBuddy 使用 OpenCode 免费模型。'
-          releaseDraft: true
-          prerelease: false
-          # 清单交给末尾的 update-manifest 作业单点写，避免 6 个并发作业互相覆盖。
-          includeUpdaterJson: false
+          TAURI_SIGNING_PRIVATE_KEY: ${{ vars.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ vars.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: 读取版本号（Release 标签名）
+        # 与 macOS 作业同因：不让 softprops 在 workflow_dispatch 时把分支名当标签。
+        id: ver
+        shell: bash
+        run: echo "version=$(node -p "require('./src-tauri/tauri.conf.json').version")" >> "$GITHUB_OUTPUT"
 
       - name: 打印产物名（上传前留痕，供人工核对资产名 = tag 版本）
         shell: bash
@@ -402,7 +463,11 @@ jobs:
         if: github.event_name == 'push' || inputs.create_release == true
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          release_name: WB Bridge v${{ steps.ver.outputs.version }}
+          body: WB Bridge — 让 WorkBuddy 使用 OpenCode 免费模型。
           draft: true
+          prerelease: false
           generate_release_notes: true
           files: |
             src-tauri/target/**/release/bundle/**/*.AppImage
@@ -471,10 +536,17 @@ jobs:
             echo "- 结论：**待人工核对项为 0 时才可 Publish**；一旦安装包名与源码版本不符，先确认标签是否打在含本次版本推进的提交上。"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: 读取版本号（Release 标签名）
+        id: ver
+        shell: bash
+        run: echo "version=$(node -p "require('./src-tauri/tauri.conf.json').version")" >> "$GITHUB_OUTPUT"
+
       - name: 上传到 GitHub Release（仅推 tag 或勾选 create_release 时）
         if: github.event_name == 'push' || inputs.create_release == true
         uses: softprops/action-gh-release@v2
         with:
+          # 与三个 build 作业同一个标签名——清单必须落到同一批资产旁边。
+          # 不重发 release_name/body/generate_release_notes，避免覆盖前面作业已建好的正文。
+          tag_name: v${{ steps.ver.outputs.version }}
           draft: true
           files: latest.json
-
