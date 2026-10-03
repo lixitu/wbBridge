@@ -4,13 +4,52 @@
 > 命名规则：`RELEASE-v{主版本}.md`；次版本迭代追加到文件顶部新分节。
 > 版本纪律以根目录 `AGENTS.md`「当前基准版本」章节为准，本文件不另立规则。
 > 整理规则：同类问题多次修复的条目合并为一条，统一记述于最终修复版本；被合并的早期版本保留编号与合并指向，不再重复正文。
-> 当前最新版本：**v1.0.2**。
+> 当前最新版本：**v1.0.3**。
 
 ---
 
-## v1.0.2 · 📝 待发布
+## v1.0.3
 
-> **状态**: 📝 待发布（📝→✅ 的定夺属维护者；事实部分已翻篇：标签 `v1.0.2` 已打在 `0e4a535`，GitHub Release `v1.0.2` **已 Publish、23 个资产**（六平台安装包 + 各自 `.sig` + `latest.json`）。`release.yml` 2026-10-03 首跑止步于 updater 签名步骤（私钥变量取到空值，已修接线），**同日末轮已跑通完整一轮**（run `37092915120`、作业 8/8 全绿，六平台产物与产物名、`.sig` 全部实测到）；🔴 但那一份 `latest.json` 的六条 `url` 全部 404——GitHub 上传时把**资产名里的空格规范化成 `.`**，而按空格名（含 `%20`）拼出的下载路径不存在，`gen-latest-json.mjs` 与 CI 对账闸门已修，线上那份待重传。仍**未验证**：GUI 实机启动、一次真实升级闭环、六平台的实机安装。本工作区内的后续更正尚未提交）
+> **状态**:。五处落点已一致为 `1.0.3`（`npm run version:check` 实测「全部 5 处版本号一致（1.0.3）」），但**尚未构建任何安装包、尚未打标签**，且版本落点提交仍未执行——按铁律先提交、再在那一个提交上打 `v1.0.3`。
+> **日期**: 2026-10-03
+> **上一版本**: v1.0.2（标签 `0e4a535`，Release 已 Publish、23 个资产）
+> **GitHub Release 正文**: [`RELEASE-NOTES-v1.0.3.md`](RELEASE-NOTES-v1.0.3.md)
+> **本版主题**: 多平台接入 Stage 1（平台注册表 + 用户自持 Key 通道）＋ Stage 2（模型命名空间参数化）＋ 四项安全 / 数据红线修复 ＋ `latest.json` 下载 url 缺陷修复与 CI 资产对账闸门
+> **版本推进理由**: 与 v1.0.2 **不同类、不同根因**——新增三条管理动作与凭据落盘通道；修复的四个根因（一次性子进程携带宿主环境、探测路径的转写开关、`status.json` 非对象形状在 `panic = "abort"` 下整进程退出、并发 `modelResults` 互相吞写）此前都不存在；且**维护者明确要求推进版本号**（`npm run version:set -- 1.0.3`），末位 +1。
+
+### 一、版本号落点（`npm run version:set -- 1.0.3` + `npm run version:check` 实测）
+
+| 位置 | 值 | 说明 |
+|---|---|---|
+| 根 `package.json` → `version` | **1.0.3** | 版本单一来源 |
+| `src-tauri/tauri.conf.json` → `version` | **1.0.3** | 打包产物版本（安装包名随之为 `WB Bridge_1.0.3_*`）与更新清单 `version` 来源 |
+| `src-tauri/Cargo.toml` → `[package] version` | **1.0.3** | 壳工程同步落点（`src-tauri/Cargo.lock` 内 `wbbridge` 由 cargo 自动同为 1.0.3，须一并提交） |
+| `AGENTS.md`「当前基准版本」两行 | **1.0.3** | 文档侧同步落点 |
+| 面板 `__APP_VERSION__` | `v1.0.3` | `vite.config.js` 构建期注入（自带 `v` 前缀，故本版把「已是最新版本」一行的重复 `v` 去掉），非独立落点 |
+
+⚠ 副作用如实记录：`bump-version.mjs` 用 `JSON.stringify(…, null, 2)` 重写 `tauri.conf.json`，把原先单行的 `bundle.targets` 数组展开成多行——**纯格式差异、语义不变**，本次随版本落点一起提交。
+
+### 二、本版内容（代码范围 `v1.0.2..HEAD`，两个提交）
+
+- `43b1e19`：Stage 1（`providers.rs` 四平台注册表 + `providers.json` 凭据通道 + 三条 `provider-*` 动作，核心 `ACTION_ROUTES` 与壳 `ADMIN_ROUTES` 同步 5 → 8）、Stage 2（`join_namespace` / `split_namespace` / `free_models_in` / `model_target`，展示 ID 前缀只跟注册表 `label`）、`gen-latest-json.mjs` 的空格→点修复与 `release.yml` 的「校验清单 url 指向的资产在 Release 上真的存在」闸门、`docs/contract.md` 三条动作与凭据口径、同日规划与设计文档、`docs/qa/smoke-checklist.md`。
+- `9d0b5ef`：四项安全 / 数据红线修复（`runtime.rs::allowed_environment` 收口 `--version` 探测的子进程环境；`orchestration.rs::probe_meta()` 补探测路径的转写开关；`restored_model_results` 挡非对象形状；`apply_patch` 锁内逐键合并 `modelResults`）＋ 对应 5 项新测试（lib 4 + `red_lines` 1）。
+- 面板一行文案：`src/views/AboutView.vue` 的「已是最新版本」去掉重复 `v`。
+
+### 三、验证（2026-10-03 本轮真实执行）
+
+核心 `cargo test` **227 通过 / 0 失败**（lib 205 + `js_parity` 11 + `red_lines` 11）、核心 `cargo clippy --all-targets` 与壳 `cargo clippy --no-deps --all-targets` **0 warning**、壳 `cargo test --lib` **9 通过**、`npm run test:prefs` **8** / `test:manifest` **9** / `test:updater-key` **13**、`npx eslint .` **0 problem**、`npm run vite:build` ✓、`npm run version:check` **5 处一致（1.0.3）**、`git diff --stat src-tauri/core/tests/fixtures` 为空（Stage 2 等价移植的判据）。
+
+### 四、未验证（不得伪装）
+
+- ❌ GUI 实机启动；v1.0.3 的任何安装包（本机与 CI 都还没构建过）。
+- ⚠ Stage 1 端到端：`providers.json` 里的 Key **无消费者**（Stage 3）、面板无入口（Stage 5），真实 Key 从未输入、`0600` 只在 unix 断言。
+- ❌ 一次真实升级闭环；本版新增的那道 CI 对账步骤**本身未在 CI 跑过**（本机只跑过同段逻辑：线上坏清单 6/6 exit 1、修正后 6/6 OK exit 0）。
+
+---
+
+## v1.0.2
+
+> **状态**:（📝→✅ 的定夺属维护者；事实部分已翻篇：标签 `v1.0.2` 已打在 `0e4a535`，GitHub Release `v1.0.2` **已 Publish、23 个资产**（六平台安装包 + 各自 `.sig` + `latest.json`）。`release.yml` 2026-10-03 首跑止步于 updater 签名步骤（私钥变量取到空值，已修接线），**同日末轮已跑通完整一轮**（run `37092915120`、作业 8/8 全绿，六平台产物与产物名、`.sig` 全部实测到）；🔴 但那一份 `latest.json` 的六条 `url` 全部 404——GitHub 上传时把**资产名里的空格规范化成 `.`**，而按空格名（含 `%20`）拼出的下载路径不存在，`gen-latest-json.mjs` 与 CI 对账闸门已修，线上那份待重传。仍**未验证**：GUI 实机启动、一次真实升级闭环、六平台的实机安装。本工作区内的后续更正尚未提交）
 > **日期**: 2026-10-02
 > **上一版本**: v1.0.1（远端标签 `v1.0.1` → `679a2cb`，含版本推进提交 `46c7c56`；**本地标签仍指 `f046208`**，同步动作属维护者）
 > **GitHub Release 正文**: [`RELEASE-NOTES-v1.0.2.md`](RELEASE-NOTES-v1.0.2.md)
@@ -103,9 +142,9 @@
 
 ---
 
-## v1.0.1 · 📝 待发布
+## v1.0.1
 
-> **状态**: 📝 待发布（改动已在工作区，**尚未提交、尚未打标签**；GUI 未实机启动、`release.yml` 未在 CI 跑过、无安装包产出）
+> **状态**:（改动已在工作区，**尚未提交、尚未打标签**；GUI 未实机启动、`release.yml` 未在 CI 跑过、无安装包产出）
 > **日期**: 2026-10-01（同日第八轮）
 > **上一版本**: v1.0.0（该分节从未发布，无安装包；本次推进即代表 v1.0.0 基线快照的全部内容并入 1.0.1）
 > **GitHub Release 正文**: [`RELEASE-NOTES-v1.0.1.md`](RELEASE-NOTES-v1.0.1.md)
@@ -142,9 +181,9 @@
 
 ---
 
-## v1.0.0 · 📝 待发布
+## v1.0.0
 
-> **状态**: 📝 待发布（核心已用 Rust 重写并静态链接进完整入库的 Tauri 壳，面板为 Vue 3 + Vite 构建；但迁移后**未产出过安装包、桌面 GUI 未实机启动、`release.yml` 未在 CI 运行**，签名链路亦未实际执行，尚不具备"已发布"条件）
+> **状态**:（核心已用 Rust 重写并静态链接进完整入库的 Tauri 壳，面板为 Vue 3 + Vite 构建；但迁移后**未产出过安装包、桌面 GUI 未实机启动、`release.yml` 未在 CI 运行**，签名链路亦未实际执行，尚不具备"已发布"条件）
 > **发布日期**: 待定（记为 2026-09-30 基线快照日；2026-10-01 因 Node → Rust 迁移对本节的仓库形态与测试基线记录做更正，同日面板布局改造亦已并入本节）
 > **上一版本**: 无（v1.0 首个分节）
 > **版本范围**: 项目首个基线版本——Tauri 托盘壳 + **Rust 核心（crate `wbbridge-core`，path 依赖静态链接）** 的桥接工具，面向 WorkBuddy 提供隔离托管的 OpenCode 免费模型服务；Node.js 仅用于 Vite 构建面板与两个版本号脚本，**不存在 sidecar / pkg / `src-tauri/binaries/`**
@@ -189,7 +228,7 @@
 3. **CI 未实跑**：`.github/workflows/release.yml` 已按 Rust 形态重写，仅做过本地 YAML 结构校验；
 4. **签名与更新链路未执行**：`.env.example` 已就位（`src-tauri/updater-signing.env.example` 已删除，模板只留根目录一份）（`tauri.conf.json` 的 `plugins` 目前为空对象，未配置 updater），`npm run tauri -- signer generate …` 与签名构建均未实际跑过，**无对外分发安装包**；
 5. **`cargo fmt --check` 全仓不干净**，未作为门禁；
-6. 因此本版本**不具备"已发布"条件**，状态标记为 📝 待发布。
+6. 因此本版本**不具备"已发布"条件**，状态标记为。
 
 ### 四、与 `AGENTS.md` 记录的差异
 
