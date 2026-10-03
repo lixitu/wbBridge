@@ -2,7 +2,7 @@
 //!
 //! 逐条对齐 Node 版的可见行为：
 //! - 路由集合：`GET /health`、`GET /v1/models`、`POST /v1/chat/completions`、
-//!   5 条 `POST /admin/*`（动作表见 [`ACTION_ROUTES`]，是这张表的唯一真相；壳的
+//!   8 条 `POST /admin/*`（动作表见 [`ACTION_ROUTES`]，是这张表的唯一真相；壳的
 //!   `src-tauri/src/lib.rs::ADMIN_ROUTES` 由壳侧契约测试逐项对齐，`docs/contract.md` 记录对外口径）；
 //! - 鉴权：`Authorization: Bearer <key>`，缺失/不匹配 → 401 `{message, type}`；
 //! - 浏览器 Origin 一律 403 `{message}`；
@@ -60,13 +60,16 @@ pub const REQUEST_BODY_TIMEOUT: Duration = Duration::from_secs(20);
 /// `src-tauri/src/lib.rs` 的 `shell_action_routes_match_the_core_contract` 逐项对齐，
 /// 红线用例（`tests/red_lines.rs::routes()`）也直接从这张表取管理路由，不再各写一份。
 ///
-/// 顺序亦与 Node 版一致（Node 的 Map 保持插入序）。
-pub const ACTION_ROUTES: [(&str, &str, &str); 5] = [
+/// 顺序亦与 Node 版一致（Node 的 Map 保持插入序）；`provider-*` 三条是迁移后新增的，追加在尾部。
+pub const ACTION_ROUTES: [(&str, &str, &str); 8] = [
     ("probe", "POST", "/admin/probe"),
     ("system-proxy", "POST", "/admin/system-proxy"),
     ("import", "POST", "/admin/import"),
     ("refresh", "POST", "/admin/refresh"),
     ("shutdown", "POST", "/admin/shutdown"),
+    ("provider-status", "POST", "/admin/provider-status"),
+    ("set-provider-key", "POST", "/admin/set-provider-key"),
+    ("clear-provider-key", "POST", "/admin/clear-provider-key"),
 ];
 
 /// `routeFor(action)`：未知动作返回 `None`（对应 JS 的 `null`）。
@@ -460,6 +463,14 @@ pub struct Handlers {
     pub set_system_proxy: Arc<AdminFn>,
     /// `probe(model)`：同步返回（响应 202）。
     pub probe: Arc<ProbeFn>,
+    /// `providerStatus()`：平台注册表 + 每个平台「是否已配置」。
+    /// 🔴 返回值不得含任何 Key 材料（连尾几位都不回显），面板要更多只能加注册表内的静态字段。
+    pub provider_status: Arc<AdminFn>,
+    /// `setProviderKey(body)`：入参是整个请求体对象（`{ provider, apiKey }` 两个字段），
+    /// 这点与 `set_system_proxy` 只收单个字段不同 —— 校验在编排层做。
+    pub set_provider_key: Arc<AdminFn>,
+    /// `clearProviderKey(body)`：入参 `{ provider }`。
+    pub clear_provider_key: Arc<AdminFn>,
     /// `onResult(model, ok, message, status, code, duration, source, meta)`。
     pub on_result: Arc<ResultFn>,
     /// `onActivity(progress)`。
@@ -490,6 +501,9 @@ impl Server {
                 import_models: Arc::new(|_| Box::pin(async { Ok(json!({})) })),
                 set_system_proxy: Arc::new(|_| Box::pin(async { Ok(json!({})) })),
                 probe: Arc::new(|_| Value::Null),
+                provider_status: Arc::new(|_| Box::pin(async { Ok(json!({ "providers": [] })) })),
+                set_provider_key: Arc::new(|_| Box::pin(async { Ok(json!({})) })),
+                clear_provider_key: Arc::new(|_| Box::pin(async { Ok(json!({})) })),
                 on_result: Arc::new(|_| Box::pin(async {})),
                 on_activity: None,
                 on_shutdown: None,
@@ -568,6 +582,36 @@ impl Server {
         F: Fn(Option<Value>) -> Value + Send + Sync + 'static,
     {
         self.handlers.probe = Arc::new(probe);
+        self
+    }
+
+    /// 注入 `providerStatus()`。
+    #[must_use]
+    pub fn provider_status<F>(mut self, provider_status: F) -> Self
+    where
+        F: Fn(Value) -> BoxFuture<Result<Value, BackendError>> + Send + Sync + 'static,
+    {
+        self.handlers.provider_status = Arc::new(provider_status);
+        self
+    }
+
+    /// 注入 `setProviderKey(body)`。
+    #[must_use]
+    pub fn set_provider_key<F>(mut self, set_provider_key: F) -> Self
+    where
+        F: Fn(Value) -> BoxFuture<Result<Value, BackendError>> + Send + Sync + 'static,
+    {
+        self.handlers.set_provider_key = Arc::new(set_provider_key);
+        self
+    }
+
+    /// 注入 `clearProviderKey(body)`。
+    #[must_use]
+    pub fn clear_provider_key<F>(mut self, clear_provider_key: F) -> Self
+    where
+        F: Fn(Value) -> BoxFuture<Result<Value, BackendError>> + Send + Sync + 'static,
+    {
+        self.handlers.clear_provider_key = Arc::new(clear_provider_key);
         self
     }
 
@@ -793,6 +837,38 @@ async fn handle(
             tokio::spawn(async move { on_shutdown() });
         }
         return json_response(StatusCode::OK, json!({ "ok": true }));
+    }
+
+    if action_matches("provider-status", method, route) {
+        // 与 `/admin/refresh` 同理：不读取请求体（壳侧发送 `null` 占位）。
+        return match (handlers.provider_status)(Value::Null).await {
+            Ok(result) => json_response(StatusCode::OK, result),
+            Err(error) => error_response(&error),
+        };
+    }
+
+    if action_matches("set-provider-key", method, route) {
+        // 整份请求体交给编排层：`{ provider, apiKey }` 两个字段一起校验，Key 只在这条路径上
+        // 进入核心，落盘后不再回显（见 `providers.rs` 的凭据纪律）。
+        let body = match read_body(body).await {
+            Ok(body) => body,
+            Err(error) => return error_response(&error),
+        };
+        return match (handlers.set_provider_key)(body).await {
+            Ok(result) => json_response(StatusCode::OK, result),
+            Err(error) => error_response(&error),
+        };
+    }
+
+    if action_matches("clear-provider-key", method, route) {
+        let body = match read_body(body).await {
+            Ok(body) => body,
+            Err(error) => return error_response(&error),
+        };
+        return match (handlers.clear_provider_key)(body).await {
+            Ok(result) => json_response(StatusCode::OK, result),
+            Err(error) => error_response(&error),
+        };
     }
 
     if method != "POST" || route != "/v1/chat/completions" {
@@ -1047,6 +1123,9 @@ impl Handlers {
             import_models: self.import_models.clone(),
             set_system_proxy: self.set_system_proxy.clone(),
             probe: self.probe.clone(),
+            provider_status: self.provider_status.clone(),
+            set_provider_key: self.set_provider_key.clone(),
+            clear_provider_key: self.clear_provider_key.clone(),
             on_result: self.on_result.clone(),
             on_activity: self.on_activity.clone(),
             on_shutdown: self.on_shutdown.clone(),
@@ -1297,7 +1376,7 @@ mod tests {
 
     #[test]
     fn action_table_is_post_admin_routes() {
-        assert_eq!(ACTION_ROUTES.len(), 5);
+        assert_eq!(ACTION_ROUTES.len(), 8);
         for (action, method, path) in ACTION_ROUTES {
             assert_eq!(method, "POST", "{action} 必须是 POST");
             assert!(path.starts_with("/admin/"), "{action} 必须挂在 /admin/ 下");
@@ -1598,8 +1677,112 @@ mod tests {
         );
     }
 
-    // --- /v1/chat/completions ---
+    /// 平台凭据的三个动作在 HTTP 层的形态：`set-provider-key` / `clear-provider-key` 的处理器
+    /// 收到**整份请求体**（`provider` 与 `apiKey` 由编排层一起校验），`provider-status` 不读请求体。
+    ///
+    /// 🔴 后两段断言是「凭据零回显」红线在路由层的守卫：无论成功还是失败响应，Key 都不得出现在
+    /// 响应体里（连错误文案都不行 —— 报错回显入参是最常见的泄漏方式）。
+    #[tokio::test]
+    async fn provider_actions_take_whole_body_and_never_echo_the_key() {
+        const SECRET: &str = "sk-provider-secret-do-not-echo";
+        // 编排层的真实返回形态（`providers::status`）；定义成函数而非闭包，避免 handler 闭包借用栈。
+        fn shape() -> Value {
+            json!({ "providers": [{ "id": "modelscope", "label": "ModelScope", "configured": true }] })
+        }
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let status_sink = received.clone();
+        let set_sink = received.clone();
+        let clear_sink = received.clone();
 
+        let server = Server::new(KEY)
+            .provider_status(move |_| {
+                let sink = status_sink.clone();
+                Box::pin(async move {
+                    lock(&sink).push(Value::Null);
+                    Ok(shape())
+                })
+            })
+            .set_provider_key(move |body| {
+                let sink = set_sink.clone();
+                Box::pin(async move {
+                    let recorded = body.clone();
+                    lock(&sink).push(recorded);
+                    if body.get("provider").and_then(Value::as_str) != Some("modelscope") {
+                        return Err(BackendError::with("未知平台", 400, "invalid_provider"));
+                    }
+                    Ok(shape())
+                })
+            })
+            .clear_provider_key(move |body| {
+                let sink = clear_sink.clone();
+                Box::pin(async move {
+                    lock(&sink).push(body);
+                    Ok(shape())
+                })
+            });
+        let (router, _) = server.build();
+
+        // 只读动作与 refresh 同形：空请求体也能拿到状态。
+        let response = router
+            .clone()
+            .oneshot(request(Method::POST, "/admin/provider-status", Some(KEY), None))
+            .await
+            .expect("路由可用");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_json(response).await, shape());
+
+        let response = router
+            .clone()
+            .oneshot(post(
+                "/admin/set-provider-key",
+                json!({ "provider": "modelscope", "apiKey": SECRET }),
+            ))
+            .await
+            .expect("路由可用");
+        assert_eq!(response.status(), StatusCode::OK);
+        let text = body_json(response).await.to_string();
+        assert!(!text.contains(SECRET), "成功响应不得含 Key");
+
+        let response = router
+            .clone()
+            .oneshot(post(
+                "/admin/set-provider-key",
+                json!({ "provider": "not-registered", "apiKey": SECRET }),
+            ))
+            .await
+            .expect("路由可用");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let failure = body_json(response).await;
+        assert_eq!(failure["error"]["type"], "invalid_provider");
+        assert!(
+            !failure.to_string().contains(SECRET),
+            "失败响应不得回显 Key"
+        );
+
+        let response = router
+            .oneshot(post(
+                "/admin/clear-provider-key",
+                json!({ "provider": "modelscope" }),
+            ))
+            .await
+            .expect("路由可用");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_json(response).await, shape());
+
+        // 处理器实际收到的入参：status 是占位 Null，两个写动作拿到的是整份请求体。
+        let recorded = lock(&received).clone();
+        assert_eq!(recorded.len(), 4);
+        assert_eq!(recorded[0], Value::Null);
+        assert_eq!(
+            recorded[1],
+            json!({ "provider": "modelscope", "apiKey": SECRET }),
+            "set-provider-key 应收到整份请求体"
+        );
+        assert_eq!(recorded[2], json!({ "provider": "not-registered", "apiKey": SECRET }));
+        assert_eq!(recorded[3], json!({ "provider": "modelscope" }));
+    }
+
+    // --- /v1/chat/completions ---
     #[tokio::test]
     async fn completion_json_rewrites_model_and_records_success() {
         let (router, records) = recording_server();

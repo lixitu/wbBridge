@@ -111,7 +111,11 @@ for (const entry of readdirSync(dir, { withFileTypes: true })) {
     console.error(`[gen-latest-json] ${key}：${hits.map(p => path.basename(p)).join(' 与 ')} 都带 .sig（同一安装包的两层打包），取 ${path.basename(installer)}`)
   }
   const name = path.basename(installer)
-  platforms[key] = { name, url: `${base}/${encodeURIComponent(name)}`, signature: readFileSync(`${installer}.sig`, 'utf8').trim() }
+  // GitHub 在上传时把 Release 资产名里的**空格规范化成 `.`**（v1.0.2 实测：磁盘上的
+  // `WB Bridge_1.0.2_x64-setup.exe` 在 API 里是 `WB.Bridge_1.0.2_x64-setup.exe`），
+  // 而 `/releases/download/<tag>/<空格名>` 一律 404。只 encodeURIComponent 会拼出打不开的 URL，
+  // 客户端到下载那一步才发现（清单本身验不出这个问题）。
+  platforms[key] = { name, url: `${base}/${encodeURIComponent(name.replace(/ /g, '.'))}`, signature: readFileSync(`${installer}.sig`, 'utf8').trim() }
   if (key.startsWith('darwin') && !/_(aarch64|x86_64)\.app\.tar\.gz$/i.test(name)) {
     console.error(`[gen-latest-json] ${key}：资产名 ${name} 没有架构后缀，两个 mac 架构会在 Release 上同名互覆盖（CI 的重命名步骤没生效？）`)
     process.exit(1)

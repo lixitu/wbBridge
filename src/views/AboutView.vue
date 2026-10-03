@@ -163,7 +163,7 @@ onUnmounted(() => {
         error
         @dismiss="dismiss()"
       />
-      <p v-else-if="update.status === 'uptodate'" class="uptodate">已是最新版本（v{{ version }}）。</p>
+      <p v-else-if="update.status === 'uptodate'" class="uptodate">已是最新版本（{{ version }}）。</p>
     </div>
 
     <p class="note">

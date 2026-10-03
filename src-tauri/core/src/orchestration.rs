@@ -29,6 +29,7 @@ use crate::model_status::{model_result, now_iso8601, status_value, with_request_
 use crate::platform::{self, join_host};
 use crate::probe::{self, PROBE_TIMEOUT_MS};
 use crate::protocol::{prepare, BridgeError};
+use crate::providers;
 use crate::runtime::{self, RuntimeOptions, Started};
 use crate::backend::to_bridge_error;
 use crate::server::{
@@ -1819,6 +1820,13 @@ fn build_server(app: &App) -> (axum::Router, ServerControl) {
             Box::pin(async move { set_system_proxy(enabled).await })
         })
         .probe(start_probes_admin)
+        .provider_status(|_| Box::pin(async move { provider_status().await }))
+        .set_provider_key(move |body| {
+            Box::pin(async move { set_provider_key(body).await })
+        })
+        .clear_provider_key(move |body| {
+            Box::pin(async move { clear_provider_key(body).await })
+        })
         .on_result(|outcome| {
             Box::pin(async move {
                 // 客户端取消的请求绝不记为成功（server.rs 已按 JS 语义过滤，这里兜一层）。
@@ -1939,6 +1947,82 @@ async fn set_system_proxy(enabled: Value) -> Result<Value, BackendError> {
         .map_err(BackendError::plain)?;
     start_probes(None, true, false);
     Ok(json!({ "useSystemProxy": enabled }))
+}
+
+/// 平台动作共用的执行外壳：`providers.json` 是数据目录里的小文件，同步 IO 挪到
+/// `spawn_blocking`（与 `App::write_settings` 同一做法）。错误按来源分流：入参问题由调用方
+/// 在进入本外壳之前映射成 400，这里剩下的只有读写盘问题（502 + `upstream_error`）。
+async fn providers_io<T>(task: impl FnOnce(&str) -> Result<T, String> + Send + 'static) -> Result<T, BackendError>
+where
+    T: Send + 'static,
+{
+    let data_dir = global_app().data_dir.as_ref().clone();
+    tokio::task::spawn_blocking(move || task(&data_dir))
+        .await
+        .map_err(|_| BackendError::plain("平台凭据线程已崩溃"))?
+        .map_err(BackendError::plain)
+}
+
+/// `POST /admin/provider-status`：注册表 + 每个平台「是否已配置」。
+/// 🔴 不含任何 Key 材料，也不含凭据文件路径；面板要显示什么，只由 `providers.rs` 决定。
+async fn provider_status() -> Result<Value, BackendError> {
+    providers_io(|data_dir| Ok(providers::status(data_dir))).await
+}
+
+/// 从 `{ provider }` 解析平台 id：必须是注册表里的字符串。
+///
+/// 单独成函数是为了让边界校验可在没有已装入核心实例时测到（`providers_io` 依赖 `global_app()`，
+/// 测试里跑不了）。
+fn provider_id(body: &Value) -> Result<String, BackendError> {
+    let Some(provider) = body.get("provider").and_then(Value::as_str) else {
+        return Err(BackendError::with("provider 必须是字符串", 400, "invalid_provider"));
+    };
+    if providers::find(provider).is_none() {
+        return Err(BackendError::with(
+            format!("未知平台：{provider}"),
+            400,
+            "invalid_provider",
+        ));
+    }
+    Ok(provider.to_string())
+}
+
+/// 从 `{ provider, apiKey }` 解析平台 id 与 Key 形状。Key 的校验在这里做完，
+/// 磁盘写入只在 `providers_io` 那一步发生。
+fn provider_key_input(body: &Value) -> Result<(String, String), BackendError> {
+    let provider = provider_id(body)?;
+    let Some(api_key) = body.get("apiKey").and_then(Value::as_str) else {
+        return Err(BackendError::with(
+            "apiKey 必须是字符串",
+            400,
+            "invalid_provider_key",
+        ));
+    };
+    let api_key = providers::check_key(api_key)
+        .map_err(|message| BackendError::with(message, 400, "invalid_provider_key"))?;
+    Ok((provider, api_key))
+}
+
+/// `POST /admin/set-provider-key`：`{ provider, apiKey }`。
+/// Key 只在这条请求体路径上进入核心，落盘后不再出现在任何返回值里。
+/// 写成功后直接回一份新状态，面板不必再发一次 `provider-status`。
+async fn set_provider_key(body: Value) -> Result<Value, BackendError> {
+    let (provider, api_key) = provider_key_input(&body)?;
+    providers_io(move |data_dir| {
+        providers::set_key(data_dir, &provider, &api_key)?;
+        Ok(providers::status(data_dir))
+    })
+    .await
+}
+
+/// `POST /admin/clear-provider-key`：`{ provider }`。没配过也算成功（幂等，面板不该因状态滞后报错）。
+async fn clear_provider_key(body: Value) -> Result<Value, BackendError> {
+    let provider = provider_id(&body)?;
+    providers_io(move |data_dir| {
+        providers::clear_key(data_dir, &provider)?;
+        Ok(providers::status(data_dir))
+    })
+    .await
 }
 
 fn install_signal_handlers() {
@@ -2138,5 +2222,40 @@ mod tests {
         let usage = accumulate_usage(&fresh_usage(), "", false, 50);
         assert_eq!(usage["total"], json!({ "requests": 1, "ok": 0, "failed": 1 }));
         assert_eq!(usage["models"], json!({}), "无模型 ID 时不得创建模型条目");
+    }
+
+    /// 平台动作的边界校验：只认注册表里的 id，Key 形状在进入写盘路径之前就必须成立。
+    /// 这两条不需要已装入的核心实例（`providers_io` 才需要），所以能作为普通单测跑。
+    #[test]
+    fn provider_id_accepts_only_registered_platforms() {
+        assert_eq!(provider_id(&json!({ "provider": "modelscope" })).ok(), Some("modelscope".to_string()));
+        for body in [json!({}), json!({ "provider": 42 }), json!({ "provider": "nope" })] {
+            let error = provider_id(&body).expect_err("必须拒绝");
+            assert_eq!(error.status, Some(400), "{body} 应是 400");
+            assert_eq!(error.code.as_deref(), Some("invalid_provider"));
+        }
+    }
+
+    /// 🔴 校验失败的文案里不得带 Key —— 错误响应是最常见的凭据泄漏路径。
+    #[test]
+    fn provider_key_input_never_leaks_the_key_into_errors() {
+        const SECRET: &str = "sk-secret-do-not-echo";
+        assert_eq!(
+            provider_key_input(&json!({ "provider": "zhipuai", "apiKey": "  spaced  " })).ok(),
+            Some(("zhipuai".to_string(), "spaced".to_string())),
+            "只裁首尾空白"
+        );
+        for body in [
+            json!({ "provider": "zhipuai" }),
+            json!({ "provider": "zhipuai", "apiKey": 42 }),
+            json!({ "provider": "zhipuai", "apiKey": "   " }),
+            json!({ "provider": "zhipuai", "apiKey": "with\nnewline" }),
+            json!({ "provider": "zhipuai", "apiKey": "x".repeat(providers::MAX_KEY_CHARS + 1) }),
+            json!({ "apiKey": SECRET }),
+        ] {
+            let error = provider_key_input(&body).expect_err("必须拒绝");
+            assert_eq!(error.status, Some(400));
+            assert!(!error.message.contains(SECRET), "错误文案不得回显 Key：{}", error.message);
+        }
     }
 }

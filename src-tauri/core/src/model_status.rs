@@ -116,8 +116,47 @@ pub fn with_request_meta(result: &mut Value, meta: &Value) {
 }
 
 /// `clientModelID(model)`：给 WorkBuddy 展示的模型 ID。
+///
+/// 前缀不再是写死的 `OC`：命名空间取自 `free_models_in` 生成的全限定 id（见 `split_namespace`）。
+/// OpenCode 继续用 `OC · `，所以存量 client id 一个字节都不变；无 `id` 或无命名空间的模型
+/// 也走这条回落（对拍夹具里的入参正是这种形态）。
 pub fn client_model_id(model: &Value) -> String {
-    format!("OC · {}", display(model.get("name")))
+    format!("{} · {}", client_prefix(model), display(model.get("name")))
+}
+
+/// 免费模型的上游命名空间：OpenCode 是本工具的老住户，也是 id 缺失时的回落值。
+pub const OPENCODE_NAMESPACE: &str = "opencode";
+
+/// client id 的展示前缀里，OpenCode 沿用历史的 `OC`（改名等于把所有已发布模型的 ID 换掉）。
+const OPENCODE_CLIENT_PREFIX: &str = "OC";
+
+/// `{namespace}/{key}`：目录里全限定模型 id 的唯一拼法。
+pub fn join_namespace(namespace: &str, key: &str) -> String {
+    format!("{namespace}/{key}")
+}
+
+/// `split_namespace`：按**第一个** `/` 拆开全限定 id，返回 `(命名空间, 上游模型 key)`。
+/// 无 `/`（含空串）时命名空间为空串，由调用侧决定回落；key 里再出现的 `/` 原样保留，
+/// 与旧的「截掉 `opencode/` 定长前缀」逐字节等价。
+pub fn split_namespace(id: &str) -> (&str, &str) {
+    match id.split_once('/') {
+        Some((namespace, model_id)) => (namespace, model_id),
+        None => ("", id),
+    }
+}
+
+/// 展示前缀：**只有**注册表里的平台换用其 `label`，其余一律 `OC`。
+///
+/// 这不是偷懒：`opencode` 与「无命名空间」之外的命名空间在今天的调用面里根本不可能出现
+/// （`free_models_in` 只以 `OPENCODE_NAMESPACE` 或注册表 id 被调用，见 Stage 3），而测试与
+/// 对拍夹具里确实存在 `vendor/gpt` 这类合成 id —— 让它们改前缀就是行为变化。
+fn client_prefix(model: &Value) -> &str {
+    let (namespace, _) = split_namespace(
+        model.get("id").and_then(Value::as_str).unwrap_or_default(),
+    );
+    crate::providers::find(namespace)
+        .map(|provider| provider.label)
+        .unwrap_or(OPENCODE_CLIENT_PREFIX)
 }
 
 const MILLIS_PER_SECOND: u128 = 1_000;
@@ -247,6 +286,61 @@ mod tests {
     fn client_model_id_uses_the_middle_dot_prefix() {
         assert_eq!(client_model_id(&json!({ "name": "GPT-5" })), "OC · GPT-5");
         assert_eq!(client_model_id(&json!({})), "OC · undefined");
+    }
+
+    /// Stage 2 的零回归承诺：命名空间参数化之后，除注册表平台之外的输出必须与写死 `OC · ` 时
+    /// 逐字节一致（含 `vendor/...` 这类测试用的合成命名空间）。
+    #[test]
+    fn client_prefix_follows_the_namespace_but_never_renames_opencode() {
+        assert_eq!(
+            client_model_id(&json!({ "id": "opencode/big-pickle", "name": "Big Pickle" })),
+            "OC · Big Pickle"
+        );
+        assert_eq!(
+            client_model_id(&json!({ "id": "zhipuai/glm-4.5-air", "name": "GLM" })),
+            "智谱 · GLM"
+        );
+        assert_eq!(
+            client_model_id(&json!({ "id": "modelscope/foo", "name": "Foo" })),
+            "ModelScope · Foo"
+        );
+        // 合成 / 未知命名空间不得改前缀：`sync.rs` 的既有测试与对拍夹具依赖这一点。
+        assert_eq!(
+            client_model_id(&json!({ "id": "vendor/gpt", "name": "gpt" })),
+            "OC · gpt"
+        );
+        // 无斜杠 / 空 id / 非字符串 id 都回落到 OC，与参数化之前一致。
+        assert_eq!(client_model_id(&json!({ "id": "bare-key", "name": "B" })), "OC · B");
+        assert_eq!(client_model_id(&json!({ "id": "", "name": "E" })), "OC · E");
+        assert_eq!(client_model_id(&json!({ "id": 7, "name": "N" })), "OC · N");
+    }
+
+    /// `free_models_in` 是这些 id 的唯一生产者；拆合必须无损，且对 `opencode/` 前缀与旧的
+    /// 「截掉定长 9 字节」写法逐个同值（旧写法是 `id.get("opencode/".len()..)`）。
+    #[test]
+    fn namespace_split_and_join_round_trip_and_match_the_old_fixed_length_strip() {
+        // 旧写法：`id.get("opencode/".len()..)`，即按字节截掉定长前缀。
+        fn legacy(id: &str) -> &str {
+            id.get(OPENCODE_NAMESPACE.len() + 1..).unwrap_or_default()
+        }
+        let ids = [
+            "opencode/big-pickle",
+            "opencode/nemotron-3.5-lightning-free",
+            "opencode/space-bunny-free",
+            "opencode/mimo-v2.6-flash-free",
+            "opencode/mock",
+            // key 自带斜杠时两种写法也必须同值。
+            "opencode/a/b",
+        ];
+        for id in ids {
+            let (namespace, model_id) = split_namespace(id);
+            assert_eq!(namespace, OPENCODE_NAMESPACE);
+            assert_eq!(model_id, legacy(id), "{id} 的拆分与旧截串不同值");
+            assert_eq!(join_namespace(namespace, model_id), id);
+        }
+        assert_eq!(split_namespace("zhipuai/glm"), ("zhipuai", "glm"));
+        assert_eq!(split_namespace("no-slash"), ("", "no-slash"));
+        assert_eq!(split_namespace(""), ("", ""));
     }
 
     #[test]

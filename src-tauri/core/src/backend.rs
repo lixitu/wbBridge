@@ -17,6 +17,7 @@
 
 use crate::handoff::{build_handoff, handoff_input, reject_feedback, validate_action};
 use crate::json::{display, js_stringify, js_trim, truthy};
+use crate::model_status::{join_namespace, split_namespace, OPENCODE_NAMESPACE};
 use crate::protocol::{completion, decode, random_uuid, BridgeError, PreparedRequest};
 use crate::repair::{raw_material, repair, resend_prompt, RepairDeps};
 use crate::server::{
@@ -84,14 +85,20 @@ pub fn permission_list() -> Value {
     )
 }
 
-/// `freeModels(providers)`：输入/输出/缓存全免费、支持文本输出、未下线的模型。
+/// `freeModels(providers)`：OpenCode 命名空间下的免费模型（历史签名，输出与参数化之前逐字节一致）。
 pub fn free_models(providers: &Value) -> Result<Vec<Value>, BridgeError> {
+    free_models_in(providers, OPENCODE_NAMESPACE)
+}
+
+/// `freeModels(providers, namespace)`：从 `/provider` 响应里取指定命名空间的免费模型。
+/// 免费判定（输入/输出/缓存全 0、输出支持文本、未下线）与 id 拼法对所有平台共用。
+pub fn free_models_in(providers: &Value, namespace: &str) -> Result<Vec<Value>, BridgeError> {
     let provider = providers
         .get("all")
         .and_then(Value::as_array)
         .and_then(|all| {
             all.iter()
-                .find(|item| item.get("id") == Some(&json!("opencode")))
+                .find(|item| item.get("id") == Some(&json!(namespace)))
         });
     let Some(provider) = provider else {
         return Err(BridgeError::new("OpenCode provider missing"));
@@ -124,7 +131,7 @@ pub fn free_models(providers: &Value) -> Result<Vec<Value>, BridgeError> {
                 _ => json!(key),
             };
             let mut entry = Map::new();
-            entry.insert("id".to_string(), json!(format!("opencode/{key}")));
+            entry.insert("id".to_string(), json!(join_namespace(namespace, key)));
             entry.insert("name".to_string(), name);
             insert_defined(&mut entry, "context", nested(model, &["limit", "context"]));
             insert_defined(&mut entry, "input", nested(model, &["limit", "input"]));
@@ -157,6 +164,22 @@ pub fn free_models(providers: &Value) -> Result<Vec<Value>, BridgeError> {
         left.cmp(right)
     });
     Ok(models)
+}
+
+/// 请求体里的 `model`：把目录中的全限定 id 拆成上游要的一对 `{providerID, modelID}`。
+///
+/// 之前这里写死 `providerID: "opencode"` 并按 `opencode/` 的**定长**截串；现在两者都由
+/// `split_namespace` 决定。目录里的 id 只可能由 `free_models_in` 生产（`"{namespace}/{key}"`），
+/// 所以对 OpenCode 逐字节等价；无命名空间的 id 在今日不可达，按「回落 OpenCode + 空 modelID」
+/// 处理，不再静默截掉前 9 个字节。键顺序不得改动（请求体形态是对拍的一部分）。
+fn model_target(model: &Value) -> Value {
+    let (namespace, model_id) = split_namespace(
+        model.get("id").and_then(Value::as_str).unwrap_or_default(),
+    );
+    if namespace.is_empty() {
+        return json!({ "providerID": OPENCODE_NAMESPACE, "modelID": "" });
+    }
+    json!({ "providerID": namespace, "modelID": model_id })
 }
 
 fn cache_cost(cost: Option<&Value>, key: &str) -> Option<Value> {
@@ -1255,19 +1278,7 @@ impl Backend {
             None => String::new(),
         };
         let mut payload = Map::new();
-        payload.insert(
-            "model".to_string(),
-            json!({
-                "providerID": "opencode",
-                "modelID": request
-                    .model()
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .get("opencode/".len()..)
-                    .unwrap_or_default(),
-            }),
-        );
+        payload.insert("model".to_string(), model_target(request.model()));
         if let Some(variant) = request.variant().filter(|value| truthy(Some(*value))) {
             payload.insert("variant".to_string(), variant.clone());
         }
@@ -1803,6 +1814,62 @@ mod tests {
     fn free_models_requires_the_opencode_provider() {
         let error = free_models(&json!({ "all": [] })).unwrap_err();
         assert_eq!(error.message, "OpenCode provider missing");
+    }
+
+    /// Stage 2：命名空间是参数，不再是写死的 `opencode`。同一份 `/provider` 响应里，
+    /// OpenCode 那条的输出必须与包装函数完全一致；缺该平台时错误文案**沿用原文**
+    /// （Stage 3 若要按平台措辞需另行授权，这里先把现状钉住）。
+    #[test]
+    fn free_models_in_selects_the_requested_namespace() {
+        let providers = json!({ "all": [
+            { "id": "opencode", "models": {
+                "free": { "name": "Free", "cost": { "input": 0, "output": 0 }, "capabilities": { "output": { "text": true } } },
+            } },
+            { "id": "zhipuai", "models": {
+                "glm-4.5-air": { "cost": { "input": 0, "output": 0 }, "capabilities": { "output": { "text": true } } },
+                "paid-glm": { "cost": { "input": 1, "output": 1 } },
+            } },
+        ] });
+
+        let opencode = free_models(&providers).unwrap();
+        let same = free_models_in(&providers, OPENCODE_NAMESPACE).unwrap();
+        assert_eq!(opencode, same, "包装与直调必须逐字节同值");
+        assert_eq!(opencode[0]["id"], json!("opencode/free"));
+
+        let keyed = free_models_in(&providers, "zhipuai").unwrap();
+        assert_eq!(keyed.len(), 1);
+        assert_eq!(keyed[0]["id"], json!("zhipuai/glm-4.5-air"));
+        // key 缺失 name 时展示名回落 key，与 OpenCode 路径同一套规则。
+        assert_eq!(keyed[0]["name"], json!("glm-4.5-air"));
+
+        let error = free_models_in(&providers, "modelscope").unwrap_err();
+        assert_eq!(error.message, "OpenCode provider missing");
+    }
+
+    /// `{providerID, modelID}` 由 id 的命名空间决定；OpenCode 路径与旧的定长截串逐字节等价，
+    /// 键顺序不得重排。
+    #[test]
+    fn model_target_splits_the_namespace_instead_of_stripping_a_fixed_prefix() {
+        assert_eq!(
+            serde_json::to_string(&model_target(&json!({ "id": "opencode/big-pickle" }))).unwrap(),
+            r#"{"providerID":"opencode","modelID":"big-pickle"}"#
+        );
+        assert_eq!(
+            model_target(&json!({ "id": "zhipuai/glm-4.5-air" })),
+            json!({ "providerID": "zhipuai", "modelID": "glm-4.5-air" })
+        );
+        // key 自带斜杠：只按第一个斜杠切，余下部分原样保留（旧写法同值）。
+        assert_eq!(
+            model_target(&json!({ "id": "opencode/a/b" })),
+            json!({ "providerID": "opencode", "modelID": "a/b" })
+        );
+        // 无命名空间（今日不可达形态）：回落 OpenCode + 空 modelID，不再静默截掉 9 个字节。
+        for model in [json!({}), json!({ "id": "" }), json!({ "id": "bare-key" })] {
+            assert_eq!(
+                model_target(&model),
+                json!({ "providerID": "opencode", "modelID": "" })
+            );
+        }
     }
 
     #[test]

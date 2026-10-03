@@ -467,12 +467,15 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 /// 面板动作 → 核心路由的映射表。与 src-tauri/core/src/server.rs 的 ACTION_ROUTES 逐项一致
 /// （由本文件的 `shell_action_routes_match_the_core_contract` 断言）；docs/contract.md 的契约表
 /// 是同一份内容的文字版，改动时仍需人工同步。
-const ADMIN_ROUTES: [(&str, &str); 5] = [
+const ADMIN_ROUTES: [(&str, &str); 8] = [
     ("refresh", "/admin/refresh"),
     ("probe", "/admin/probe"),
     ("import", "/admin/import"),
     ("system-proxy", "/admin/system-proxy"),
     ("shutdown", "/admin/shutdown"),
+    ("provider-status", "/admin/provider-status"),
+    ("set-provider-key", "/admin/set-provider-key"),
+    ("clear-provider-key", "/admin/clear-provider-key"),
 ];
 
 fn admin_route(action: &str) -> Result<&'static str, String> {

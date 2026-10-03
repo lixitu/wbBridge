@@ -15,12 +15,12 @@
 | 系统 | 状态 | 安装包 |
 |---|---|---|
 | macOS 10.15+（Apple Silicon） | Rust 版已本机产出 1.0.2 的 dmg 与 updater 包（2026-10-03，hdiutil 生成），GUI 未实机启动 | `WB Bridge_1.0.2_aarch64.dmg`（本机 `npm run make:dmg` 产出） |
-| Windows 10/11 x64 | CI 构建，待实机验证 | `WB Bridge_1.0.1_x64-setup.exe` |
-| Linux x64 | CI 构建，待实机验证 | `.AppImage` / `.deb` |
+| Windows 10/11 x64 | CI 已产出并随 `v1.0.2` Release 发布，待实机验证 | `WB Bridge_1.0.2_x64-setup.exe`（+ 同名 `.sig`；另有 `…_x64_en-US.msi`，不参与更新） |
+| Linux x64 | CI 已产出并随 `v1.0.2` Release 发布，待实机验证 | `WB Bridge_1.0.2_amd64.AppImage`（更新包**就是裸 `.AppImage`**，bundler 没有额外产出 `.AppImage.tar.gz`）/ `.deb` |
 
 推送 `v*` 标签后 GitHub Actions 自动构建六平台（macOS ARM/Intel、Windows x64/ARM、Linux x64/ARM）安装包并发布 Release。
 
-> ⚠ 如实说明：核心 Rust 化后重写的 `.github/workflows/release.yml` **首次实跑发生在 2026-10-03，止步于 updater 签名步骤**（私钥变量取到空值）；签名变量随后改走仓库级 **Variables**，构建改走 `npm run tauri:build`（`scripts/with-updater-key.mjs` 的**签名注入包装器**，已接入 build 与 CI）+ `npm run make:dmg`（hdiutil），**不再用 `tauri-apps/tauri-action`**、CI **不设**私钥前置校验步骤，六平台产物 + `latest.json` 的**完整一轮仍未跑通**；下表与上文的历史构建结论均属迁移前记录。
+> ⚠ 如实说明：核心 Rust 化后重写的 `.github/workflows/release.yml` **已跑通完整一轮**（2026-10-03，tag `v1.0.2`、head `0e4a535`、run `37092915120`，**8/8 作业全绿**；同日更早的一轮曾止步于 updater 签名步骤——私钥变量取到空值，随后签名变量改走仓库级 **Variables**，构建改走 `npm run tauri:build`〔`scripts/with-updater-key.mjs` 的签名注入包装器，已接入 build 与 CI〕+ `npm run make:dmg`〔hdiutil〕，**不再用 `tauri-apps/tauri-action`**、CI **不设**私钥前置校验步骤）。Release `v1.0.2` 已 Publish，**23 个资产**（六平台安装包 + 各自 `.sig` + `latest.json`），六平台产物名与签名至此**由实测确认**。🔴 但那一轮的 `latest.json` 里**六条 `url` 全部 404**：GitHub 上传时把资产名里的空格规范化成 `.`（磁盘 `WB Bridge_…` → GitHub 侧 `WB.Bridge_…`），而 `/releases/download/<tag>/<空格名>`（含 `%20`）一律取不到；脚本（拼 url 前先把空格换成点）与 CI（新增「校验清单 url 指向的资产在 Release 上真的存在」一步）都已修，**线上那份 v1.0.2 清单仍是坏的**，重传属共享状态、由维护者操作（或等下一次发布覆盖写）；由于 v1.0.0 / v1.0.1 都早于 updater 接线，目前没有已交付客户端会因此受害。仍**未验证**：一次真实的升级闭环（客户端拉到包、装完 `relaunch()` 起来）；下表的历史构建结论仍属迁移前记录。
 
 ### macOS 首次打开
 
@@ -45,7 +45,7 @@ xattr -dr com.apple.quarantine "/Applications/WB Bridge.app"
 
 ```sh
 npm install
-npm test             # 核心测试：cargo test --manifest-path src-tauri/core/Cargo.toml（207 项 = 187 单测 + 11 JS 对拍 + 9 红线）
+npm test             # 核心测试：cargo test --manifest-path src-tauri/core/Cargo.toml（222 项 = 201 单测 + 11 JS 对拍 + 10 红线）
 npm run test:prefs   # 面板偏好单测（node --test，8 项，不联网）
 npm run test:manifest# 更新清单生成单测（node --test，9 项，用临时产物目录跑真脚本）
 npm run test:updater-key # 签名注入单测（node --test，13 项，不碰 ~/.tauri）
@@ -86,7 +86,7 @@ src-tauri/      Tauri 2 壳：窗口/托盘/核心生命周期/IPC 命令/状态
 scripts/        构建/发布辅助脚本（bump-version.mjs / check-version.mjs 版本号，gen-latest-json.mjs 更新清单，with-updater-key.mjs 是 tauri:build 的签名注入包装器〔已接入 build 与 CI，只注入不前置校验〕，make-dmg.sh 用 hdiutil 出 macOS 的 .dmg）
 vite.config.js  前端构建配置（root: src，outDir: ../dist，dev 端口 41990）
 docs/           验证记录（validation.md）、版本日志（version/）、接口契约（contract.md）、上游调研（research/）
-.github/        CI（release.yml：核心测试 + 三平台六架构构建；2026-10-03 首次实跑止步于签名步骤，完整一轮仍未跑通）
+.github/        CI（release.yml：核心测试 + 三平台六架构构建 + 更新清单；2026-10-03 已跑通完整一轮，tag v1.0.2 的 run 8/8 全绿；该轮 latest.json 的空格 URL 缺陷已在脚本与 CI 修复，新增的资产对账步骤本身还没在 CI 实跑过）
 ```
 
 ## 与上游实现（Electron 版）的差异
@@ -106,7 +106,7 @@ docs/           验证记录（validation.md）、版本日志（version/）、�
 - 面板以只读展示为主：运行日志读核心日志文件尾部（壳侧 `read_log`，尾部截断）、用量与额度展示核心累计的真实请求计数（`status.json` 顶层 `usage`，只统计 `source == "request"` 的真实客户端请求，探测不计、客户端取消不计成功、跨重启延续）、WorkBuddy 集成只读展示配置定位与发布结果（唯一动作是复用既有的「导入 WorkBuddy」）、关于与更新展示版本与数据目录 + **自动更新区**（启动后静默检查，发现新版本才出现更新条，下载与安装始终由用户点击触发）。这 4 个视图自身不写文件、不访问 OpenCode；**唯一的联网动作是自动更新**，且联网发生在 Rust 侧（Tauri updater 插件），不经面板 `fetch`。
 - 浅色主题下仍有 3 处次要文字（副标题、页脚说明、耗时行）沿用 `--muted`，对比度低于 WCAG AA 的 4.5:1；属既有问题，尚未处理。
 - Rust 化后的桌面 GUI **从未实机启动过**：目前只验证过编译、两个 crate 的 clippy 干净，以及独立核心二进制的一次冒烟运行（在一次性数据目录内完成运行时下载、隔离 OpenCode 启动、`/agent` 校验、发现 8 个免费模型并探测、干净关停）。面板布局改造另在浏览器引擎内经 CDP 实测（非 Tauri GUI 实机）。
-- **自动更新已接线但端到端未验证**：本机已实测签名打包（产出 `.app.tar.gz` + 配对 `.sig`），也实测出 macOS aarch64 的 dmg；但「检查 → 下载 → 安装 → 重启生效」这条完整链路必须等 CI 产出真实 Release 并 Publish 后才能验证，且**对 v1.0.1 及更早的用户不生效**（那一版没接更新器，升级仍需手动下载安装包一次）。
+- **自动更新已接线、CI 也已产出真实 Release，但端到端仍未验证**：本机已实测签名打包（产出 `.app.tar.gz` + 配对 `.sig`）与 macOS aarch64 的 dmg；2026-10-03 的 `v1.0.2` 完整一轮又把六平台安装包、`.sig` 与 `latest.json` 真发到了 Release 上（六条清单签名的签名者 key ID 实测等于配置里唯一那条公钥 `2B11F78BEA8A43F`）。但**「检查 → 下载 → 安装 → 重启生效」这条完整链路依然一次都没走过**，且当轮清单里的 url 因 GitHub 把资产名空格规范化成点而全部 404（脚本与 CI 已修，见[版本与发布](docs/wiki/版本与发布.md)）；**对 v1.0.1 及更早的用户也不生效**（那一版没接更新器，升级仍需手动下载安装包一次）。
 - `cargo fmt --check` 全仓并不干净（未作为门禁），代码风格以 clippy 0 warning 为准。
 
 ## 验证记录

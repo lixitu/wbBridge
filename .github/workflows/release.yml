@@ -30,8 +30,14 @@
 #            所以本工作流在上传前把它改名为「WB Bridge_<arch>.app.tar.gz(.sig)」
 #            （minisign 签的是内容不是文件名，改名不影响验签）。
 #       Windows *-setup.exe(.sig)（MSI 不参与更新）
-#       Linux   官方文档写 *.AppImage(.sig)；bundler 是否额外打一层 *.AppImage.tar.gz
-#               只能等首次 CI 跑出来核对，生成脚本对两种形态都接受（同时带签名时取 .tar.gz 并告警）。
+#       Linux   ✅ 2026-10-03 v1.0.2 首跑实测：updater 包就是裸 *.AppImage(.sig)，
+#               bundler **没有**额外打一层 *.AppImage.tar.gz；*.deb 也带 .sig 但不参与更新。
+#               （生成脚本对两种形态都接受，同时带签名时取 .tar.gz 并告警。）
+#   • 🔴 资产名的空格会被 GitHub 规范化成 `.`（v1.0.2 实测：磁盘 `WB Bridge_…` → API `WB.Bridge_…`），
+#       而 `/releases/download/<tag>/<空格名>`（含 %20）一律 404。所以 gen-latest-json.mjs 先
+#       `name.replace(/ /g, '.')` 再编码，本作业紧接着用 API 把六条 url 末段与实际资产名逐条对账——
+#       那一轮六平台资产齐全、六条 .sig 也都与配置公钥配对，唯独清单每条都下载不了，
+#       而这类错误只有客户端在下载那一步才暴露，闸门必须放在发布前。
 #   • 签名链路（2026-10-03 完全对齐参考项目 fastenerTradeWorkbench / lockPass）：
 #       构建一律走 `npm run tauri:build` = `node scripts/with-updater-key.mjs tauri build`。
 #       包装器**只做注入、不做前置校验**（不判形态、不试签、不因配对不符挡住构建）：
@@ -83,13 +89,15 @@
 #     v<版本>，所以 workflow_dispatch 勾选 create_release 时也不会把分支名当标签开出第二个 Release。
 #   • Draft 未 Publish 前 releases/latest/download/latest.json 返回 404 属预期：
 #     更新通道只在人工点完「Publish release」之后生效。
-#   • ⚠ 本工作流自「移除 Node 核心」改造后**从未完整跑通一轮**：2026-10-03 首次实跑止步于 build 作业的
-#     updater 签名步骤（私钥变量取到空值）；六平台产物与 latest.json 的实际形态仍以脚本内容为准、待首跑核对。
-#     ✅ 同日已在**本机**把该链路等价跑通（非 CI）：`tauri:build -- --bundles app` 退出 0 产出
+#   • ✅ 本工作流自「移除 Node 核心」改造后**已跑通完整一轮**（2026-10-03，tag v1.0.2，run 37092915120，
+#     8/8 作业全绿，Release 已发布 23 个资产）：六平台产物、mac 补架构后缀、hdiutil dmg、
+#     update-manifest 与产物版本自检都按本文件描述执行。此前同日的首跑止步于 updater 签名步骤
+#     （私钥变量取到空值），已由改用仓库级 Variables + `npm run tauri:build` 注入器解决。
+#     ✅ 同日本机等价跑通也成立：`tauri:build -- --bundles app` 退出 0 产出
 #     `WB Bridge.app.tar.gz`(3,596,811 B) + `.sig`(428 B，签名者 key ID 逐字节解出 = 2B11F78BEA8A43F =
 #     配置 pubkey 那条)，`make:dmg` 产出 `WB Bridge_1.0.2_aarch64.dmg`（只读挂载含 app + Applications，
-#     codesign --verify --deep --strict 通过）。仍未验证的仍然是：CI 上 Variables 取到的值、其余五平台产物名、
-#     latest.json 落到真实 Release 后的下载与升级。
+#     codesign --verify --deep --strict 通过）。
+#   • ❌ 仍**未验证**：一次真实升级闭环（客户端拉到包、装完 relaunch() 起来）——属必须实机点一遍的类别。
 # ═══════════════════════════════════════════════════════════════════
 
 name: Release Build (Tauri)
@@ -499,6 +507,37 @@ jobs:
 
       - name: 生成 latest.json
         run: node scripts/gen-latest-json.mjs --dir artifacts --out latest.json
+
+      - name: 校验清单 url 指向的资产在 Release 上真的存在
+        # v1.0.2 首跑实测教训：GitHub 把 Release 资产名里的**空格规范化成 `.`**（磁盘上的
+        # `WB Bridge_…` 在 API 里是 `WB.Bridge_…`），而按本地文件名 `%20` 拼出来的 URL 一律 404。
+        # 那一轮六个平台资产齐全、六条 `.sig` 也都与配置里的公钥配对，清单却**每一条都下载不了**——
+        # 而且只有客户端在下载那一步才会发现。所以发布前用 API 把每条 url 的末段与实际资产名逐一对账。
+        # Draft 阶段带 GITHUB_TOKEN 查询可见（未认证访问看不到 Draft）。
+        if: github.event_name == 'push' || inputs.create_release == true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          export CONF_VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          node --input-type=module -e '
+            const tag = `v${process.env.CONF_VERSION}`;
+            const manifest = JSON.parse(await (await import("node:fs/promises")).readFile("latest.json", "utf8"));
+            const headers = { accept: "application/vnd.github+json", authorization: `Bearer ${process.env.GITHUB_TOKEN}` };
+            const list = await fetch(`https://api.github.com/repos/${process.env.GITHUB_REPOSITORY}/releases?per_page=100`, { headers });
+            if (!list.ok) { console.error(`::error::列 Release 失败 HTTP ${list.status}`); process.exit(1); }
+            const release = (await list.json()).find((r) => r.tag_name === tag);
+            if (!release) { console.error(`::error::找不到标签 ${tag} 的 Release，资产名无从对照（Release 由 build 作业创建，须在它们之后运行）`); process.exit(1); }
+            const names = new Set(release.assets.map((a) => a.name));
+            let bad = 0;
+            for (const [key, entry] of Object.entries(manifest.platforms)) {
+              const seg = decodeURIComponent(entry.url.split("/").pop());
+              if (names.has(seg)) { console.log(`OK  ${key} -> ${seg}`); }
+              else { bad++; console.error(`::error::${key} 的 url 末段「${seg}」不在 ${tag} 的资产名里：该平台下载必然 404`); }
+            }
+            console.error(`清单 ${Object.keys(manifest.platforms).length} 个平台，资产名对不上 ${bad} 个。`);
+            process.exit(bad ? 1 : 0);
+          '
 
       - name: 产物版本自检（结论写进 run summary，供 Release 正文引用）
         # 汇总六个平台实际收到的安装包，逐个核对文件名里的版本号是否等于源码版本。

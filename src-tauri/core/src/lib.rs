@@ -31,6 +31,12 @@
 //! | [`probe`] | `core/src/probe.js` | 模型探测协议与判定 |
 //! | [`orchestration`] | `core/src/main.js` | 编排层：可独立运行，也可嵌入 Tauri 壳（`run` + `set_exit_hook`） |
 //!
+//! 迁移之后新增的模块没有 JS 前身：
+//!
+//! | 本 crate 模块 | 对应 JS | 说明 |
+//! |---|---|---|
+//! | [`providers`] | — | 多平台接入的注册表（id/标签/npm/baseURL）与 `providers.json` 凭据通道 |
+//!
 //! 正确性由两层测试保证：
 //! 1. 各模块内的 Rust 单测（`#[cfg(test)]`）锁定行为；
 //! 2. `tests/js_parity.rs` 用 Node 真实加载 `core/src/*.js`，同输入对拍 JS 与 Rust 的输出。
@@ -44,6 +50,7 @@ pub mod orchestration;
 pub mod platform;
 pub mod probe;
 pub mod protocol;
+pub mod providers;
 pub mod reasoning;
 pub mod repair;
 pub mod runtime;

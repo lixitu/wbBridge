@@ -25,6 +25,19 @@
 | `import` | `/admin/import` | POST | `{ "modelsFile"?: string }` | 导入 / 切换 WorkBuddy 配置路径 |
 | `system-proxy` | `/admin/system-proxy` | POST | `{ "enabled": boolean }` | 切换系统代理并重读模型 |
 | `shutdown` | `/admin/shutdown` | POST | 无 | 先响应、再触发一次优雅退出 |
+| `provider-status` | `/admin/provider-status` | POST | 无（不读请求体，同 `refresh`） | 平台注册表 + 每个平台「是否已配置」；**返回体不含任何 Key 材料** |
+| `set-provider-key` | `/admin/set-provider-key` | POST | `{ "provider": string, "apiKey": string }` | 写入/更新一个平台的用户自持 Key（落 `<数据目录>/providers.json`，`0600`）；成功返回新的 `provider-status` 形态 |
+| `clear-provider-key` | `/admin/clear-provider-key` | POST | `{ "provider": string }` | 删除一个平台的 Key（未配置过也返回成功，幂等）；同样返回新状态 |
+
+> 🔴 凭据口径（这三条动作是本契约里**唯一**允许把用户凭据带进核心的入口）：
+> `apiKey` 只经请求体进入，只落 `providers.json`；不出现在响应体、`status.json`、日志、面板偏好
+> （`src/core/prefs.js` 的键白名单）与子进程环境（`runtime::ENV_ALLOW`）里。校验失败只回文案与
+> `invalid_provider` / `invalid_provider_key`，**不回显入参**。守卫点：`src-tauri/core/src/providers.rs`
+> 的单测、`server.rs::provider_actions_take_whole_body_and_never_echo_the_key`、
+> `tests/red_lines.rs::provider_registry_is_reviewed_and_status_echoes_no_key_material`。
+> 平台 id 只认 `providers.rs::PROVIDERS` 这张随版本发布的常量表，注册表外的一律 400。
+> ⚠ **Stage 1 状态（2026-10-03）**：这三条只有核心 + 壳侧链路，**面板还没有入口视图**（Stage 5 才接），
+> 且写入的 Key 目前**没有消费者**（`isolated_config()` 注入属 Stage 3）——按它们做动作不会多发布一个模型。
 
 面板侧链路：`src/core/bridge.js` 的 `action(name, value)`（前端内核，不是后端）→ Tauri 命令
 `core_action(action, payload)` → `admin_route()` → `admin_call()`；例外是面板的 `restart` 动作，它不经

@@ -8,6 +8,78 @@
 
 日期：2026-10-03（本机 macOS，Apple Silicon；Rust 核心 + Vue 壳 + Vue 面板）
 
+## 多平台接入 Stage 2：命名空间参数化（2026-10-03，行为零变化，版本仍 1.0.2）
+
+> 依据计划文档 §Stage 2 的定稿改法。目标是把 `OC · ` / `opencode/` 两处硬编码变成由 provider 决定的参数，
+> **对外输出逐字节不变**，让 Stage 3 若出回归时归因唯一。
+
+### 改了什么
+
+- `model_status.rs`：新增 `OPENCODE_NAMESPACE`、`join_namespace(ns, key)`、`split_namespace(id)`（按**第一个** `/` 切，无 `/` 时命名空间为空串、key 原样）与私有 `client_prefix(model)`；`client_model_id` 改为 `format!("{} · {}", client_prefix(model), display(model["name"]))`，**签名不变**（`tests/js_parity.rs:732` 直接调它）。
+- `backend.rs`：`free_models` 的逻辑挪进 `free_models_in(providers, namespace)`，`free_models` 保留为传 `OPENCODE_NAMESPACE` 的包装（`:94` 的 `find` 与 `"OpenCode provider missing"` 文案一字未动）；id 生成换成 `join_namespace`；请求体的 `{providerID, modelID}` 从「写死 `opencode` + 定长截 9 字节」改为新函数 `model_target(model)` 走 `split_namespace`，键顺序保持 `providerID` → `modelID`。
+- 新增 4 项单测：`client_prefix_follows_the_namespace_but_never_renames_opencode`、`namespace_split_and_join_round_trip_and_match_the_old_fixed_length_strip`（把 `TRANSLATOR_ORDER` 四项与真实 id 逐个断言新旧同值）、`free_models_in_selects_the_requested_namespace`（含「包装与直调逐字节同值」断言）、`model_target_splits_the_namespace_instead_of_stripping_a_fixed_prefix`。
+
+### 🔴 被既有测试抓到的一处真实回归（方案本身错了，不是实现错了）
+
+定稿方案里写的「未知命名空间原样透出、不得伪装成 `OC`」**会改行为**：`sync.rs` 的 4 个既有测试
+（`merge_into_array_document_keeps_foreign_entries` 等）与对拍夹具用的是 `vendor/gpt` 这类**合成命名空间**，
+一旦让未知命名空间自带前缀，client id 就从 `OC · gpt` 变成 `vendor · gpt`，`models.json` 的写入内容随之变化。
+首轮实现照方案写下去，这 4 项立刻红。**规则收紧为：只有 `providers::PROVIDERS` 里的平台换 `label`，其余一律 `OC`**，
+理由与约束一并写进 `client_prefix` 的注释（陌生命名空间今日在真实调用面不可达：`free_models_in` 只以
+`OPENCODE_NAMESPACE` 或注册表 id 被调用）。
+
+另一处已如实记录的等价缺口：`model_target` 对**无命名空间** id 的回落是 `opencode` + 空 `modelID`，
+而旧写法是「截掉前 9 个字节」（`"abcdefghijk/lm"` 旧→`"jk/lm"`、新→空）。该形态今日不可达
+（目录 id 只由 `free_models_in` 生产，必带命名空间），单测把两种写法在全部真实 id 上钉成同值。
+
+### 已验证（本轮实跑数字）
+
+- 核心 `cargo test`（`src-tauri/core/`）→ **222 通过 / 0 失败**：lib **201** + `js_parity` **11** + `red_lines` **10**（基线由 218/197 上移，+4 全部是本阶段新增单测）。
+- **`js_parity` 11 全绿 + `git diff --stat src-tauri/core/tests/fixtures` 输出为空** —— 这两条合起来就是「对外输出逐字节不变」的证据，不需要恢复仓库外 JS 归档。
+- 壳 `cargo test --lib`（`src-tauri/`）→ **9 通过 / 0 失败**。
+- `cargo clippy --all-targets`（核心，`touch lib.rs` 强制重检）与 `cargo clippy --no-deps --all-targets`（壳）→ **0 warning**。
+- `npm run version:check` → **5 处一致（1.0.2）**，未推进版本号（等价移植属六种禁止情形）。
+
+### 未验证 / 已知遗留（如实标注）
+
+- ❌ 本阶段**不产生任何新能力**：没有平台会因此多出一个模型（注入仍属 Stage 3），`model_target` 的 `providerID` 参数化路径今日只走 OpenCode。
+- ❌ 面板 `src/components/ModelRow.vue:52` 仍硬写 `OC · {{ model.name }}`（与 `model.id` 今日同值所以看不出）—— Stage 3 落地第二家会贴错前缀，已记为 Stage 5 待修，**当前未修**。
+- ❌ GUI 实机、真实上游 `/provider` 响应里非 OpenCode 命名空间的真实形态，均未验证。
+
+## 多平台接入 Stage 1：平台注册表 + 凭据通道（2026-10-03，版本仍 1.0.2）
+
+> 依据 `docs/plans/2026-10-03-upgrade-roadmap-and-v1.0.3-multi-provider-plan.md` 的 Stage 1。
+> 本节的 Rust 改动**不推进版本号**（推进属 Stage 5 出口，与四平台真正可用一起）。
+
+### 改了什么
+
+- 新增 `src-tauri/core/src/providers.rs`：四平台注册表（`modelscope` / `siliconflow-cn` / `tencent-tokenhub` / `zhipuai`，`npm` 全为 `@ai-sdk/openai-compatible`，base URL 均为实测值，**智谱是 `/api/paas/v4` 不是 `/v1`**）+ `providers.json` 通道。读侧对缺文件 / 坏 JSON / 非对象 / 外来形态一律按「未配置」处理；写侧在模块 `Mutex` 下整份读-改-写，经 `sync::atomic_write` 落盘（临时文件以 `create_new` + `0600` 建立后 rename），`clear_key` 幂等。Key 校验：非空、≤4096 字符、不得含控制字符。
+- `server.rs`：`ACTION_ROUTES` 5 → **8 条**（三条 `provider-*` **追加在尾部**，不动既有顺序），`Handlers` 增三个 `Arc<AdminFn>` 字段与三个 `#[must_use]` builder，`handle()` 增三个分支（`provider-status` 与 `/admin/refresh` 一样**不读请求体**，两条写动作透传整个 body），`clone_handlers` 同步。
+- `orchestration.rs`：`build_server` 注入三个闭包；新增 `providers_io`（数据目录字符串 → `spawn_blocking`，join/IO 失败映射 502）、`provider_status`、`provider_id`（400 `invalid_provider`）、`provider_key_input`（400 `invalid_provider_key`）、`set_provider_key`（先校验后写，返回刷新后的状态）、`clear_provider_key`。
+- 壳 `src-tauri/src/lib.rs`：`ADMIN_ROUTES` 5 → **8 条**，契约测试 `shell_action_routes_match_the_core_contract` 因此自动覆盖新条目。
+- `tests/red_lines.rs` 第 **10** 项 `provider_registry_is_reviewed_and_status_echoes_no_key_material`：钉死 id 集合、https-only、`npm` 形态，并断言写入真实 Key 后 `status()` 的序列化里既无该 Key 也无 `apiKey`，且只有 1 项 `configured: true`。
+- 文档：`docs/contract.md` 三行动作表 + 凭据口径；`docs/wiki/{架构设计,核心概念与功能,已知限制与未验证项,开发指南,版本与发布,Home}`；`AGENTS.md`（测试基线、`providers.rs` 模块行、`providers.json` 落盘行、强制规范与安全红线 #7 的**唯一允许位**）；`README.md` 基线行。
+
+### 已验证（本轮实跑数字）
+
+- 核心 `cargo test`（`src-tauri/core/`）→ **218 通过 / 0 失败**：lib **197** + `js_parity` **11** + `red_lines` **10**（基线由 207/187/9 上移，新增 10 项 = providers 7 + server 1 + orchestration 2）。
+- 壳 `cargo test --lib`（`src-tauri/`）→ **9 通过 / 0 失败**（数量不变；其中契约项现在逐项对齐 **8** 条动作）。
+- `cargo clippy --all-targets`（核心）与 `cargo clippy --no-deps --all-targets`（壳）→ **0 warning**。
+- JS 侧三组套件与 `npm run version:check` 见下节「本轮未跑 / 待补」。
+
+### 与计划文档措辞的两处有意偏差（已如实记录）
+
+1. 计划写的「同步 `bridge.js` 的 `action()`、`generate_handler`、`capabilities/default.json`」**都不需要改**：三条动作走既有 `core_action` → `admin_route()` → `admin_call()` 泛化链路，不是新的壳命令，也不是插件命令，capability 与本无关。面板入口属 Stage 5。
+2. 计划写的「`provider_status` 只回掩码」**收紧成完全不回**：返回形态只有 `{ providers: [{ id, label, configured }] }`，连尾 4 字符都不返回。理由是多一条掩码就多一条可泄漏路径，而面板只需要「是否已配置」。
+
+另：注册表结构里的 `models[]` **推迟到 Stage 4**，Stage 1 不带没人读的数据。
+
+### 未验证 / 已知遗留（如实标注）
+
+- ❌ **端到端无效**：Key 写进 `providers.json` 后**当前没有任何消费者**——`isolated_config()` 注入与 `free_models` 注册表驱动属 Stage 3，四平台现在**不会多出一个模型**。
+- ❌ 面板没有入口（Stage 5）；真实 Key 从未在 Tauri GUI 里输入过；`providers.json` 的 `0600` 权限只在 unix 单测里断言，Windows 未验证。
+- ❌ **上游未知仍未解**：注入 `provider.<id>` 声明后，OpenCode 是否把该平台回显进 `providers.all[]`（决定 Stage 3 能否复用现有 `free_models`）——维护者的带 Key 实验尚未做。Stage 1 与之无关，因此可以先落。
+
 ## v1.0.2 追加：签名注入链路重写 + 单条公钥 + hdiutil dmg（2026-10-03，不推进版本号）
 
 > 本节记录同日**对上一节「updater 签名接线」的重写**，并**更正**上一节里被当作项目事实的两处结论（`--check-only` 前置自检、`plugins.updater.pubkey`「两条公钥＝轮换白名单」）。上一节按「只增不改」保留原样，其被推翻之处已就地以「同日再更正」标注指向本节。
@@ -60,10 +132,51 @@
 
 ### 仍未验证（不得伪装）
 
-- ❌ **完整 CI 一轮**（六平台产物 + `latest.json` + 一次真实升级）仍未跑通；Windows/Linux 产物名与签名未实测。
+- ~~❌ **完整 CI 一轮**（六平台产物 + `latest.json` + 一次真实升级）仍未跑通；Windows/Linux 产物名与签名未实测。~~ **已过时**：同日末轮的 tag `v1.0.2` 实跑已把六平台产物、产物名与签名全部实测到，见下一节「CI 完整一轮实跑核对」；真实升级闭环仍未走通。
 - ❌ 发布后的 `latest.json` 被真实客户端下载/安装、`relaunch()` 后带更新核心的重启未走通。
 - ❌ **GUI 从未实机启动**。
 - ⚠ 仓库根只有 `.env.local`（无 `.env`，`0644`、含私钥路径与口令、`.gitignore` 已忽略、`git ls-files` 确认未入库），是否 `chmod 600` 由用户决定；Agent 不改 `.env.local` 与 `~/.tauri`。版本保持 **1.0.2**，未推进。
+
+---
+
+## v1.0.2 追加：CI 完整一轮实跑核对与 `latest.json` 的 URL 缺陷（2026-10-03，同日末轮，不推进版本号）
+
+### 实跑事实（tag `v1.0.2`，head `0e4a535`，run `37092915120`）
+
+- 作业 **8/8 全绿**：核心测试（含标签↔版本闸门与三组 `node --test`）、macOS aarch64 / x86_64、Windows x86_64 / aarch64、Linux x86_64 / aarch64、生成更新清单。macOS 两个作业都跑了新链路的三步（`tauri:build` → `make:dmg`（hdiutil）→ 补架构后缀）。
+- Release `v1.0.2` 已被 Publish，**23 个资产**：六平台安装包 + 各自 `.sig` + `latest.json`，另有 `.msi`/`.deb` 的 `.sig`。资产名清单（GitHub 侧，空格已见下节变成点）：
+  `WB.Bridge_1.0.2_{aarch64,x86_64}.dmg`、`WB.Bridge_{aarch64,x86_64}.app.tar.gz(+.sig)`、
+  `WB.Bridge_1.0.2_{x64,arm64}-setup.exe(+.sig)`、`WB.Bridge_1.0.2_{x64,arm64}_en-US.msi(+.sig)`、
+  `WB.Bridge_1.0.2_{amd64,arm64}.AppImage(+.sig)`、`WB.Bridge_1.0.2_{amd64,arm64}.deb(+.sig)`。
+- ✅ **此前只能标注「待首跑核对」的三件事现在有实测答案**：
+  1. Linux 的 updater 包是**裸 `.AppImage`**，bundler 没有额外产出 `.AppImage.tar.gz`（生成脚本两种形态都接受，实测取前者）；
+  2. macOS 的补架构后缀步骤确实生效（两个架构各自 `WB Bridge_<arch>.app.tar.gz(.sig)`，Release 上无同名覆盖）；
+  3. **六条清单签名的签名者 key ID 逐字节解出全部 = `2B11F78BEA8A43F`**（`fmt=4544`、74 字节 Ed25519 盒），与 `plugins.updater.pubkey` 里唯一那条一致；六条 `.sig` 与 Release 上同名资产内容**逐字节相同**。
+
+### 🔴 缺陷：清单里六条 `url` 全部 404（空格被 GitHub 规范化成点）
+
+- 现象：`latest.json` 的 url 末段是 `WB%20Bridge_…`（`gen-latest-json.mjs` 按本地文件名 `encodeURIComponent`），而 GitHub 上传时把**资产名里的空格规范化成 `.`**，`name` 与 `browser_download_url` 都是点形式。
+- 实测（浏览器内 `fetch` 带 `Range: bytes=0-0`，`github.com` 本机 curl 不可达但 API 与浏览器可达）：
+  六个点形式全部走到 CDN（跨源重定向 → CORS 报错，即资产存在）；空格/`%20` 形式与一个不存在的点形式控制样本一样**直接 404**。
+- 为什么危害大：清单生成成功、六平台齐全、`.sig` 也都配得上公钥，**发布前没有任何一道闸能发现**；只有客户端在下载那一步才炸，而 v1.0.0/v1.0.1 没有 updater、当下无人会去下载 v1.0.2 的包，所以它属于「装过 v1.0.2 之后才第一次咬人」的类型。
+- 修复（本轮已做）：
+  - `scripts/gen-latest-json.mjs`：拼 url 前 `name.replace(/ /g, '.')`，并留注释说明规范化由来；
+  - `scripts/gen-latest-json.test.mjs`：成功路径的 url 断言改成点形式，另加「每个平台都要过同一条规范化」的断言（windows-x86_64）；
+  - `.github/workflows/release.yml`：`update-manifest` 作业新增一步「校验清单 url 指向的资产在 Release 上真的存在」，带 `GITHUB_TOKEN` 列 Release、把六条 url 末段与实际资产名逐条对账，任一不符 `exit 1`。
+- 本机对账验证（拿线上那份清单与修正后的清单各跑一遍同一段逻辑）：线上 v1.0.2 那份 **6/6 报错、exit 1**；按同一规则修正后 **6/6 OK、exit 0**。修正后的清单副本在 `/tmp/latest-fixed-v1.0.2.json`。
+
+### 测试与校验（如实报数）
+
+- `npm run test:prefs` **8 通过 / 0 失败**；`npm run test:manifest` **9 通过 / 0 失败**（含改写后的 url 断言）；`npm run test:updater-key` **13 通过 / 0 失败**（合计 30）。
+- `npx eslint .` 无输出（退出 0）；`npm run vite:build` 退出 0（100.87 kB JS / 29.00 kB CSS）。
+- `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/release.yml'))"` 通过；`update-manifest` 步骤名依次为：`actions/checkout@v4`、`安装 Node.js 24`、`下载六平台产物`、`生成 latest.json`、**`校验清单 url 指向的资产在 Release 上真的存在`**、`产物版本自检（…）`、`读取版本号（Release 标签名）`、`上传到 GitHub Release（…）`。
+- 未跑：`cargo test` / `clippy`（本轮未触碰任何 Rust 代码）。
+
+### 仍待处理 / 待用户决策
+
+- ⚠ **线上 v1.0.2 的 `latest.json` 仍是坏的那份**：重传资产属共享状态，只由用户操作（或等下一次发布由修复后的脚本覆盖写）。今天没有 updater -enabled 的旧客户端，因此暂无实际受害面。
+- ❌ **一次真实升级闭环仍未走通**：客户端拉到包、装完 `relaunch()` 起来；GUI 从未实机启动。
+- ⚠ 新增的 CI 对账步骤依赖 Draft Release 在带 `GITHUB_TOKEN` 时可见（Draft 未认证不可见），**该步骤本身尚未在 CI 上实跑过**——本轮修的是脚本与闸门，闸门效果要等下一次发布验证。
 
 ---
 
