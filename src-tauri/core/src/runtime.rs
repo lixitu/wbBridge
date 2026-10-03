@@ -228,8 +228,17 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 }
 
 /// JS 默认的 `version(file)`：真实执行 `<file> --version`（15s 超时、windowsHide）。
+///
+/// 探测对象是**尚未取得信任的外部二进制**（托管下载的运行时、以及本机各处发现的候选），所以环境
+/// 必须与 `serve` 一样只透传 `ENV_ALLOW`：继承宿主完整环境等于把其他 provider 的 Key 交给它。
 fn default_probe() -> Arc<ProbeFn> {
-    Arc::new(|file: String| Box::pin(async move { run_command(&file, &["--version"], None, None, Duration::from_secs(15)).await }))
+    let allowed = allowed_environment(&std::env::vars().collect::<Env>());
+    Arc::new(move |file: String| {
+        let allowed = allowed.clone();
+        Box::pin(async move {
+            run_command(&file, &["--version"], None, Some(&allowed), Duration::from_secs(15)).await
+        })
+    })
 }
 
 /// JS 默认的 `globalThis.fetch`：reqwest + 每请求超时 + 可选代理。
@@ -760,14 +769,22 @@ pub const ENV_ALLOW: &[&str] = &[
     "COMSPEC",
 ];
 
-/// 组装子进程环境（白名单 + XDG 隔离 + 代理 + OPENCODE_* 覆盖）。
-pub fn isolated_environment(root: &str, proxy_env: &Env, password: &str, host_env: &Env) -> Env {
+/// `ENV_ALLOW` 白名单过滤：宿主环境里只有这些变量名能进子进程，空值一律丢弃。
+/// 每一次 spawn（包括 `--version` 探测这类一次性调用）都必须先经过这里，
+/// 否则 `run_command` 会在未 `env_clear` 的分支上把宿主完整环境透传出去。
+pub fn allowed_environment(host_env: &Env) -> Env {
     let mut env: Env = HashMap::new();
     for key in ENV_ALLOW {
         if let Some(value) = host_env.get(*key).filter(|value| !value.is_empty()) {
             env.insert((*key).to_string(), value.clone());
         }
     }
+    env
+}
+
+/// 组装子进程环境（白名单 + XDG 隔离 + 代理 + OPENCODE_* 覆盖）。
+pub fn isolated_environment(root: &str, proxy_env: &Env, password: &str, host_env: &Env) -> Env {
+    let mut env: Env = allowed_environment(host_env);
     for name in ["config", "data", "cache", "state"] {
         env.insert(
             format!("XDG_{}_HOME", name.to_uppercase()),
@@ -895,7 +912,10 @@ pub async fn start_backend(
     log_file: fs::File,
     proxy_env: &Env,
 ) -> Result<Started, String> {
-    let actual_version = run_command(binary, &["--version"], None, None, Duration::from_secs(15)).await?;
+    // 版本回读同样只带白名单环境：这一步跑的是刚下载/刚发现的二进制。
+    let host_env = std::env::vars().collect::<Env>();
+    let probe_env = allowed_environment(&host_env);
+    let actual_version = run_command(binary, &["--version"], None, Some(&probe_env), Duration::from_secs(15)).await?;
     let root = join_host(&[data_dir, "opencode"]);
     for name in ["config", "data", "cache", "state", "project"] {
         let dir = join_host(&[&root, name]);
@@ -910,7 +930,7 @@ pub async fn start_backend(
         }
     }
     let password = generate_password();
-    let env = isolated_environment(&root, proxy_env, &password, &std::env::vars().collect::<Env>());
+    let env = isolated_environment(&root, proxy_env, &password, &host_env);
     let project = join_host(&[&root, "project"]);
 
     // 启动常驻服务前先刷新目录，避免首份目录快照落在内嵌的过期版本上。

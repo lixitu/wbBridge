@@ -355,31 +355,64 @@ impl App {
 /// 落盘由 `persist_status` 触发 —— 二者分开是为了保证「先取快照、后释放锁」，
 /// 避免 std::Mutex 跨越 await 持有。
 fn update(patch: Value) -> Value {
-    update_with_usage(patch, None)
+    update_with_usage(patch, None, None)
 }
 
-/// `update` 的用量变体：可选的 `(clientModelId, ok, durationMs)` 在**同一次持锁**内累加 `usage`。
+/// `update` 的用量/结果变体：可选的 `(clientModelId, ok, durationMs)` 与 `(clientModelId, result)`
+/// 在**同一次持锁**内累加 `usage`、写入 `modelResults`；两个 `None` 即原来的 `update` 语义。
 ///
-/// 必须与补丁合并共用一把锁：`status.json` 是全量快照而不是增量日志，并发请求各自读旧值再各自
-/// 回写时，后写者会覆盖先写者的计数。`None` 即原来的 `update` 语义。
-fn update_with_usage(patch: Value, usage_entry: Option<(&str, bool, i64)>) -> Value {
+/// 必须与补丁合并共用一把锁：`status.json` 是全量快照而不是增量日志，调用方先读旧值、再各自整体
+/// 回写时，后写者会覆盖先写者的计数与逐模型结果（并发上限 4 内即可复现）。
+fn update_with_usage(
+    patch: Value,
+    usage_entry: Option<(&str, bool, i64)>,
+    model_result: Option<(&str, &Value)>,
+) -> Value {
     let app = global_app();
     let mut guard = lock(&app.state);
-    if let (Some(target), Some(patch)) = (guard.as_object_mut(), patch.as_object()) {
+    apply_patch(&mut guard, &patch, usage_entry, model_result);
+    guard.clone()
+}
+
+/// `update_with_usage` 的合并本体，拆出来是为了能脱离全局 `App` 直接单测锁内语义。
+fn apply_patch(
+    state: &mut Value,
+    patch: &Value,
+    usage_entry: Option<(&str, bool, i64)>,
+    model_result: Option<(&str, &Value)>,
+) {
+    if let (Some(target), Some(patch)) = (state.as_object_mut(), patch.as_object()) {
         for (key, value) in patch {
             target.insert(key.clone(), value.clone());
         }
         target.insert("updatedAt".to_string(), json!(now_iso8601()));
     }
     if let Some((model, ok, duration_ms)) = usage_entry {
-        let current = guard.get("usage").cloned().unwrap_or(Value::Null);
+        let current = state.get("usage").cloned().unwrap_or(Value::Null);
         let next = accumulate_usage(&current, model, ok, duration_ms);
-        if let Some(target) = guard.as_object_mut() {
+        if let Some(target) = state.as_object_mut() {
             target.insert("usage".to_string(), next);
             target.insert("updatedAt".to_string(), json!(now_iso8601()));
         }
     }
-    guard.clone()
+    if let Some((model, result)) = model_result {
+        // 只写自己那一键，绝不接收调用方读好的整份 map —— 那正是并发请求互相吞结果的原因。
+        if let Some(map) = state.as_object_mut() {
+            let entry = map
+                .entry("modelResults".to_string())
+                .or_insert_with(|| json!({}));
+            if !entry.is_object() {
+                // 外部把上一份状态写成非对象时重建空表，而不是做会 panic 的键索引。
+                *entry = json!({});
+            }
+            if let Some(results) = entry.as_object_mut() {
+                results.insert(model.to_string(), result.clone());
+            }
+        }
+        if let Some(map) = state.as_object_mut() {
+            map.insert("updatedAt".to_string(), json!(now_iso8601()));
+        }
+    }
 }
 
 /// 用量口径：只有真实客户端请求（`source == "request"`）计入；探测与任何其它来源都不计。
@@ -443,6 +476,18 @@ fn accumulate_usage(current: &Value, model: &str, ok: bool, duration_ms: i64) ->
         }
     }
     usage
+}
+
+/// 上一份 `modelResults` 只有在是**对象**时才能沿用；形状不对就回落空对象。
+///
+/// `record` 会往里写 `model_results[model] = result`，而 serde_json 对非对象做键索引是 `panic!`
+/// （`Null` 除外）；壳的 release profile 是 `panic = "abort"`，一次本地文件损坏就会带走整个 GUI 进程。
+fn restored_model_results(previous: &Value) -> Value {
+    previous
+        .get("modelResults")
+        .cloned()
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}))
 }
 
 /// 把状态快照串行写入 `status.json`（对应 `statusWrites` 链）。
@@ -697,7 +742,7 @@ async fn record(
         let mut patch = Map::new();
         patch.insert("lastRequest".to_string(), result.clone());
         insert_all(&mut patch, captured.as_ref());
-        persist_status(update_with_usage(Value::Object(patch), usage_entry));
+        persist_status(update_with_usage(Value::Object(patch), usage_entry, None));
         return;
     }
 
@@ -713,15 +758,6 @@ async fn record(
     // 同一次结果只写一次 status.json：两次 update 会让每次变更触发一次原子写与一次事件推送。
     let mut patch = Map::new();
     patch.insert("lastRequest".to_string(), result.clone());
-    if !model.is_empty() {
-        let mut model_results = app
-            .snapshot()
-            .get("modelResults")
-            .cloned()
-            .unwrap_or_else(|| json!({}));
-        model_results[model] = result;
-        patch.insert("modelResults".to_string(), model_results);
-    }
     patch.insert(
         "availableModels".to_string(),
         Value::Array(
@@ -732,7 +768,9 @@ async fn record(
         ),
     );
     insert_all(&mut patch, captured.as_ref());
-    persist_status(update_with_usage(Value::Object(patch), usage_entry));
+    // `modelResults` 走锁内逐键写入（不再由这里读整份快照再整体覆盖）。
+    let model_result = (!model.is_empty()).then_some((model, &result));
+    persist_status(update_with_usage(Value::Object(patch), usage_entry, model_result));
 }
 
 // ---------------------------------------------------------------------------
@@ -943,7 +981,7 @@ async fn run_probe_batch(
         update_and_persist(patch);
 
         let started = Instant::now();
-        let meta = SharedMeta::new(json!({ "probe": true }));
+        let meta = SharedMeta::new(probe_meta());
         // 每个模型一个 deadline：重试与首次尝试共用同一预算，整批探测耗时有界。
         let (deadline, signal) = AbortSignal::channel();
         let timer = tokio::spawn({
@@ -1113,6 +1151,12 @@ fn with_field(base: &Value, key: &str, value: Value) -> Value {
     Value::Object(object)
 }
 
+/// 探测请求的元信息。`probe: true` 是「探测路径不得启用辅助模型转写」这条数据红线的开关点
+/// （`backend.rs` 的两处转写闸门都读它），两个探测入口必须共用本函数。
+fn probe_meta() -> Value {
+    json!({ "probe": true })
+}
+
 /// formatUnsupported 后的纯对话尝试：证明模型至少能按 chatOnly 通道服务。
 async fn chat_only_attempt(model: &Value) -> Result<(), BridgeError> {
     let app = global_app();
@@ -1132,7 +1176,7 @@ async fn chat_only_attempt(model: &Value) -> Result<(), BridgeError> {
         AbortSignal::timeout(Duration::from_secs(30)),
     ]);
     let context = RequestContext {
-        meta: SharedMeta::new(json!({})),
+        meta: SharedMeta::new(probe_meta()),
         signal,
         activity: Activity::silent(),
     };
@@ -1612,7 +1656,7 @@ fn bootstrap(options: &StartOptions) -> Result<Arc<App>, String> {
         "version": "0.2.0",
         "opencodeVersion": Value::Null,
         "models": [],
-        "modelResults": previous.get("modelResults").cloned().unwrap_or_else(|| json!({})),
+        "modelResults": restored_model_results(&previous),
         // 用量跨重启延续（与 modelResults 同法）：上一份形状合法就整体沿用，`since` 与累计值都不重置；
         // 缺字段/形状不对（旧版核心写的 status.json）才重建基线。
         "usage": previous
@@ -2063,6 +2107,76 @@ mod tests {
         drop_pending(&mut pending, "b");
         drop_pending(&mut pending, "b");
         assert!(pending.is_empty());
+    }
+
+    /// 数据红线：探测入口的元信息必须带 `probe` 标记 —— `backend.rs` 的两处转写闸门靠它
+    /// 在探测路径禁用辅助模型转写。丢掉标记等于让转写重新参与「模型是否可用」的判决。
+    #[test]
+    fn probe_meta_carries_the_flag_that_bans_transcription() {
+        let meta = probe_meta();
+        let flag = meta.get("probe").cloned().unwrap_or(Value::Null);
+        assert!(
+            truthy(&flag),
+            "探测元信息必须让 backend.rs 的转写闸门判定为「禁用」：{meta}"
+        );
+    }
+
+    /// 上一份 `status.json` 的 `modelResults` 形状不对时必须回落空对象：`record` 对整份 map 做
+    /// 键索引，而 serde_json 对非对象（数组/字符串/数字）索引是 panic，壳 release 又是 abort。
+    #[test]
+    fn non_object_previous_model_results_falls_back_to_empty_map() {
+        for shape in [json!([]), json!("x"), json!(3), json!(null), Value::Null] {
+            let previous = json!({ "modelResults": shape });
+            assert_eq!(
+                restored_model_results(&previous),
+                json!({}),
+                "非对象的上一份 modelResults 必须被丢弃：{shape}"
+            );
+        }
+        // 缺失同样回落空对象；对象则整体沿用（逐模型状态要跨重启延续）。
+        assert_eq!(restored_model_results(&json!({})), json!({}));
+        let previous = json!({ "modelResults": { "OC · Foo": { "ok": true } } });
+        assert_eq!(
+            restored_model_results(&previous),
+            json!({ "OC · Foo": { "ok": true } })
+        );
+    }
+
+    /// 并发请求各自读旧 `modelResults` 再整体回写时，后写者会吞掉先写者的那一键。
+    /// 锁内逐键合并必须让两份结果同时在场。
+    #[test]
+    fn model_results_merge_keeps_both_concurrent_writers() {
+        let mut state = json!({ "modelResults": {} });
+        apply_patch(
+            &mut state,
+            &json!({}),
+            None,
+            Some(("OC · A", &json!({ "ok": true }))),
+        );
+        apply_patch(
+            &mut state,
+            &json!({ "phase": "ready" }),
+            Some(("OC · B", true, 12)),
+            Some(("OC · B", &json!({ "ok": false }))),
+        );
+        let results = state.get("modelResults").cloned().unwrap_or(Value::Null);
+        assert!(
+            results.get("OC · A").is_some() && results.get("OC · B").is_some(),
+            "逐模型结果不得互相覆盖：{results}"
+        );
+        // usage 仍在同一次持锁内累加，且补丁与结果写入共用一份快照落盘。
+        assert_eq!(state["usage"]["total"]["requests"], json!(1));
+        assert_eq!(state["phase"], json!("ready"));
+        assert!(state.get("updatedAt").is_some());
+    }
+
+    /// 合并路径自身也不能被非对象的 `modelResults` 带崩（外部改写过 status.json 的情形）。
+    #[test]
+    fn model_results_merge_repairs_a_non_object_map() {
+        let mut state = json!({ "modelResults": [] });
+        apply_patch(&mut state, &json!({}), None, Some(("OC · A", &json!({ "ok": true }))));
+        assert!(state["modelResults"].is_object(), "合并必须重建对象而非 panic");
+        assert_eq!(state["modelResults"]["OC · A"], json!({ "ok": true }));
     }
 
     /// api-key 引导红线：空白文件必须重新生成，而不是 `trim()` 成空串沿用。

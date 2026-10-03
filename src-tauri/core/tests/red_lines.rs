@@ -272,6 +272,45 @@ fn subprocess_environment_only_passes_the_allow_list() {
 }
 
 #[test]
+fn version_probe_child_environment_only_passes_the_allow_list() {
+    // `--version` 探测跑的是「尚未取得信任的外部二进制」（托管下载的运行时、本机各处候选）。
+    // 这一类一次性 spawn 曾走过 `env: None` 分支，等于把宿主的 provider Key 整体交给它。
+    let mut host = HashMap::new();
+    for name in [
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "AWS_SECRET_ACCESS_KEY",
+        "WorkBuddy_TOKEN",
+        "HOME",
+        "PATH",
+    ] {
+        host.insert(name.to_string(), format!("leak-{name}"));
+    }
+    host.insert("LANG".to_string(), String::new());
+
+    let allowed = runtime::allowed_environment(&host);
+    for name in allowed.keys() {
+        assert!(
+            runtime::ENV_ALLOW.contains(&name.as_str()),
+            "白名单之外的变量进了子进程：{name}"
+        );
+    }
+    for name in [
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "AWS_SECRET_ACCESS_KEY",
+        "WorkBuddy_TOKEN",
+    ] {
+        assert!(!allowed.contains_key(name), "宿主凭据泄漏进探测子进程：{name}");
+    }
+    assert_eq!(allowed.get("HOME").map(String::as_str), Some("leak-HOME"));
+    assert!(
+        !allowed.contains_key("LANG"),
+        "空值不得透传：子进程会看到 LANG=\"\"，与「未设置」是两种行为"
+    );
+}
+
+#[test]
 fn sync_only_owns_entries_tagged_with_its_marker() {
     assert_eq!(
         sync::OWNER,
