@@ -73,6 +73,21 @@ pub fn resolve_target_models_file(
     }
 }
 
+/// 导入链的对称入口：校验用户手动选择的 `models.json`（面板「导入」动作）。
+///
+/// 两个目标的配置**同名同形**，共用同一校验器；包装层存在的意义是让 `orchestration.rs`
+/// 对两个目标都只经本模块引用（发现链 `resolve_target_models_file` 与导入链同构），
+/// 并在 CodeBuddy 将来获得自己的导入动作时无需再动调用方。与发现链不同，这里
+/// **保留原始错误**（路径 / 格式提示是面板可见的契约文案），绝不做 `.ok()` 吞错。
+pub fn validate_selected_models_file(
+    target: Target,
+    file: &str,
+) -> Result<String, workbuddy_config::ConfigError> {
+    match target {
+        Target::WorkBuddy | Target::CodeBuddy => workbuddy_config::validate_models_file(file),
+    }
+}
+
 /// 遍历全部目标并定位其配置文件。返回 `(目标, 定位结果)` 的有序列表——
 /// `None` 就是「未检测到该插件」，调用方按目标分发时跳过并说明原因。
 pub fn detect_targets(saved: Option<&str>, env: &Env, home: &str) -> Vec<(Target, Option<String>)> {
@@ -288,6 +303,21 @@ mod tests {
         let detected = detect_targets(None, &env_of(&[]), &home);
         assert_eq!(detected[1], (Target::CodeBuddy, None));
         assert!(detected[0].1.is_some(), "WorkBuddy 不受 CodeBuddy 状态影响");
+    }
+
+    #[test]
+    fn validate_selected_file_dispatches_to_the_shared_validator() {
+        // 导入链包装：合法文件原样通过；坏形状保留原始契约文案（不被 .ok() 吞掉）。
+        let scratch = Scratch::new("validate-selected");
+        let ok = scratch.write(".codebuddy/models.json", "[]");
+        assert_eq!(
+            validate_selected_models_file(Target::CodeBuddy, &ok).expect("合法文件应通过"),
+            ok
+        );
+        let bad = scratch.write("shape/models.json", "{\"models\":{}}");
+        let error =
+            validate_selected_models_file(Target::WorkBuddy, &bad).expect_err("坏形状必须报错");
+        assert_eq!(error.to_string(), crate::workbuddy_config::INVALID_FORMAT_MESSAGE);
     }
 
     #[test]

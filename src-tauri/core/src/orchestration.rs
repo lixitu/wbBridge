@@ -38,8 +38,7 @@ use crate::server::{
 };
 use crate::sync::{atomic_write, sync_models, SyncOptions};
 use crate::system_proxy::system_proxy_environment;
-use crate::targets::{aggregate_sync, resolve_target_models_file, Target};
-use crate::workbuddy_config::validate_models_file;
+use crate::targets::{aggregate_sync, resolve_target_models_file, validate_selected_models_file, Target};
 use crate::Env;
 
 /// 独立可执行的用法说明（`src/main.rs` 打印）。
@@ -1961,7 +1960,7 @@ async fn import_models(selected: Option<Value>) -> Result<Value, BackendError> {
         let Some(selected_file) = value.as_str().map(str::to_string) else {
             return Err(BackendError::plain("modelsFile 必须是字符串"));
         };
-        validate_models_file(&selected_file)
+        validate_selected_models_file(Target::WorkBuddy, &selected_file)
             .map_err(|error| BackendError::plain(error.to_string()))?;
         let current = app.workbuddy_models_file();
         let outdated = current
