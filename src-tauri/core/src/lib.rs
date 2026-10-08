@@ -57,6 +57,8 @@ pub mod runtime;
 pub mod server;
 pub mod sync;
 pub mod system_proxy;
+pub mod targets;
+pub mod codebuddy_config;
 pub mod workbuddy_config;
 
 pub use json::Env;

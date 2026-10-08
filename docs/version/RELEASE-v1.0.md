@@ -4,7 +4,47 @@
 > 命名规则：`RELEASE-v{主版本}.md`；次版本迭代追加到文件顶部新分节。
 > 版本纪律以根目录 `AGENTS.md`「当前基准版本」章节为准，本文件不另立规则。
 > 整理规则：同类问题多次修复的条目合并为一条，统一记述于最终修复版本；被合并的早期版本保留编号与合并指向，不再重复正文。
-> 当前最新版本：**v1.0.3**。
+> 当前最新版本：**v1.0.4**。
+
+---
+
+## v1.0.4
+
+> **状态**:。五处落点已一致为 `1.0.4`（`npm run version:check` 实测「全部 5 处版本号一致（1.0.4）」），但**尚未构建任何安装包、尚未打标签**，且版本落点提交仍未执行——按铁律先提交、再在那一个提交上打 `v1.0.4`。
+> **日期**: 2026-10-08
+> **上一版本**: v1.0.3（五处落点已一致、尚未打标签；v1.0.2 为最近一个已 Publish 的 Release，23 个资产）
+> **GitHub Release 正文**: [`RELEASE-NOTES-v1.0.4.md`](RELEASE-NOTES-v1.0.4.md)
+> **本版主题**: 模型发布多插件写入——自动检测 WorkBuddy 与 CodeBuddy，向所有检测到的目标分发写入；单目标失败不影响其他目标，未安装目标跳过并说明原因
+> **版本推进理由**: 与 v1.0.3 **不同类、不同根因**——新增第二个写入目标（检测、定位、分发、聚合均为此前不存在的功能），且**维护者明确要求推进版本号**（`npm run version:set -- 1.0.4`），末位 +1。
+
+### 一、版本号落点（`npm run version:set -- 1.0.4` + `npm run version:check` 实测）
+
+| 位置 | 值 | 说明 |
+|---|---|---|
+| 根 `package.json` → `version` | **1.0.4** | 版本单一来源 |
+| `src-tauri/tauri.conf.json` → `version` | **1.0.4** | 打包产物版本（安装包名随之为 `WB Bridge_1.0.4_*`）与更新清单 `version` 来源 |
+| `src-tauri/Cargo.toml` → `[package] version` | **1.0.4** | 壳工程同步落点（`src-tauri/Cargo.lock` 由 cargo 自动同步，须一并提交） |
+| `AGENTS.md`「当前基准版本」两行 | **1.0.4** | 文档侧同步落点 |
+| 面板 `__APP_VERSION__` | `v1.0.4` | `vite.config.js` 构建期注入（自带 `v` 前缀），非独立落点 |
+
+### 二、本版内容（代码范围 `v1.0.3..HEAD`，含未提交的工作区改动）
+
+- **新增 `src-tauri/core/src/targets.rs`**：写入目标唯一定义（`Target::ALL`：WorkBuddy / CodeBuddy）＋ 逐目标检测（定位成功即「已安装」，不猜进程/注册表）＋ 分发结果聚合 `aggregate_sync`（count 之和、顶层 error 仅在全部定位目标失败时出现）；6 项单测。
+- **新增 `src-tauri/core/src/codebuddy_config.rs`**：与 `workbuddy_config.rs` 逐行对照的 CodeBuddy 定位（`BUDDY_CODEBUDDY_MODELS_FILE` > `CODEBUDDY_CONFIG_DIR` > `CODEBUDDY_DATA_FOLDER_NAME` > 默认 `~/.codebuddy/`），复用同一校验器，失效绝不静默回退；4 项单测。
+- **`orchestration.rs`**：App 持有双目标路径（`workbuddy_models_file` / `codebuddy_models_file`，对称命名）；bootstrap 双目标定位并新增顶层 `codeBuddyModelsFile`；`sync_published` 改为对每个已定位目标各写一次（同一份发布集、同一套 `sync_models` 幂等合并），`sync.targets.{workBuddy,codeBuddy}` 逐目标上报。
+- **面板**：集成视图逐目标展示状态 + 「CodeBuddy 配置」只读行；底部摘要行措辞不绑定单一目标；旧核心（无 `targets`）自动回退单行展示。
+- **文档**：`docs/contract.md` 新增「写入目标与检测规则」；`docs/version/RELEASE-NOTES-v1.0.4.md` 为 GitHub Release 正文。
+
+### 三、验证（2026-10-08 本轮真实执行）
+
+核心 `cargo test` **237 通过 / 0 失败**（lib 215 + `js_parity` 11 + `red_lines` 11，本版新增 10 项）、`git diff --stat src-tauri/core/tests/fixtures` 为空（对拍逐字节等价）、核心 `cargo clippy --all-targets` **0 warning**、壳 `cargo test --lib` **9 通过**、JS 三组 **8 / 9 / 13**、`npx eslint .` 0 problem、`npm run vite:build` ✓、`npm run version:check` **5 处一致（1.0.4）**。
+
+### 四、未验证（不得伪装）
+
+- ❌ GUI 实机启动与真实双插件环境下的写入效果（托盘、面板逐目标展示属「必须实机点一遍」）。
+- ❌ CodeBuddy 默认目录 `~/.codebuddy/models.json` 是比照 WorkBuddy 约定的假设（仓库此前无 CodeBuddy 线索）；实际不同时改 `codebuddy_config.rs::DEFAULT_DATA_FOLDER` 或用 `BUDDY_CODEBUDDY_MODELS_FILE` 指定。
+- ❌ v1.0.4 安装包（本机与 CI）尚未构建；一次真实升级闭环仍未验证。
+- ⚠ 工作区既有状态（非本版改动）：`docs/version/RELEASE-NOTES-v1.0.3.md` 处于已删除未提交状态，由维护者定夺。
 
 ---
 

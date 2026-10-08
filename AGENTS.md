@@ -40,6 +40,7 @@
 | 多平台接入 Stage 2（命名空间参数化：`split_namespace`/`join_namespace`/`free_models_in`/`model_target`，`client_model_id` 前缀按命名空间推导） | ✅ **行为零变化，已由既有测试自证**：核心 `cargo test` **222 通过 / 0 失败**（lib 201 + js_parity 11 + red_lines 10），其中 **`js_parity` 11 全绿 + `git diff --stat src-tauri/core/tests/fixtures` 为空**就是「输出逐字节不变」的证明；两侧 clippy **0 warning**、壳 `cargo test --lib` **9 通过**、`version:check` 5 处一致（**1.0.2 未推进**——等价移植属禁止推进情形）。🔴 过程中被既有测试抓到的一处真实回归：原方案想让「未知命名空间原样当前缀」，但 `sync.rs` 的 4 个既有测试（和对拍夹具）用的是 `vendor/gpt` 这类**合成命名空间**，前缀一变输出就变 → 现规则收紧为**只有注册表平台换 `label`，其余一律 `OC`**。`model_target` 对无命名空间 id 的回落（`opencode` + 空 `modelID`）与旧的「截掉前 9 字节」不同，该形态今日不可达，已用单测把两种写法在全部真实 id 上钉成同值 |
 | 多平台接入 Stage 1（`providers.rs` 四平台注册表 + `providers.json` 凭据通道 + 三条 `provider-*` 管理动作） | ⚠ **只有核心与壳侧链路，端到端无效**。已实测：核心 `cargo test` 落地时 **218 通过 / 0 失败**（lib 197 + js_parity 11 + red_lines 10；Stage 2 后为 222/201，见上）、壳 `cargo test --lib` **9 通过**、两侧 clippy **0 warning**、`npm run version:check` 5 处一致（1.0.2）。🔴 **未验证且当前为真**：① 写进 `providers.json` 的 Key **还没有任何消费者**（`isolated_config()` 注入与 `free_models` 注册表驱动属 Stage 3），四平台现在**不会多出一个模型**；② 面板没有入口（Stage 5）；③ 上游 OpenCode 是否把注入的 `provider.<id>` 回显进 `providers.all[]` **仍未实测**，这是 Stage 3 能否复用 `free_models` 的唯一前提；④ 真实 Key 从未在 GUI 输入过、`0600` 只在 unix 断言过。详见 `docs/plans/2026-10-03-upgrade-roadmap-and-v1.0.3-multi-provider-plan.md` 与 `docs/validation.md` 顶部 |
 | 2026-10-03 全量代码复审后的四项最小修复（红线 7 子进程环境、红线「探测路径不得转写」、`status.json` 形状、`modelResults` 并发丢写） | ⚠ **逻辑已测、GUI 与真实并发未实测**。① `runtime.rs` 新增 `allowed_environment`，`default_probe` 与 `start_backend` 里「安装后回读 `--version`」两处一次性子进程调用改为先过 `ENV_ALLOW` 白名单——此前它们走 `run_command(env: None)`，而该分支**不做 `env_clear`**，等于把宿主完整环境（含一切凭据类变量）透传给下载的 OpenCode 进程；`isolated_environment` 提用同一函数，行为不变。② `orchestration.rs::probe_meta()` 让两个探测入口都带 `probe: true`（`chat_only_attempt` 原先传空对象，`backend.rs` 的两处转写闸门都以该标记为开关，探测路径因此**可以**启用辅助模型转写，违反数据红线）。③ `restored_model_results` 把上一份 `status.json` 里**非对象**的 `modelResults` 回落成空表（原先只挡缺失，`"x"` 这类形状会让后续一次写入 panic，而发布配置是 `panic = "abort"` → 整个 GUI 进程没）。④ `apply_patch` 改成只写调用方自己那一键（原先 `record()` 先读整份快照、整体塞回 patch，两个并发请求会互相吞掉对方的 `modelResults`），`update()` 与 `update_with_usage()` 的既有语义不变。✅ 已实测：核心 `cargo test` **227 通过 / 0 失败**（lib 205 + js_parity 11 + red_lines 11，本轮新增 5 项）、两侧 clippy **0 warning**、壳 `cargo test --lib` **9 通过**、三组 JS 单测 **8 / 9 / 13** 通过、eslint 与 `vite:build` 通过、`version:check` 5 处一致（**1.0.3**，按用户要求推进）。🔴 **未验证**：白名单生效后的真实子进程表现与并发写盘效果都要在实机看（属"必须点一遍"类别）；`tests/fixtures` 未改（`git diff --stat` 为空即对拍仍逐字节等价）。⚠ 复审中被**源码推翻**的两条指控不得"顺手修"：serde_json 1.0.151 默认 `remaining_depth: 128` 且未开 `unbounded_depth`，超深请求体是 `TooDeep` 错误而非栈溢出；非流式与流式两条链路在记录前都查了 `signal.is_aborted()`（`server.rs:972`、`server.rs:1074`），socket 关闭时 hyper 还会直接丢弃 handler，`on_result` 不会执行，因此不存在"取消记成功" |
+| 模型发布多插件写入（双目标 WorkBuddy + CodeBuddy：`targets.rs` 目标定义/检测/聚合、`codebuddy_config.rs` 对照定位、`orchestration.rs` 双目标分发与 `sync.targets`/`codeBuddyModelsFile` 状态形状、面板逐目标展示） | ⚠ **逻辑已测、GUI 与真实 CodeBuddy 环境未实测**。✅ 已实测：核心 `cargo test` **237 通过 / 0 失败**（lib 215 + js_parity 11 + red_lines 11，本轮新增 10 项）、`git diff --stat src-tauri/core/tests/fixtures` 为空（对拍仍逐字节等价）、核心 clippy **0 warning**、壳 `cargo test --lib` **9 通过**、三组 JS 单测 **8 / 9 / 13**、eslint 与 `vite:build` 通过、`version:check` 5 处一致（**1.0.4**，按用户要求推进）。🔴 **未验证**：CodeBuddy 默认目录 `~/.codebuddy/models.json` 是比照 WorkBuddy 约定的假设（仓库此前无 CodeBuddy 线索；实际不同时改 `codebuddy_config.rs::DEFAULT_DATA_FOLDER` 或用 `BUDDY_CODEBUDDY_MODELS_FILE` 指定）；`sync.targets` 与顶层 `codeBuddyModelsFile` 属加法式变更（schemaVersion 保持 1）；GUI 逐目标展示与真实双插件写入效果必须实机点一遍；安装包尚未构建 |
 | `cargo fmt --check` 全绿 | ❌ 未达成（本仓库不以 fmt 为准，勿在无关文件上顺手格式化） |
 
 ## 项目概述与定位
@@ -74,7 +75,7 @@ WB Bridge 是一个**跨平台托盘工具**，通过**隔离的 OpenCode 技术
 | 目的 | 命令 | 执行目录 | 说明 |
 |---|---|---|---|
 | 安装前端依赖 | `npm install` | 仓库根 | 根 `package.json`（devDeps：`@tauri-apps/cli`、`vite`、`@vitejs/plugin-vue`、`eslint`、`@eslint/js`；deps：`vue`） |
-| 运行全部核心测试 | `cargo test`（或 `npm run test`） | `src-tauri/core/` | 基准 **227 通过 / 0 失败**：lib 205 + `js_parity` 11 + `red_lines` 11（约 0.3s，另有 bin/doc-test 0 用例）；壳侧另有 `cargo test --lib`（`src-tauri/`）**9 通过 / 0 失败**（其中 `shell_action_routes_match_the_core_contract` 逐项对齐 8 条动作） |
+| 运行全部核心测试 | `cargo test`（或 `npm run test`） | `src-tauri/core/` | 基准 **237 通过 / 0 失败**：lib 215 + `js_parity` 11 + `red_lines` 11（约 0.3s，另有 bin/doc-test 0 用例）；壳侧另有 `cargo test --lib`（`src-tauri/`）**9 通过 / 0 失败**（其中 `shell_action_routes_match_the_core_contract` 逐项对齐 8 条动作） |
 | 运行面板偏好测试 | `npm run test:prefs` | 仓库根 | = `node --test src/core/prefs.test.js`，基准 **8 通过 / 0 失败**（白名单/凭据字段投影/视图清洗/坏数据回落/存储不可用降级/超大值拒写/静默检查节流）；只测 `src/core/prefs.js`，不联网、不编译 Rust |
 | 运行更新清单生成测试 | `npm run test:manifest` | 仓库根 | = `node --test scripts/gen-latest-json.test.mjs`，基准 **9 通过 / 0 失败**；用临时产物目录跑真脚本，钉住六平台成功路径与缺平台/缺签名/漏架构后缀/歧义产物等失败路径。**严禁**改成真实联网或读仓库 `src-tauri/target/` 下的产物 |
 | 运行 updater 签名注入测试 | `npm run test:updater-key` | 仓库根 | = `node --test scripts/with-updater-key.test.mjs`，基准 **13 通过 / 0 失败**；钉住 env 文件取值优先级（进程环境 > `.env.local` > `.env` > `~/.tauri/wbBridge{,-updater}.env`，**显式空口令压过文件里的口令**、`~/…` 先展开）、内联位的两种形态（单行 base64 全文 vs `.key` 文件路径 → 读成全文并 **trim**，尾部换行会让 tauri 报 `Invalid symbol 10`）、路径注入后删除与之互斥的 `_PATH`、明文钥显式置空口令、加密钥缺口令**只告警不阻断**、公钥配对**只认配置里第一条且只告警**、`buildCommand` 的三种入参形态、CLI 在**相对路径**调用下确实执行且**任何输出都不回显密钥**。接线断言：`tauri:build` 确实经本包装器、`build` 链 `make:dmg`、`release.yml` 把私钥读成 `vars.` 且调用 `npm run tauri:build`（不再有 `tauri-action`、不再有私钥前置步骤）、`plugins.updater.pubkey` **恰好一条公钥**、`bundle.targets` **不含 dmg**。**不联网、不调 tauri CLI、不读 `~/.tauri`、不碰真实私钥**（用合成的假 base64 串与临时目录） |
@@ -128,6 +129,7 @@ WB Bridge 是一个**跨平台托盘工具**，通过**隔离的 OpenCode 技术
 | `BUDDY_PORT` | `41980` | HTTP 端口；非 1024–65535 的整数直接失败退出（嵌入壳时由壳显式传入 `StartOptions.port`，不读环境变量） |
 | `BUDDY_DATA_DIR` | 平台数据目录（见下） | 覆盖数据目录（嵌入壳时由 `StartOptions.data_dir` 注入 app_data_dir） |
 | `BUDDY_MODELS_FILE` | macOS/Linux `~/.workbuddy/models.json` | 覆盖 WorkBuddy 配置文件路径（Windows 走"已保存值 → 发现"流程） |
+| `BUDDY_CODEBUDDY_MODELS_FILE` | 无 | 覆盖 CodeBuddy 的 models.json 路径（优先级最高；另有对称的 `CODEBUDDY_CONFIG_DIR` / `CODEBUDDY_DATA_FOLDER_NAME`，默认目录 `~/.codebuddy`） |
 | `BUDDY_NO_SYNC` | 未设置 | `=1` 时跳过启动导入与后续模型同步 |
 | `BUDDY_OPENCODE_PATH` | 无 | 首选 OpenCode 可执行文件路径（优先级最高） |
 | `BUDDY_PARENT_PID` | 无 | 父进程 pid；父进程消失则核心自行优雅关停 |
@@ -191,6 +193,8 @@ wbBridge/
 │       │   ├── handoff.rs        ← 原生工具 handoff：构建客户端动作、拒绝反馈、动作校验
 │       │   ├── sync.rs           ← WorkBuddy models.json 原子写 + 增量合并（OWNER 标记、锁、.bak）
 │       │   ├── workbuddy_config.rs ← models.json 定位与校验（不猜测、不创建文件）
+│   ├── codebuddy_config.rs ← CodeBuddy models.json 定位（对照 workbuddy_config.rs）
+│   ├── targets.rs ← 写入目标：检测、分发、聚合
 │       │   ├── system_proxy.rs   ← 系统代理解析（macOS scutil / Windows 注册表）与子进程环境
 │       │   ├── reasoning.rs      ← 推理档位映射与 WorkBuddy 回退策略
 │       │   ├── model_status.rs   ← 模型状态构造、请求元信息、客户端展示 ID（`OC · 名称`）
@@ -210,7 +214,7 @@ wbBridge/
 ```
 
 > **为什么核心是 `src-tauri/core/` 而不是并进壳的单个 crate**：核心仍是独立 crate（`wbbridge-core`，
-> 且是**独立 workspace**），壳通过 `path = "core"` 依赖把它静态编进同一进程。这样核心的 227 个测试
+> 且是**独立 workspace**），壳通过 `path = "core"` 依赖把它静态编进同一进程。这样核心的 237 个测试
 > 不必编译 tauri/webkit 依赖图（CI 的 Linux 测试任务因此无需装 libwebkit2gtk），`wbbridge-core`
 > 也能单独构建出可执行文件做进程级冒烟；同时全部 Rust 代码物理位置都在 `src-tauri/` 下。
 > 合并成单 crate 会把这三点全部丢掉，故不采用。
@@ -314,6 +318,8 @@ start_backend
 | `handoff.rs` | `build_handoff`、`handoff_input`、`reject_feedback`、`validate_action`、`has_category` | 原生工具 handoff 协议 |
 | `sync.rs` | `OWNER`（`'buddy-bridge-v1'`）、`LOCK_STALE_MS`、`atomic_write`、`merge_models`、`sync_models`/`sync_models_with`、`SyncOptions`、`SyncOutcome`、`SyncIo`、`SyncError` | WorkBuddy 配置写入与增量合并 |
 | `workbuddy_config.rs` | `validate_models_file`、`resolve_models_file`、`resolve_models_path`、`ConfigError`、`INVALID_PATH_MESSAGE` | models.json 定位与校验 |
+| `codebuddy_config.rs` | `DEFAULT_DATA_FOLDER`（`.codebuddy`）、`MISSING_MESSAGE`、`resolve_models_file` | CodeBuddy `models.json` 定位的对照实现（优先级与空串假值语义与 WorkBuddy 版逐行对照、复用同一校验器、失效绝不静默回退） |
+| `targets.rs` | `Target{WorkBuddy,CodeBuddy}`、`Target::ALL`、`resolve_target_models_file`、`detect_targets`、`missing_reason`、`aggregate_sync` | 模型发布写入目标的唯一真相：「已安装」只以定位成功判定；`aggregate_sync` 产出 `sync.targets` 形状（count 为各成功目标之和、顶层 error 仅在全部定位目标失败时出现） |
 | `system_proxy.rs` | `parse_system_proxy`、`system_proxy_environment`、`environment_from_output`、`parse_windows_proxy`、`js_number`、`ProxyError` | 系统代理发现与子进程 env 映射 |
 | `reasoning.rs` | `EFFORT_LEVELS`、`reasoning_efforts`、`work_buddy_reasoning` | 推理档位与回退策略 |
 | `model_status.rs` | `model_result`/`model_result_at`、`with_request_meta`、`client_model_id`、`OPENCODE_NAMESPACE`、`join_namespace(ns, key)`/`split_namespace(id)`（按**第一个** `/` 切，无 `/` 时命名空间为空串）、`CATEGORY_*`、`now_iso8601` | 状态记录与客户端展示 ID（前缀 = 注册表平台的 `label`，其余一律 `OC`）、全限定模型 id 的唯一拆拼处 |
@@ -377,8 +383,8 @@ start_backend
 
 ### 测试规范
 
-- 核心测试全部用 Rust：`cargo test`（`src-tauri/core/`）。基线 **227 通过 / 0 失败**：
-  - lib 单元测试 205（含 `src/*.rs` 内 `#[cfg(test)]`；其中 `providers.rs` 7 项覆盖注册表唯一性、空目录状态、set/read/clear 往返与只删指定平台、状态与落盘文件都不含 Key、坏输入不落盘、损坏或外来形态按「未配置」读；Stage 2 另加 4 项：`model_status.rs` 的「前缀只跟注册表走、`opencode`/无命名空间一律 `OC`」与「拆合无损且与旧的定长截串逐个同值」、`backend.rs` 的「`free_models_in` 选对命名空间且包装同值」与「`model_target` 拆 `{providerID, modelID}`」；2026-10-03 代码复审修复另加 4 项，均在 `orchestration.rs`：探测元信息必须带 `probe` 标记、上一份 `modelResults` 非对象时回落空表、并发请求各写自己那一键不互相吞、合并时对非对象 map 自愈）；
+- 核心测试全部用 Rust：`cargo test`（`src-tauri/core/`）。基线 **237 通过 / 0 失败**：
+  - lib 单元测试 215（含 `src/*.rs` 内 `#[cfg(test)]`；其中 `targets.rs` 6 项覆盖双目标检测（只装一个/两个都装）、CodeBuddy env 覆盖优先级、坏文件不回退、聚合的 count 求和与「全部定位目标失败才报顶层 error」、契约字段名自检；`codebuddy_config.rs` 4 项与 `workbuddy_config.rs` 测试逐条对照（env > saved > 默认、目录变量覆盖、空串假值回落、显式位置失效不回退）；其中 `providers.rs` 7 项覆盖注册表唯一性、空目录状态、set/read/clear 往返与只删指定平台、状态与落盘文件都不含 Key、坏输入不落盘、损坏或外来形态按「未配置」读；Stage 2 另加 4 项：`model_status.rs` 的「前缀只跟注册表走、`opencode`/无命名空间一律 `OC`」与「拆合无损且与旧的定长截串逐个同值」、`backend.rs` 的「`free_models_in` 选对命名空间且包装同值」与「`model_target` 拆 `{providerID, modelID}`」；2026-10-03 代码复审修复另加 4 项，均在 `orchestration.rs`：探测元信息必须带 `probe` 标记、上一份 `modelResults` 非对象时回落空表、并发请求各写自己那一键不互相吞、合并时对非对象 map 自愈）；
   - `tests/js_parity.rs` 11（每模块一组，比较 `tests/fixtures/*.json` 冻结的 `expected`）；**等价重构的验证方式就是以这 11 项全绿 + `git diff --stat src-tauri/core/tests/fixtures` 为空为准，不得改夹具**；
   - `tests/red_lines.rs` 11（运行期红线守卫；`provider_registry_is_reviewed_and_status_echoes_no_key_material` 钉死四平台 id 集合、https-only、`npm` 形态，以及写入真实 Key 后 `status()` 序列化里既无 Key 也无 `apiKey`；`version_probe_child_environment_only_passes_the_allow_list` 钉死 `--version` 这类一次性子进程调用同样只透传 `ENV_ALLOW` 白名单）。
   壳（`src-tauri/`）另有 `cargo test --lib` **9 通过**：日志尾部读取 4 项 + `shell_action_routes_match_the_core_contract`
@@ -512,12 +518,12 @@ start_backend
 
 | 项 | 值 | 来源 |
 |---|---|---|
-| 版本单一来源 | **1.0.3** | 根 `package.json` 的 `version` |
-| 壳工程同步落点 | **1.0.3** | `src-tauri/tauri.conf.json` 与 `src-tauri/Cargo.toml` 的 `[package] version` |
+| 版本单一来源 | **1.0.4** | 根 `package.json` 的 `version` |
+| 壳工程同步落点 | **1.0.4** | `src-tauri/tauri.conf.json` 与 `src-tauri/Cargo.toml` 的 `[package] version` |
 | 核心 crate 内部版本 | **0.1.0** | `src-tauri/core/Cargo.toml`（`wbbridge-core --version` 输出，与产品版本解耦，**不得"顺手对齐"**） |
 | 状态内置版本 | `0.2.0` | `src-tauri/core/src/orchestration.rs` 写入 `status.json` 的 `version`（沿自上游参考实现，界面上可见） |
 | 上游调研基线 | `0.2.5` | `docs/research/upstream-architecture.md` |
-| 测试基线 | **227 通过 / 0 失败**（lib 205 + js_parity 11 + red_lines 11，约 0.3s）；壳 `cargo test --lib` 9 通过；JS 侧 `test:prefs` 8 + `test:manifest` 9 + `test:updater-key` 13 通过（合计 30） | `src-tauri/core/` 下 `cargo test`、`src-tauri/` 下 `cargo test --lib`、仓库根三个 `npm run test:*` |
+| 测试基线 | **237 通过 / 0 失败**（lib 215 + js_parity 11 + red_lines 11，约 0.3s）；壳 `cargo test --lib` 9 通过；JS 侧 `test:prefs` 8 + `test:manifest` 9 + `test:updater-key` 13 通过（合计 30） | `src-tauri/core/` 下 `cargo test`、`src-tauri/` 下 `cargo test --lib`、仓库根三个 `npm run test:*` |
 | 迁移前 JS 基线 | 97 通过 / 0 失败（node v24.21.0） | 仓库外归档 `backup/wbBridge-node-20261001/core/test/` |
 | 运行时基线 | OpenCode 版本由 registry 最新版决定（不固定）；核心不再需要 Node | `src-tauri/core/src/runtime.rs` |
 

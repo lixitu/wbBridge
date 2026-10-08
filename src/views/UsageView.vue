@@ -68,10 +68,10 @@ function ms(value) {
         </tr>
       </tbody>
     </table>
-    <p v-else class="notice">还没有真实请求记录：WorkBuddy 通过本服务发起对话后才会出现统计。</p>
+    <p v-else class="notice">还没有真实请求记录：客户端（WorkBuddy / CodeBuddy）通过本服务发起对话后才会出现统计。</p>
 
     <p class="note">
-      口径：只统计 WorkBuddy 发出的真实请求（source = request），启动与手动「检测全部」的探测请求不计入；
+      口径：只统计客户端（WorkBuddy / CodeBuddy）发出的真实请求（source = request），启动与手动「检测全部」的探测请求不计入；
       客户端取消的请求不计为成功。免费额度与余额由上游 OpenCode 决定，本面板不查询、不估算。
     </p>
   </section>

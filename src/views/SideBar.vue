@@ -39,7 +39,7 @@ const groups = [
   },
   {
     title: '集成',
-    items: [{ id: 'workbuddy', icon: 'workbuddy', label: 'WorkBuddy 集成' }],
+    items: [{ id: 'workbuddy', icon: 'workbuddy', label: '插件集成' }],
   },
   {
     title: '其他',
@@ -52,7 +52,7 @@ const groups = [
   <aside>
     <img class="brand-mark" :src="logo" alt="WB Bridge" aria-hidden="true">
     <h1>WB Bridge</h1>
-    <p class="tagline">让 WorkBuddy 连接 OpenCode 免费模型</p>
+    <p class="tagline">让 WorkBuddy / CodeBuddy 连接 OpenCode 免费模型</p>
 
     <nav class="nav" aria-label="主导航">
       <section v-for="group in groups" :key="group.title" class="nav-group">

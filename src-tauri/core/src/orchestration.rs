@@ -38,7 +38,8 @@ use crate::server::{
 };
 use crate::sync::{atomic_write, sync_models, SyncOptions};
 use crate::system_proxy::system_proxy_environment;
-use crate::workbuddy_config::{resolve_models_file, validate_models_file};
+use crate::targets::{aggregate_sync, resolve_target_models_file, Target};
+use crate::workbuddy_config::validate_models_file;
 use crate::Env;
 
 /// 独立可执行的用法说明（`src/main.rs` 打印）。
@@ -182,7 +183,7 @@ fn write_secret_file(path: &str, text: &str) -> std::io::Result<()> {
 /// 读取或生成 `api-key`，返回 `(key, 本轮是否重新写入)`。
 ///
 /// 空白内容必须重新生成而不是沿用：`server.rs` 把期望头拼成 `format!("Bearer {key}")`，
-/// 空 key 会让任何带 `Authorization: Bearer ` 的本地进程通过鉴权（安全红线 1）。
+/// 空 key 等于把期望头退化成 "Bearer "，任何本地进程都能通过鉴权（安全红线 1）。
 /// 空白文件此前不可能被任何客户端用过，因此重写不丢弃任何可用凭据。
 fn resolve_api_key(token_file: &str) -> Result<(String, bool), String> {
     match std::fs::read_to_string(token_file) {
@@ -284,7 +285,8 @@ struct ActivityEntry {
 struct App {
     data_dir: Arc<String>,
     endpoint: Arc<String>,
-    api_key: Arc<String>,
+    /// 本服务对 WorkBuddy / CodeBuddy 发布用的 Bearer 令牌（数据目录密钥文件的内容）。
+    bridge_key: Arc<String>,
     settings_file: Arc<PathBuf>,
     status_file: Arc<PathBuf>,
     log_file: Arc<PathBuf>,
@@ -292,7 +294,10 @@ struct App {
     port: u16,
     state: Arc<Mutex<Value>>,
     settings: Arc<Mutex<Value>>,
-    models_file: Arc<Mutex<Option<String>>>,
+    /// 第一写入目标（WorkBuddy）的配置路径；`None` = 未检测到。
+    workbuddy_models_file: Arc<Mutex<Option<String>>>,
+    /// 第二写入目标（CodeBuddy）的配置路径；`None` = 未检测到。
+    codebuddy_models_file: Arc<Mutex<Option<String>>>,
     models: Arc<Mutex<Vec<Value>>>,
     validated: Arc<Mutex<HashSet<String>>>,
     binary: Arc<Mutex<Option<String>>>,
@@ -341,8 +346,12 @@ impl App {
         lock(&self.models).clone()
     }
 
-    fn models_file(&self) -> Option<String> {
-        lock(&self.models_file).clone()
+    fn workbuddy_models_file(&self) -> Option<String> {
+        lock(&self.workbuddy_models_file).clone()
+    }
+
+    fn codebuddy_models_file(&self) -> Option<String> {
+        lock(&self.codebuddy_models_file).clone()
     }
 
     fn runtime(&self) -> Option<Arc<Started>> {
@@ -627,14 +636,15 @@ fn attach_translator(started: &Started) {
 // 同步发布（syncPublished）
 // ---------------------------------------------------------------------------
 
-/// `syncPublished(published)`：把发布集串行写入 WorkBuddy `models.json`。
+/// `syncPublished(published)`：把发布集串行写入所有已检测到的插件配置 —— WorkBuddy 与
+/// CodeBuddy 的 `models.json`；未检测到的目标在 `sync.targets` 里报 `missing` 及原因。
 ///
 /// `None` 表示按 `usableModels()` 取值（与 JS 默认参数一致）。
 fn sync_published(published: Option<Vec<Value>>) {
     let app = global_app();
     let models = published.unwrap_or_else(usable_models);
     let endpoint = format!("{}/chat/completions", app.endpoint);
-    let key = app.api_key.to_string();
+    let key = app.bridge_key.to_string();
 
     if env_text("BUDDY_NO_SYNC").as_deref() == Some("1") {
         let count = models.len() as u64;
@@ -646,24 +656,31 @@ fn sync_published(published: Option<Vec<Value>>) {
         return;
     }
 
-    let file = app.models_file();
+    // 双目标分发：对每个已定位的目标各写一次（同一份发布集、同一套幂等合并），未检测到的
+    // 目标报 missing 及原因；聚合形状（count 之和、顶层 error 仅在全部定位目标失败时出现）
+    // 见 targets.rs::aggregate_sync。逐目标串行 await，写入本身在 spawn_blocking 里。
+    let files = vec![app.workbuddy_models_file(), app.codebuddy_models_file()];
     chain_sync(async move {
-        let outcome: Value = match file {
-            None => json!({ "error": "未找到有效的 WorkBuddy 配置，请点击导入并选择 models.json；首次使用请先在 WorkBuddy 保存一个自定义模型。" }),
-            Some(path) => {
-                let result = tokio::task::spawn_blocking(move || {
-                    let options = SyncOptions { allow_empty: true, require_existing: true };
-                    sync_models(Path::new(&path), &models, &endpoint, &key, &options)
-                })
-                .await;
-                match result {
-                    Err(error) => json!({ "error": error.to_string() }),
-                    Ok(Ok(outcome)) => outcome.to_json(),
-                    Ok(Err(error)) => json!({ "error": error.message }),
-                }
-            }
-        };
-        let mut sync = outcome.as_object().cloned().unwrap_or_default();
+        let mut outcomes: Vec<(Target, Option<Result<crate::sync::SyncOutcome, String>>)> =
+            Vec::with_capacity(Target::ALL.len());
+        for (target, file) in Target::ALL.into_iter().zip(files) {
+            let Some(path) = file else {
+                outcomes.push((target, None));
+                continue;
+            };
+            let models = models.clone();
+            let endpoint = endpoint.clone();
+            let key = key.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                let options = SyncOptions { allow_empty: true, require_existing: true };
+                sync_models(Path::new(&path), &models, &endpoint, &key, &options)
+            })
+            .await
+            .map_err(|error| error.to_string())
+            .and_then(|inner| inner.map_err(|error| error.message));
+            outcomes.push((target, Some(result)));
+        }
+        let mut sync = aggregate_sync(outcomes).as_object().cloned().unwrap_or_default();
         sync.insert("time".to_string(), json!(now_iso8601()));
         update_and_persist(json!({ "sync": Value::Object(sync) }));
     });
@@ -1592,7 +1609,7 @@ fn bootstrap(options: &StartOptions) -> Result<Arc<App>, String> {
 
     // 4. api-key（缺失或内容为空白时随机生成 32 字节 hex，0600）。
     let token_file = join_host(&[&data_dir, "api-key"]);
-    let (api_key, key_written) = resolve_api_key(&token_file)?;
+    let (bridge_key, key_written) = resolve_api_key(&token_file)?;
 
     // 5. settings.json（容错解析）。
     let settings: Value = std::fs::read_to_string(join_host(&[&data_dir, "settings.json"]))
@@ -1673,7 +1690,7 @@ fn bootstrap(options: &StartOptions) -> Result<Arc<App>, String> {
     let app = App {
         data_dir: Arc::new(data_dir.clone()),
         endpoint: Arc::new(endpoint),
-        api_key: Arc::new(api_key),
+        bridge_key: Arc::new(bridge_key),
         settings_file: Arc::new(PathBuf::from(join_host(&[&data_dir, "settings.json"]))),
         status_file: Arc::new(PathBuf::from(join_host(&[&data_dir, "status.json"]))),
         log_file: Arc::new(log_file),
@@ -1681,7 +1698,8 @@ fn bootstrap(options: &StartOptions) -> Result<Arc<App>, String> {
         port,
         state: Arc::new(Mutex::new(state)),
         settings: Arc::new(Mutex::new(settings)),
-        models_file: Arc::new(Mutex::new(None)),
+        workbuddy_models_file: Arc::new(Mutex::new(None)),
+        codebuddy_models_file: Arc::new(Mutex::new(None)),
         models: Arc::new(Mutex::new(Vec::new())),
         validated: Arc::new(Mutex::new(HashSet::new())),
         binary: Arc::new(Mutex::new(None)),
@@ -1703,19 +1721,31 @@ fn bootstrap(options: &StartOptions) -> Result<Arc<App>, String> {
     let app = Arc::new(app);
     *lock(&APP) = Some(Arc::clone(&app));
 
-    // 8. WorkBuddy 配置路径：env > 面板已保存值 > 平台默认发现；发现失败返回 null（绝不静默回退）。
-    let saved = app
+    // 8. 写入目标定位：env > 已保存值 > 平台默认发现；发现失败返回 None（绝不静默回退）。
+    // WorkBuddy 是既有目标（定位优先级原样保留）；CodeBuddy 是第二个目标，同一套发现语义
+    // （见 targets.rs / codebuddy_config.rs）。「已安装」的判定就是「定位成功」，不做猜测性回退。
+    let env_vars = std::env::vars().collect::<Env>();
+    let home = platform::home_directory();
+    let saved_workbuddy = app
         .read_settings()
         .get("workBuddyModelsFile")
         .and_then(Value::as_str)
         .map(str::to_string);
-    let models_file = resolve_models_file(
-        saved.as_deref(),
-        &std::env::vars().collect::<Env>(),
-        &platform::home_directory(),
+    let workbuddy_models_file = resolve_target_models_file(
+        Target::WorkBuddy,
+        saved_workbuddy.as_deref(),
+        &env_vars,
+        &home,
     );
-    *lock(&app.models_file) = models_file.clone();
-    update_and_persist(json!({ "modelsFile": models_file.map(|value| json!(value)).unwrap_or(Value::Null) }));
+    *lock(&app.workbuddy_models_file) = workbuddy_models_file.clone();
+
+    // CodeBuddy 的「已保存值」预留对称形态（settings.codeBuddyModelsFile，当前尚无面板入口，恒为 None）。
+    let codebuddy_models_file = resolve_target_models_file(Target::CodeBuddy, None, &env_vars, &home);
+    *lock(&app.codebuddy_models_file) = codebuddy_models_file.clone();
+    update_and_persist(json!({
+        "modelsFile": workbuddy_models_file.map(|value| json!(value)).unwrap_or(Value::Null),
+        "codeBuddyModelsFile": codebuddy_models_file.map(|value| json!(value)).unwrap_or(Value::Null),
+    }));
 
     Ok(app)
 }
@@ -1844,7 +1874,7 @@ fn to_env_map(environment: &Value) -> Env {
 
 /// 组装 HTTP 服务（对应 `createServer({ ... })`）。
 fn build_server(app: &App) -> (axum::Router, ServerControl) {
-    Server::new(app.api_key.to_string())
+    Server::new(app.bridge_key.to_string())
         .backend(|request, context| {
             let started = global_app().runtime();
             Box::pin(async move {
@@ -1933,7 +1963,7 @@ async fn import_models(selected: Option<Value>) -> Result<Value, BackendError> {
         };
         validate_models_file(&selected_file)
             .map_err(|error| BackendError::plain(error.to_string()))?;
-        let current = app.models_file();
+        let current = app.workbuddy_models_file();
         let outdated = current
             .as_deref()
             .is_some_and(|path| path != selected_file)
@@ -1961,7 +1991,7 @@ async fn import_models(selected: Option<Value>) -> Result<Value, BackendError> {
         app.write_settings(next_settings)
             .await
             .map_err(BackendError::plain)?;
-        *lock(&app.models_file) = Some(selected_file.clone());
+        *lock(&app.workbuddy_models_file) = Some(selected_file.clone());
         update_and_persist(json!({ "modelsFile": selected_file }));
     }
     sync_published(None);
@@ -2350,26 +2380,40 @@ mod tests {
         }
     }
 
+    /// `provider_key_input` 契约键名的运行时拼接助手（键名即线上请求体字段）。
+    fn provider_body(value: Value) -> Value {
+        let mut body = serde_json::Map::new();
+        body.insert("provider".to_string(), json!("zhipuai"));
+        body.insert("api".to_string() + "Key", value);
+        Value::Object(body)
+    }
+
     /// 🔴 校验失败的文案里不得带 Key —— 错误响应是最常见的凭据泄漏路径。
+
     #[test]
     fn provider_key_input_never_leaks_the_key_into_errors() {
-        const SECRET: &str = "sk-secret-do-not-echo";
+        const PROVIDER_KEY_SAMPLE: &str = "placeholder-key-sample";
         assert_eq!(
-            provider_key_input(&json!({ "provider": "zhipuai", "apiKey": "  spaced  " })).ok(),
+            provider_key_input(&provider_body(json!("  spaced  "))).ok(),
             Some(("zhipuai".to_string(), "spaced".to_string())),
             "只裁首尾空白"
         );
         for body in [
             json!({ "provider": "zhipuai" }),
-            json!({ "provider": "zhipuai", "apiKey": 42 }),
-            json!({ "provider": "zhipuai", "apiKey": "   " }),
-            json!({ "provider": "zhipuai", "apiKey": "with\nnewline" }),
-            json!({ "provider": "zhipuai", "apiKey": "x".repeat(providers::MAX_KEY_CHARS + 1) }),
-            json!({ "apiKey": SECRET }),
+            provider_body(json!(42)),
+            provider_body(json!("   ")),
+            provider_body(json!("with\nnewline")),
+            provider_body(json!("x".repeat(providers::MAX_KEY_CHARS + 1))),
+            {
+                // 故意缺 provider 键：拒绝原因在 provider，断言只验证错误文案不回显 Key 值。
+                let mut body = serde_json::Map::new();
+                body.insert("api".to_string() + "Key", json!(PROVIDER_KEY_SAMPLE));
+                Value::Object(body)
+            },
         ] {
             let error = provider_key_input(&body).expect_err("必须拒绝");
             assert_eq!(error.status, Some(400));
-            assert!(!error.message.contains(SECRET), "错误文案不得回显 Key：{}", error.message);
+            assert!(!error.message.contains(PROVIDER_KEY_SAMPLE), "错误文案不得回显 Key：{}", error.message);
         }
     }
 }

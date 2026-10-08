@@ -46,7 +46,16 @@ async function run(name, value) {
       const r = response.result
       if (r.canceled) feedback.value = { text: '已取消导入，配置未更改。' }
       else if (r.changed === false) feedback.value = { text: `配置已是最新，共 ${r.count} 个模型，无需重复写入。` }
-      else feedback.value = { text: `导入完成，已将 ${r.count} 个可用模型导入 WorkBuddy。` }
+      else {
+        // 逐目标如实汇报：count 是各成功目标之和，只有在拿到 targets 时才知道写进了几家。
+        const targets = r.targets || {}
+        const okNames = ['workBuddy', 'codeBuddy']
+          .map(key => ({ key, label: key === 'workBuddy' ? 'WorkBuddy' : 'CodeBuddy' }))
+          .filter(item => targets[item.key]?.status === 'ok' && targets[item.key].changed)
+          .map(item => item.label)
+        const scope = okNames.length ? `导入 ${okNames.join(' 与 ')}` : '导入已完成'
+        feedback.value = { text: `导入完成，已将 ${r.count} 个可用模型${scope}。` }
+      }
     }
     return response
   } catch (error) {
@@ -71,7 +80,7 @@ const probeProgress = computed(() => {
 // 除检测外都不写进度数字 —— 其余动作前端拿不到真实进度，写数字就是编造。
 const pendingText = computed(() => {
   if (busyAction.value === 'refresh') return '正在读取免费模型，请稍候…'
-  if (busyAction.value === 'import') return '正在写入 WorkBuddy 配置…'
+  if (busyAction.value === 'import') return '正在写入 WorkBuddy / CodeBuddy 配置…'
   if (busyAction.value === 'restart') return '正在重启核心服务…'
   if (busyAction.value === 'system-proxy') return '正在应用系统代理设置…'
   if (busyAction.value === 'probe' || state.value.probe?.running) {
@@ -85,6 +94,15 @@ const banner = computed(() => {
   if (pendingText.value) return { text: pendingText.value, pending: true, error: false }
   if (feedback.value) return { text: feedback.value.text, error: !!feedback.value.error, pending: false }
   return null
+})
+
+// 底部同步摘要行：写入目标可能只有部分在线（WorkBuddy / CodeBuddy 任一），
+// 顶层 count 是各成功目标之和，所以措辞不再绑定「WorkBuddy」单家。
+const syncSummary = computed(() => {
+  const sync = state.value.sync
+  if (sync?.error) return sync.error
+  if (sync?.time) return `已导入 ${sync.count ?? 0} 个模型（写入所有检测到的插件）· 再次检测后需点击导入更新`
+  return '首次读取和检测完成后自动写入所有检测到的插件'
 })
 
 // 收起详情 = 清空选中：详情列随之消失，模型列表立刻占满可用宽度。
@@ -168,7 +186,7 @@ onUnmounted(() => {
           :probe="state.probe"
         >
           <button id="import" class="primary" :disabled="!!busyAction || !!state.probe?.running || state.phase !== 'ready'" @click="run('import')">
-            <span v-if="busyAction" class="spinner" />导入 WorkBuddy
+            <span v-if="busyAction" class="spinner" />导入 WorkBuddy / CodeBuddy
           </button>
         </MetricsBar>
 
@@ -202,14 +220,14 @@ onUnmounted(() => {
       </div>
 
       <footer v-if="view === 'models'">
-        <p id="sync">{{ state.sync?.error || (state.sync?.time ? `已导入 ${state.sync.count ?? 0} 个模型 · 再次检测后需点击导入 WorkBuddy 更新` : '首次读取和检测完成后自动导入 WorkBuddy') }}</p>
-        <p class="note">启动后自动发送简短请求检测，会使用少量免费额度，不代表工具流程已验证。耗时为完整请求用时，非首字延迟。不可用模型仅在本窗口保留，不供 WorkBuddy 使用；剩余额度暂不可查询。</p>
+        <p id="sync">{{ syncSummary }}</p>
+        <p class="note">启动后自动发送简短请求检测，会使用少量免费额度，不代表工具流程已验证。耗时为完整请求用时，非首字延迟。不可用模型仅在本窗口保留，不供任何插件使用；剩余额度暂不可查询。</p>
       </footer>
 
       <!-- 非「模型与服务」的视图：各自填满主区并独立滚动，不改变上面两栏布局的任何约束 -->
       <LogsView v-if="view === 'logs'" />
       <UsageView v-if="view === 'usage'" :usage="state.usage" />
-      <!-- 该视图内的「导入 WorkBuddy」也走同一个 run()，反馈必须在本视图可见（只换位置，不复制状态） -->
+      <!-- 该视图内的「导入」也走同一个 run()，反馈必须在本视图可见（只换位置，不复制状态） -->
       <FeedbackBar
         v-if="view === 'workbuddy' && banner"
         :key="banner.text"

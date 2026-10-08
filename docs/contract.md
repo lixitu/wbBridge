@@ -85,6 +85,21 @@
 - 面板主动终止核心、或核心任务非预期结束后的重启，均走同一个 `shutdown` 动作（核心侧会先完成
   WorkBuddy 配置清理再收尾），重启由壳命令 `restart_core` 重新装配一次核心实例。
 
+## 写入目标与检测规则
+
+模型发布（`sync_published`）向**所有已检测到的插件**分发写入，目标集合与定位优先级由
+`src-tauri/core/src/targets.rs` 唯一定义（`Target::ALL`，顺序即分发顺序）：
+
+| 目标 | 配置文件（同名同形） | 定位优先级 | `status.json` 字段 | `sync.targets` 键 |
+|---|---|---|---|---|
+| WorkBuddy | `models.json`（默认 `~/.workbuddy/`） | `BUDDY_MODELS_FILE` > settings `workBuddyModelsFile` > `WORKBUDDY_CONFIG_DIR` > `WORKBUDDY_DATA_FOLDER_NAME` > 平台默认 | `modelsFile` | `workBuddy` |
+| CodeBuddy | `models.json`（默认 `~/.codebuddy/`） | `BUDDY_CODEBUDDY_MODELS_FILE` > settings `codeBuddyModelsFile`（预留，当前恒空）> `CODEBUDDY_CONFIG_DIR` > `CODEBUDDY_DATA_FOLDER_NAME` > 平台默认 | `codeBuddyModelsFile` | `codeBuddy` |
+
+- **「已安装」的判定只有一条：定位函数返回 `Some`**（候选文件必须通过 `validate_models_file` 的路径与形状校验）。不猜进程、不猜注册表；显式位置失效时绝不静默回退（与 WorkBuddy 既有约定一致）。
+- 两个目标共用同一套幂等写入（`sync::sync_models`：OWNER 归属标记、冲突不覆盖、文件锁、二次读取、原子替换），CodeBuddy 不是第二套实现。
+- `sync` 形状（加法式变更，`schemaVersion` 不递增）：新增 `sync.targets.{workBuddy,codeBuddy}`，每个目标 `status` ∈ `ok|missing|error`，`ok` 携带 `count/changed/backup?`，`missing` 携带 `reason`，`error` 携带 `error`；顶层 `count` = 各成功目标之和；顶层 `error` 仅在「至少一个目标被定位且全部定位目标都失败」时出现（部分失败不算顶层失败）；新增顶层 `codeBuddyModelsFile` 字段。
+- 面板侧：集成视图逐目标展示状态（缺 `targets` 时回退单行展示，兼容旧核心）；底部摘要行的措辞已不绑定单一目标。
+
 ## 运行形态与传输落点
 
 | 形态 | 入口 | 端口 | 数据目录（`api-key` / `status.json` 所在处） |

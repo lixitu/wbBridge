@@ -14,7 +14,7 @@ const lines = computed(() => {
   const out = []
   if (r.chatOnly) out.push({ text: '已自动关闭工具调用；导入后仅支持普通对话。' })
   if (Number.isInteger(r.nativeAttempts) && r.nativeAttempts > 0)
-    out.push({ text: `最近一次调用拦截了 ${r.nativeAttempts} 次本地执行尝试，动作必须由 WorkBuddy 执行。`, error: true })
+    out.push({ text: `最近一次调用拦截了 ${r.nativeAttempts} 次本地执行尝试，动作必须由客户端（WorkBuddy / CodeBuddy）执行。`, error: true })
   if (Number.isInteger(r.calls) && r.calls > 0) out.push({ text: `最近一次调用返回了 ${r.calls} 个动作。` })
   if (r.handoff) out.push({ text: `最近一次调用把被拦下的本地动作转交成外部 ${r.handoff} 调用。` })
   const repairs = Object.entries(r.repaired ?? {}).filter(([, v]) => v?.ok)
