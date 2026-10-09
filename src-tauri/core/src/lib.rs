@@ -18,7 +18,7 @@
 //!
 //! | 本 crate 模块 | 对应 JS | 说明 |
 //! |---|---|---|
-//! | [`sync`] | `core/src/sync.js` | `models.json` 合并、文件锁、`.bak`、原子写、无变化判定 |
+//! | [`sync`] | `core/src/sync.js` | `models.json` 合并、文件锁、原子写、无变化判定 |
 //! | [`system_proxy`] | `core/src/system-proxy.js` | 系统手动代理 → 子进程环境变量（macOS `scutil` / Windows 注册表） |
 //! | [`server`] | `core/src/server.js` | axum HTTP 层：路由、Bearer 鉴权、Origin 限制、体积/并发上限、SSE |
 //!

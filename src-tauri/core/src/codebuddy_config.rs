@@ -17,7 +17,7 @@
 
 use crate::json::js_trim;
 use crate::platform::join_host;
-use crate::workbuddy_config::{validate_models_file, MODELS_FILE_NAME};
+use crate::workbuddy_config::{ensure_models_file, validate_models_file, MODELS_FILE_NAME};
 use crate::Env;
 
 /// 未配置 `CODEBUDDY_DATA_FOLDER_NAME` 时的默认数据目录名。
@@ -31,6 +31,9 @@ pub const MISSING_MESSAGE: &str =
 ///
 /// 与 WorkBuddy 版一致地把空字符串视作假值（`||` 语义），并对目录类变量先 `trim()`；
 /// 候选文件必须通过 [`validate_models_file`] 才返回，否则 `None`。
+///
+/// 默认位置同样先过 [`ensure_models_file`]（目录在、`models.json` 不在则补建空配置），
+/// 与 WorkBuddy 版逐行对照；显式指定的位置不补建。
 pub fn resolve_models_file(saved: Option<&str>, env: &Env, home: &str) -> Option<String> {
     let explicit = env
         .get("BUDDY_CODEBUDDY_MODELS_FILE")
@@ -52,7 +55,10 @@ pub fn resolve_models_file(saved: Option<&str>, env: &Env, home: &str) -> Option
                         .unwrap_or_else(|| DEFAULT_DATA_FOLDER.to_string());
                     join_host(&[home, &folder])
                 });
-            join_host(&[&directory, MODELS_FILE_NAME])
+            let file = join_host(&[&directory, MODELS_FILE_NAME]);
+            // 与 WorkBuddy 版同款：目录已在、models.json 缺失就补建空配置；目录不在则不动。
+            ensure_models_file(&file);
+            file
         });
 
     validate_models_file(&file).ok()
@@ -191,5 +197,29 @@ mod tests {
             &home,
         );
         assert_eq!(result, None, "显式位置失效时必须返回 None，而不是回退到默认位置");
+    }
+
+    #[test]
+    fn default_discovery_creates_missing_models_file_when_directory_exists() {
+        let scratch = Scratch::new("ensure-dir");
+        let home = scratch.home();
+        fs::create_dir_all(scratch.path(".codebuddy")).expect("目录可建");
+        let expected = scratch.path(".codebuddy/models.json");
+
+        // 与 WorkBuddy 版同款：目录已在、models.json 缺失 → 补建空配置并定位成功。
+        assert_eq!(
+            resolve_models_file(None, &env_of(&[]), &home).as_deref(),
+            Some(expected.as_str())
+        );
+        assert_eq!(
+            fs::read_to_string(&expected).expect("补建的文件可读"),
+            crate::workbuddy_config::EMPTY_MODELS_FILE_TEXT
+        );
+
+        // 目录不存在时什么都不做：那属于「未安装」，不是「没配置文件」。
+        let scratch = Scratch::new("ensure-none");
+        assert_eq!(resolve_models_file(None, &env_of(&[]), &scratch.home()), None);
+        assert!(!PathBuf::from(scratch.path(".codebuddy/models.json")).exists());
+        assert!(!PathBuf::from(scratch.path(".codebuddy")).exists());
     }
 }

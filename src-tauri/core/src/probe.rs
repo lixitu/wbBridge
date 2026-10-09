@@ -103,10 +103,35 @@ pub fn format_unsupported(error: &BridgeError) -> bool {
     if ["invalid_model_output", "invalid_tool_call"].contains(&error.code.as_str()) {
         return true;
     }
+    if tool_call_unsupported(&error.message) {
+        return true;
+    }
     // 对应 Node 的 /only.{0,10}auto.{0,40}supported.{0,20}tool_choice/i
     // 使用 regex 大小写不敏感匹配
     regex::Regex::new(r"(?i)only.{0,10}auto.{0,40}supported.{0,20}tool_choice")
         .map(|re| re.is_match(&error.message))
+        .unwrap_or(false)
+}
+
+/// 上游明说「这个模型不支持函数/工具调用」：SiliconFlow 回的是
+/// `Bad Request: Function call is not supported for this model.`。
+///
+/// 这不是「模型坏了」而是「只能对话」——恰好是 chatOnly 通道服务的形态。探测请求带工具目录，
+/// 而目录里 `capabilities.toolcall` 是 models.dev 的**声明**值，声明为真、平台实际不给调用时
+/// 就落到这里；`probe_single_model` 对声明为假的模型直接给 `invalid_tool_call`（同一个归宿），
+/// 本函数补的是声明与实况的差集那一段。
+///
+/// 判定要求「调用类名词」与「不支持」措辞**同时**出现且相邻（间隔 ≤40 字符），并且调用类名词
+/// 必须是 `function/tool` + `call/calling/use` 的复合形态：单独的 `functions` / `tools` 太宽，
+/// 会把 `invalid api key`、`429`、`context length exceeded`、地区拒绝这类与本判断无关的文案误伤。
+/// 真误判了代价也很小：降级路径 `chat_only_attempt` 会向该模型发一次真实的纯对话请求，
+/// 通不过就照原样记失败，不会凭文案就把模型发布出去。
+pub fn tool_call_unsupported(message: &str) -> bool {
+    const CALL: &str = r"(?:function|tool)[_ -]?(?:calls?|calling|use)";
+    const REFUSED: &str = r"not\s+(?:supported|allowed|enabled|available|implemented)|unsupported|does\s+not\s+(?:support|allow)|no\s+(?:support|implementation)";
+    let pattern = format!(r"(?is)({CALL}).{{0,40}}?({REFUSED})|({REFUSED}).{{0,40}}?({CALL})");
+    regex::Regex::new(&pattern)
+        .map(|re| re.is_match(message))
         .unwrap_or(false)
 }
 
@@ -121,15 +146,71 @@ pub fn probe_token() -> String {
 }
 
 /// `probeFailure(cause, timedOut)`：超时失败时统一改写为 `TimeoutError`。
+///
+/// 地区拒绝与「模型已下线」走同一条文案改写：上游（OpenCode 的 zen 网关与其背后的提供方）给的
+/// 是英文原文，面板直接显示它会让用户以为「模型坏了」或「是我哪里配错了」，而真正的原因
+/// （换网络出口 / 提供方撤架）与可操作入口都没说出来。
+/// 只改文案：`code`/`status` 原样保留，两者都本就不在 `RETRYABLE_PROBE` 里，
+/// 因此不重试、不发布、也不牵连其它已发布模型。
 pub fn probe_failure(cause: BridgeError, timed_out: bool) -> BridgeError {
-    if !timed_out {
-        return cause;
+    if timed_out {
+        let mut error = BridgeError::with("Model probe timed out", 504, "timeout");
+        error.code = "timeout".to_string();
+        return error;
     }
-    let mut error = BridgeError::with("Model probe timed out", 504, "timeout");
-    error.code = "timeout".to_string();
-    error
+    let Some(text) = region_unavailable_message(&cause.message)
+        .or_else(|| deprecated_model_message(&cause.message))
+    else {
+        return cause;
+    };
+    BridgeError {
+        message: text,
+        ..cause
+    }
 }
 
+/// 判定并改写上文的「提供方已下线该模型」。命中返回可直接展示的新文案，否则 `None`。
+///
+/// 目录里的 `status` 只在**等于** `"deprecated"` 时被 `free_models_in` 过滤掉（backend.rs:131），
+/// 而 models.dev 的声明落后于提供方的实际撤架，于是这类模型仍会进入探测队列并在这里失败。
+/// 判定要求「下线措辞」与「模型/提供方类主语」同时出现（不限次序，间隔 ≤60 字符），
+/// 避免把与模型无关的弃用提示（例如某个内部字段 deprecated）说成下线。
+pub fn deprecated_model_message(message: &str) -> Option<String> {
+    const RETIRED: &str = r"deprecat(?:ed|ating|ion)";
+    const SUBJECT: &str = r"(?:model|provider|endpoint|version)s?";
+    let pattern = format!(r"(?is)({RETIRED}).{{0,60}}?({SUBJECT})|({SUBJECT}).{{0,60}}?({RETIRED})");
+    let re = regex::Regex::new(&pattern).ok()?;
+    if !re.is_match(message) {
+        return None;
+    }
+    Some(format!(
+        "提供方已下线该模型（原文：{message}）。这不是 Key 或本工具的问题：它不会被发布，也不会重复消耗探测额度。"
+    ))
+}
+
+/// 判定并改写上文的地区拒绝文案。命中返回可直接展示的新文案，否则 `None`。
+///
+/// 判定要求「不可用/被拒」与「国家/地区」两类词**同时**出现（不限次序，间隔 ≤60 字符），
+/// 单靠一个词会误伤：`429`、`invalid api key`、`context length exceeded` 都不该被说成地区问题。
+pub fn region_unavailable_message(message: &str) -> Option<String> {
+    // OpenAI 系提供方在 error.code 里给的是这个机器可读值，文案形态多变但这一串稳定。
+    let known_code = message
+        .to_ascii_lowercase()
+        .contains("unsupported_country_region_territory");
+    if !known_code {
+        const REFUSED: &str =
+            r"not\s+(?:available|allowed|supported|permitted)|unsupported|unavailable|restricted|blocked|denied";
+        const GEO: &str = r"country|region|territory|location|geograph";
+        let pattern = format!(r"(?is)({REFUSED}).{{0,60}}?({GEO})|({GEO}).{{0,60}}?({REFUSED})");
+        let re = regex::Regex::new(&pattern).ok()?;
+        if !re.is_match(message) {
+            return None;
+        }
+    }
+    Some(format!(
+        "上游按出口 IP 判定该模型在你所在的国家/地区不可用（原文：{message}）。换出口才可能通过：可在侧栏「运行设置」打开「使用系统代理」，再重新检测。"
+    ))
+}
 /// 是否应重试：对应 `RETRYABLE_PROBE.has(error.code)`。
 pub fn should_retry(code: &str) -> bool {
     retryable_probe_codes().contains(code)
@@ -237,6 +318,37 @@ mod tests {
     }
 
     #[test]
+    fn a_model_without_function_call_support_degrades_to_chat_only() {
+        // SiliconFlow 实测文案：目录声明 toolcall=true、平台实际不给调用，只能按纯对话发布。
+        for message in [
+            "Bad Request: Function call is not supported for this model.",
+            "this model does not support tool calls",
+            "Tool use is unsupported here",
+            "function calls are not supported by the selected model",
+        ] {
+            let error = BridgeError::with(message, 400, "model_error");
+            assert!(format_unsupported(&error), "{message}");
+            // 降级不改变归类以外的任何东西：这句不该被当成抖动重试。
+            assert!(!should_retry(&error.code), "{message}");
+        }
+    }
+
+    #[test]
+    fn an_unrelated_upstream_failure_is_never_read_as_a_function_call_gap() {
+        for message in [
+            "This model is not available in your country",
+            "invalid api key",
+            "429 Too Many Requests",
+            "context length exceeded, try a shorter prompt",
+            "模型只返回了文本，没有产生任何动作",
+            "Chat-only model attempted native tool use; execution blocked",
+            "tool_choice must be one of auto or none",
+        ] {
+            assert!(!tool_call_unsupported(message), "{message}");
+        }
+    }
+
+    #[test]
     fn should_retry_only_for_probe_mismatch_and_no_action() {
         assert!(should_retry("probe_mismatch"));
         assert!(should_retry("no_action"));
@@ -264,6 +376,98 @@ mod tests {
         assert_eq!(timed.status, 504);
         let not_timed = probe_failure(original.clone(), false);
         assert_eq!(not_timed.code, "model_error");
+    }
+
+    /// 地区拒绝必须说清「谁拒的、为什么、怎么换出口」，而原来的 code/status 一位都不动 ——
+    /// `upstream_error` 不在重试集合里，这一点决定了它不会被反复烧探测额度。
+    #[test]
+    fn probe_failure_turns_a_region_refusal_into_an_actionable_message() {
+        let cause = BridgeError::with("This model is not available in your country", 403, "upstream_error");
+        let message = cause.message.clone();
+        let error = probe_failure(cause, false);
+        assert_eq!(error.code, "upstream_error", "错误码不得被改写");
+        assert_eq!(error.status, 403, "状态码不得被改写");
+        assert!(error.message.contains("国家/地区"), "{}", error.message);
+        assert!(
+            error.message.contains("使用系统代理"),
+            "必须给出唯一的可操作入口：{}",
+            error.message
+        );
+        assert!(
+            error.message.contains(&message),
+            "上游原文要留在文案里便于对账：{}",
+            error.message
+        );
+        assert!(!should_retry(&error.code), "地区拒绝不得触发重试");
+    }
+
+    /// 「被拒」与「地区」两类词必须同时在场才算地区拒绝，否则 429、坏 Key、超上下文都会被
+    /// 说成地区问题，把用户支去做无用功。
+    #[test]
+    fn only_a_real_region_refusal_is_rewritten() {
+        for message in [
+            "This model is not available in your country",
+            "requests from your region are blocked",
+            "Claude is unavailable in your location",
+            "Error code: unsupported_country_region_territory",
+        ] {
+            assert!(
+                region_unavailable_message(message).is_some(),
+                "应判为地区拒绝：{message}"
+            );
+        }
+        for message in [
+            "429 Too Many Requests",
+            "invalid api key",
+            "context length exceeded",
+            "模型只返回了文本，没有产生任何动作",
+            "The model is not available right now, please retry later",
+            "This model supports only auto tool_choice",
+        ] {
+            assert!(
+                region_unavailable_message(message).is_none(),
+                "不该被判为地区拒绝：{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_retired_upstream_model_gets_a_readable_reason_without_changing_its_verdict() {
+        for message in [
+            "Model exo-free has been deprecated.",
+            "this model is deprecated and no longer served",
+            "The provider deprecated this endpoint",
+        ] {
+            assert!(
+                deprecated_model_message(message).is_some(),
+                "应判为提供方已下线：{message}"
+            );
+        }
+        // 只改文案：code/status 原样保留，且这类失败本就不重试、不发布。
+        let original = BridgeError::with("Model exo-free has been deprecated.", 400, "model_error");
+        let rewritten = probe_failure(original.clone(), false);
+        assert!(rewritten.message.contains("提供方已下线该模型"), "{}", rewritten.message);
+        assert_eq!(rewritten.code, original.code);
+        assert_eq!(rewritten.status, original.status);
+        assert!(!should_retry(&rewritten.code));
+    }
+
+    #[test]
+    fn an_unrelated_deprecation_note_is_not_read_as_a_retired_model() {
+        for message in [
+            "429 Too Many Requests",
+            "invalid api key",
+            "context length exceeded",
+            "模型只返回了文本，没有产生任何动作",
+            "This model is not available in your country",
+            "This config field is deprecated, use the new one",
+            "Bad Request: Function call is not supported for this model.",
+        ] {
+            assert!(
+                deprecated_model_message(message).is_none(),
+                "不该被判为模型已下线：{message}"
+            );
+        }
     }
 
     #[test]

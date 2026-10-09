@@ -145,9 +145,10 @@ jobs:
         # package.json / tauri.conf.json / Cargo.toml / AGENTS.md 必须同一版本。
         run: node scripts/check-version.mjs
 
-      - name: 运行面板偏好、更新清单与签名注入单测
-        # 三组都是 node --test、只用 node 内置模块（不引测试框架、不需要 npm ci，也不碰真实私钥）：
+      - name: 运行面板偏好、操作守卫、更新清单与签名注入单测
+        # 四组都是 node --test、只用 node 内置模块（不引测试框架、不需要 npm ci，也不碰真实私钥）：
         #   • src/core/prefs.test.js —— 凭据字段进不了 localStorage、坏数据回落默认值；
+        #   • src/core/ops.test.js —— 操作守卫：成功反馈文案、在飞互斥、完成冷却、拒绝节流；
         #   • scripts/gen-latest-json.test.mjs —— latest.json 唯一写者的缺平台/缺签名/
         #     mac 漏架构后缀/歧义产物四类失败路径（这些错误 otherwise 只有用户装上才暴露）。
         #   • scripts/with-updater-key.test.mjs —— `npm run tauri:build` 的签名注入器（取值优先级、
@@ -157,6 +158,7 @@ jobs:
         #     ⚠ 只测纯函数与接线，不读 ~/.tauri、不试签、不执行构建。
         run: |
           node --test src/core/prefs.test.js
+          node --test src/core/ops.test.js
           node --test scripts/gen-latest-json.test.mjs
           node --test scripts/with-updater-key.test.mjs
 

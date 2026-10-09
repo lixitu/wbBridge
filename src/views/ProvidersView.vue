@@ -4,6 +4,7 @@
 // provider-status 也只回「是否已配置」。Key 保存后需重启核心（隔离配置在启动时注入）才会生效。
 import { computed, onMounted, ref } from 'vue'
 import { action, openExternal } from '../core/bridge.js'
+import { successMessage } from '../core/ops.js'
 
 const props = defineProps({
   busy: { type: Boolean, default: false },
@@ -26,8 +27,9 @@ const PLATFORM_GUIDES = {
     url: 'https://www.modelscope.cn/my/access/token',
     steps: [
       '打开下方官方申请页，注册或登录魔搭社区（支持支付宝 / GitHub 登录）。',
-      '进入「访问令牌」管理页，点击「创建令牌」（ms- 开头，注册即可用，无需付费）。',
-      '复制令牌，粘贴到上方输入框点「保存」。',
+      '右上角头像 →「Bind Alibabacloud」绑定阿里云账号，并完成阿里云实名认证——免费推理额度挂在这上面，没绑定时调用一律报 401「Please bind your Alibaba Cloud account」。',
+      '回到「访问令牌」页创建令牌（ms- 开头），复制粘贴到上方输入框点「保存」。',
+      '保存后会自动只重新检测本平台（魔搭）的模型，其余平台不受影响，无需再点「检测全部」。',
     ],
   },
   'siliconflow-cn': {
@@ -63,6 +65,9 @@ const openError = ref(null)
 async function openGuide(provider) {
   const url = PLATFORM_GUIDES[provider.id]?.url
   if (!url) return
+  // 同步防抖：模板 disabled 要到下一次重渲染才生效，双击会在那之前穿透两次，
+  // 开出两个浏览器标签。进入时先查在飞标记，同一时刻只放行第一次。
+  if (opening.value) return
   opening.value = provider.id
   openError.value = null
   const response = await openExternal(url)
@@ -80,17 +85,38 @@ const drafts = ref(Object.fromEntries(PLATFORMS.map(p => [p.id, { key: '', feedb
 const revealing = ref({})
 const saving = ref({})
 const clearing = ref({})
-// 正在应用（refresh 重读中）的平台：按钮置忙，防连续保存叠加重启。
+// 正在应用（定向重取 + 重检中）的平台：按钮置忙，防连续保存叠加两轮子进程重启。
 const applying = ref({})
 const applyingBusy = computed(() => Object.values(applying.value).some(Boolean))
+// 「重新应用」的成功反馈：成功 5 秒后自动消隐，失败走上方 error 展示。
+const applyFeedback = ref(null)
+let applyFeedbackTimer = 0
+function noteSuccess(action, result) {
+  const text = successMessage(action, result)
+  if (!text) return
+  applyFeedback.value = { error: false, text }
+  if (applyFeedbackTimer) clearTimeout(applyFeedbackTimer)
+  applyFeedbackTimer = setTimeout(() => {
+    applyFeedbackTimer = 0
+    applyFeedback.value = null
+  }, 5000)
+}
 
 // 兜底手动应用：等价于「模型与服务」页的「读取免费模型」；成功与否都弹回反馈区。
 async function applyAll() {
+  // 节流：一次应用 = 重启隔离运行时 + 重新发现模型，动辄几十秒。两个入口同时触发就是两次
+  // 重启，后一轮会把前一轮的模型结果覆盖掉，按钮上的 spinner 也说不清在等哪一次。
+  if (applyingBusy.value) {
+    error.value = '另一次应用还在进行中，请等它结束。'
+    return
+  }
   applying.value.__all = true
   const response = await action('refresh')
   applying.value.__all = false
   if (response.ok) {
+    // 成功反馈：文案与「模型与服务」页同源（ops.js），不各自造句子。
     error.value = null
+    applyFeedback.value = { error: false, text: successMessage('refresh', response.result) }
   } else {
     error.value = response.error
   }
@@ -112,6 +138,8 @@ function mergeStatuses(snapshot) {
 // 只会吓到第一次打开平台页的用户。此时徽章保持「未配置」即可；一旦有平台配置过
 // （状态真实与否开始影响用户决策）或用户点了刷新/保存，失败才值得显示。
 async function load({ silent = false } = {}) {
+  // 同步防抖：双击「刷新」在重渲染前会穿透模板 disabled，叠发两次 provider-status。
+  if (loading.value) return
   loading.value = true
   if (!silent) error.value = null
   const response = await action('provider-status')
@@ -127,11 +155,33 @@ async function load({ silent = false } = {}) {
   loading.value = false
 }
 
+// 定向应用：只重启隔离运行时以载入新 Key、只重取并重检**这一个平台**的模型，
+// 其余平台的目录与探测结果原样留着（2026-10-09 用户裁定：改一家 Key 不该把全部模型
+// 重新获取重新检测一遍）。走既有 /admin/probe 的 `providers` 形态，不新增动作。
+// 该端点无论成败都是 2xx（202），拒绝信息藏在 body 里，必须自己拆开：
+// `{ error: { message } }` = 核心正在忙别的（不叠第二轮），`{ started: false, message }`
+// = 探测闸门拒绝，两者都不能当成「已应用」报给用户。
+async function applyScoped(provider) {
+  applying.value[provider.id] = true
+  const response = await action('probe', { providers: [provider.id] })
+  applying.value[provider.id] = false
+  if (!response.ok) return { error: true, text: `应用失败：${response.error}。` }
+  const refusal = response.result?.error?.message
+    || (response.result?.started === false ? response.result?.message : '')
+  if (refusal) return { error: true, text: `Key 已写入 ✓，但这一家没能重新检测：${refusal}。` }
+  return { error: false, text: '' }
+}
+
 async function save(provider) {
   const draft = drafts.value[provider.id]
   const key = (draft.key || '').trim()
   if (!key) {
     draft.feedback = { error: true, text: '请先粘贴平台 Key' }
+    return
+  }
+  // 节流：本卡片保存后会自动触发一次应用，别的应用还在空中就不能再叠一轮（见 applyAll）。
+  if (applyingBusy.value) {
+    draft.feedback = { error: true, text: '另一次应用还在进行中，请等它结束后再保存。' }
     return
   }
   saving.value[provider.id] = true
@@ -149,21 +199,20 @@ async function save(provider) {
     providers.value = providers.value.map(p => p.id === provider.id ? { ...p, configured: true } : p)
   }
   draft.key = ''
-  draft.feedback = { error: false, text: '已保存 ✓ 正在应用到模型列表…' }
-  // 热生效：/admin/refresh 只重启隔离的 OpenCode 子进程（不动应用与 HTTP 服务），
-  // start_backend 重新读 providers.json 注入新 Key 并重新发现，探测随后自动跑。
+  draft.feedback = { error: false, text: `已保存 ✓ 正在只重新检测 ${provider.label} 的模型…` }
+  const applied = await applyScoped(provider)
   // 失败不回滚已保存的 Key：提示给出重试入口。
-  applying.value[provider.id] = true
-  const refreshResponse = await action('refresh')
-  applying.value[provider.id] = false
-  if (refreshResponse.ok) {
-    draft.feedback = { error: false, text: '已保存并应用 ✓ 切到「模型与服务」查看新模型（探测进行中）。' }
-  } else {
-    draft.feedback = { error: true, text: `Key 已保存 ✓，但应用失败：${refreshResponse.error}。可点下方「读取免费模型（重新应用）」重试。` }
-  }
+  draft.feedback = applied.error
+    ? { error: true, text: `${applied.text}可点下方「读取免费模型（重新应用）」重试。` }
+    : { error: false, text: `已保存并应用 ✓ 只重新检测 ${provider.label} 的模型，其余平台的目录与结果没动。切到「模型与服务」查看进度。` }
 }
 
 async function clear(provider) {
+  // 节流：与 save 同一条闸门——清除后同样会自动跑一轮应用。
+  if (applyingBusy.value) {
+    drafts.value[provider.id].feedback = { error: true, text: '另一次应用还在进行中，请等它结束后再清除。' }
+    return
+  }
   clearing.value[provider.id] = true
   const draft = drafts.value[provider.id]
   const response = await action('clear-provider-key', { provider: provider.id })
@@ -176,16 +225,13 @@ async function clear(provider) {
   if (!response.result?.providers) {
     providers.value = providers.value.map(p => p.id === provider.id ? { ...p, configured: false } : p)
   }
-  draft.feedback = { error: false, text: '已清除 ✓ 正在应用到模型列表…' }
-  // 热生效：与保存同路径——refresh 重启子进程时该平台声明段不再注入。
-  applying.value[provider.id] = true
-  const refreshResponse = await action('refresh')
-  applying.value[provider.id] = false
-  if (refreshResponse.ok) {
-    draft.feedback = { error: false, text: '已清除并应用 ✓ 该平台的模型已从「模型与服务」中移除。' }
-  } else {
-    draft.feedback = { error: true, text: `Key 已清除 ✓，但应用失败：${refreshResponse.error}。可点下方「读取免费模型（重新应用）」重试。` }
-  }
+  draft.feedback = { error: false, text: `已清除 ✓ 正在只重取 ${provider.label} 的模型…` }
+  // 与保存同一条定向路径：重启子进程时该平台的声明段不再注入，发现结果里就没有它了，
+  // 其余平台的条目与探测结果一概不动（这一家现在没有模型可检，核心会直接按现有目录重发配置）。
+  const applied = await applyScoped(provider)
+  draft.feedback = applied.error
+    ? { error: true, text: `${applied.text}可点下方「读取免费模型（重新应用）」重试。` }
+    : { error: false, text: `已清除并应用 ✓ ${provider.label} 的模型已从「模型与服务」中移除，其余平台不受影响。` }
 }
 
 onMounted(() => {
@@ -279,17 +325,25 @@ onMounted(() => {
               </svg>
             </button>
           </div>
-          <button type="submit" class="primary" :disabled="busy || saving[provider.id] || applying[provider.id] || !drafts[provider.id].key.trim()">
-            <span v-if="saving[provider.id]" class="spinner" />保存
+          <!-- 保存后还有一轮自动应用（重启模型子进程 + 重新发现，几十秒）：这一段忙态必须落在
+               按钮上，否则用户只看到 feedback 那行字停在「正在应用…」，像卡住了 -->
+          <button
+            type="submit"
+            class="primary"
+            :disabled="busy || saving[provider.id] || applyingBusy || !drafts[provider.id].key.trim()"
+            :aria-busy="String(!!(saving[provider.id] || applying[provider.id]))"
+          >
+            <span v-if="saving[provider.id] || applying[provider.id]" class="spinner" />{{ applying[provider.id] ? '应用中' : '保存' }}
           </button>
           <button
             v-if="provider.configured"
             type="button"
             class="ghost"
-            :disabled="busy || clearing[provider.id]"
+            :disabled="busy || clearing[provider.id] || applyingBusy"
+            :aria-busy="String(!!(clearing[provider.id] || applying[provider.id]))"
             @click="clear(provider)"
           >
-            <span v-if="clearing[provider.id]" class="spinner" />清除
+            <span v-if="clearing[provider.id] || applying[provider.id]" class="spinner" />{{ applying[provider.id] ? '应用中' : '清除' }}
           </button>
         </form>
 
@@ -305,11 +359,15 @@ onMounted(() => {
     </ul>
 
     <div class="apply-note">
-      <p>Key 保存或清除后<strong>自动应用</strong>：面板会重读免费模型（只重启隔离的模型子进程，不动应用窗口），新模型出现在「模型与服务」列表。若自动应用失败，可点下方按钮重试。</p>
+      <p>Key 保存或清除后<strong>自动应用</strong>：只重启隔离的模型子进程以载入新 Key（不动应用窗口），并<strong>只重新获取、重新检测这一个平台</strong>的模型，其余平台的目录与结果原样保留。若自动应用失败，可点下方按钮重试全量读取。</p>
       <button type="button" :disabled="busy || !!applyingBusy" @click="applyAll">
         <span v-if="busy || applyingBusy" class="spinner" />读取免费模型（重新应用）
       </button>
     </div>
+
+    <p v-if="applyFeedback" class="feedback" :class="{ error: applyFeedback.error }" role="status">
+      {{ applyFeedback.text }}
+    </p>
 
     <p class="note">额度与可用性由各平台决定，本应用不缓存额度；探测与对话都会消耗平台侧额度（免费模型的额度为 0 标价，仍受平台限额约束）。模型发现只覆盖注册表内的平台；上游新增免费模型需随本应用更新出现。</p>
   </section>

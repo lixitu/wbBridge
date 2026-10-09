@@ -1,6 +1,6 @@
 {
   "module": "sync",
-  "doc": "sync.js 对拍用例：mergeModels 纯合并 + syncModels 的文件级行为（锁、.bak 备份、原子写、无变化判定）。syncModels 会改动沙箱，Rust 侧为每个用例准备一份同内容的镜像沙箱，两侧各自跑完再比较「结果 + 全目录快照」。",
+  "doc": "sync.js 对拍用例：mergeModels 纯合并 + syncModels 的文件级行为（锁、原子写、无变化判定）。syncModels 会改动沙箱，Rust 侧为每个用例准备一份同内容的镜像沙箱，两侧各自跑完再比较「结果 + 全目录快照」。🔴 已知**有意的行为分叉**（2026-10-09 用户裁定）：JS 每次写盘前会留一份 `<配置文件>.buddy-bridge-<毫秒>.bak` 并在结果里回 `backup` 键，Rust 侧**不再产生任何备份**（备份从来没有读取方、面板也没有恢复入口，却按发布次数在用户目录里无限堆积），因此下面的 `expected.value` 没有 `backup` 键、`expected.files` 没有 `.bak` 文件；锁、二次读取、原子替换、无变化判定仍与 JS 逐字节对齐。",
   "cases": [
     {
       "name": "mergeModels：数组文档保留非本服务条目并追加新条目",
@@ -383,7 +383,7 @@
       }
     },
     {
-      "name": "syncModels：已有文档合并后写盘并留下 .bak 备份",
+      "name": "syncModels：已有文档合并后写盘（Rust 侧不再留 .bak）",
       "op": "sync.syncModels",
       "files": {
         "models.json": {
@@ -422,12 +422,10 @@
         "ok": true,
         "value": {
           "changed": true,
-          "count": 1,
-          "backup": "$BASE/models.json.buddy-bridge-1790726400000.bak"
+          "count": 1
         },
         "files": {
-          "models.json": "{\n  \"models\": [\n    {\n      \"id\": \"my-model\",\n      \"name\": \"自建模型\"\n    },\n    {\n      \"id\": \"OC · b\",\n      \"name\": \"OC · b\",\n      \"vendor\": \"Custom\",\n      \"url\": \"http://127.0.0.1:8123/v1\",\n      \"apiKey\": \"sk-parity\",\n      \"supportsToolCall\": true,\n      \"supportsImages\": false,\n      \"supportsReasoning\": false,\n      \"buddyBridgeOwner\": \"buddy-bridge-v1\",\n      \"maxInputTokens\": 128000\n    }\n  ],\n  \"availableModels\": [\n    \"my-model\",\n    \"missing-one\",\n    \"OC · b\"\n  ]\n}\n",
-          "models.json.buddy-bridge-1790726400000.bak": "{\"models\":[{\"id\":\"my-model\",\"name\":\"自建模型\"},{\"id\":\"OC · gpt-4o\",\"buddyBridgeOwner\":\"buddy-bridge-v1\"}],\"availableModels\":[\"my-model\",\"OC · gpt-4o\",\"missing-one\"]}"
+          "models.json": "{\n  \"models\": [\n    {\n      \"id\": \"my-model\",\n      \"name\": \"自建模型\"\n    },\n    {\n      \"id\": \"OC · b\",\n      \"name\": \"OC · b\",\n      \"vendor\": \"Custom\",\n      \"url\": \"http://127.0.0.1:8123/v1\",\n      \"apiKey\": \"sk-parity\",\n      \"supportsToolCall\": true,\n      \"supportsImages\": false,\n      \"supportsReasoning\": false,\n      \"buddyBridgeOwner\": \"buddy-bridge-v1\",\n      \"maxInputTokens\": 128000\n    }\n  ],\n  \"availableModels\": [\n    \"my-model\",\n    \"missing-one\",\n    \"OC · b\"\n  ]\n}\n"
         }
       }
     },
@@ -605,12 +603,10 @@
         "ok": true,
         "value": {
           "changed": true,
-          "count": 1,
-          "backup": "$BASE/models.json.buddy-bridge-1790726400000.bak"
+          "count": 1
         },
         "files": {
-          "models.json": "[\n  {\n    \"id\": \"own-1\"\n  },\n  {\n    \"id\": \"OC · d\",\n    \"name\": \"OC · d\",\n    \"vendor\": \"Custom\",\n    \"url\": \"http://127.0.0.1:8123/v1\",\n    \"apiKey\": \"sk-parity\",\n    \"supportsToolCall\": true,\n    \"supportsImages\": false,\n    \"supportsReasoning\": false,\n    \"buddyBridgeOwner\": \"buddy-bridge-v1\",\n    \"maxInputTokens\": 8000\n  }\n]\n",
-          "models.json.buddy-bridge-1790726400000.bak": "[{\"id\":\"own-1\"}]"
+          "models.json": "[\n  {\n    \"id\": \"own-1\"\n  },\n  {\n    \"id\": \"OC · d\",\n    \"name\": \"OC · d\",\n    \"vendor\": \"Custom\",\n    \"url\": \"http://127.0.0.1:8123/v1\",\n    \"apiKey\": \"sk-parity\",\n    \"supportsToolCall\": true,\n    \"supportsImages\": false,\n    \"supportsReasoning\": false,\n    \"buddyBridgeOwner\": \"buddy-bridge-v1\",\n    \"maxInputTokens\": 8000\n  }\n]\n"
         }
       }
     },

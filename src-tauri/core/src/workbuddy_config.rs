@@ -8,8 +8,12 @@ use crate::json::{js_trim, parse_json, Env};
 use crate::platform::{basename_host, is_absolute_host, join_host};
 use serde_json::Value;
 use std::fmt;
-use std::io;
-use std::path::PathBuf;
+use std::fs::OpenOptions;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 
 /// 目标配置文件名（比较时不区分大小写）。
 pub const MODELS_FILE_NAME: &str = "models.json";
@@ -22,6 +26,13 @@ pub const INVALID_PATH_MESSAGE: &str = "请选择 WorkBuddy 的 models.json 配�
 
 /// 文件内容格式不受支持时的用户可见提示。
 pub const INVALID_FORMAT_MESSAGE: &str = "文件不是支持的 WorkBuddy 模型配置格式";
+
+/// 补建 `models.json` 时写入的初始内容：**空**的数组形态配置。
+///
+/// 与写入端对「文件不存在」的认定保持一致（`sync_models` 读不到文件时把文档当作 `[]`），
+/// 同时它也是 [`validate_models_file`] 支持的两种形状之一——补建出来的文件必须能立刻
+/// 通过校验，否则补建没有意义。
+pub const EMPTY_MODELS_FILE_TEXT: &str = "[]\n";
 
 /// `validateModelsFile` 可能抛出的错误。
 #[derive(Debug)]
@@ -67,10 +78,48 @@ pub fn validate_models_file(file: &str) -> Result<String, ConfigError> {
     Ok(file.to_string())
 }
 
+/// 「插件目录已在、但 `models.json` 还不存在」时补建一个空配置（返回是否真的新建了文件）。
+///
+/// 只在**发现链的默认位置**上调用：`env` / `saved` 显式指定的位置不在此列——那里失效必须
+/// 继续返回 `None`（既有铁律，有单测钉住）。三道顺序闸门：
+/// 1. 文件已存在 → 立刻返回，绝不以任何方式改写用户内容；
+/// 2. 父目录不存在 → 也不建目录（目录不在＝插件没装，替它建目录会凭空造出「已安装」的假象）；
+/// 3. 任何 IO 失败（权限不足、只读盘）→ 返回 `false`，由调用方按既有路径继续判定——
+///    检测链绝不因补建失败而报错，也绝不把「补建失败」说成「插件已安装」。
+pub fn ensure_models_file(file: &str) -> bool {
+    let path = PathBuf::from(file);
+    if path.exists() {
+        return false;
+    }
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    if !parent.is_dir() {
+        return false;
+    }
+    let Ok(mut handle) = create_new_private(&path) else {
+        return false;
+    };
+    handle.write_all(EMPTY_MODELS_FILE_TEXT.as_bytes()).is_ok()
+}
+
+/// `flag: 'wx'`（存在即失败）+ `mode: 0o600`：绝不以截断方式打开已存在的文件。
+fn create_new_private(path: &Path) -> io::Result<std::fs::File> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    options.open(path)
+}
+
 /// `resolveModelsFile({ saved, env, home })`：按 `env > saved > 平台默认` 发现配置文件。
 ///
 /// 与 JS 一致地把空字符串视作假值（`||` 语义），并对
 /// `WORKBUDDY_CONFIG_DIR` / `WORKBUDDY_DATA_FOLDER_NAME` 先做 `trim()`。
+///
+/// 走到默认位置时会顺带 [`ensure_models_file`]：目录已在、`models.json` 缺失就补建一个空
+/// 配置（装了插件但还没保存过自定义模型的情形）。显式指定（`env` / `saved`）的位置
+/// **不补建**——那里失效必须照旧返回 `None`。
 pub fn resolve_models_file(saved: Option<&str>, env: &Env, home: &str) -> Option<String> {
     let explicit = env
         .get("BUDDY_MODELS_FILE")
@@ -92,7 +141,11 @@ pub fn resolve_models_file(saved: Option<&str>, env: &Env, home: &str) -> Option
                         .unwrap_or_else(|| DEFAULT_DATA_FOLDER.to_string());
                     join_host(&[home, &folder])
                 });
-            join_host(&[&directory, MODELS_FILE_NAME])
+            let file = join_host(&[&directory, MODELS_FILE_NAME]);
+            // 插件目录已存在、只是还没保存过自定义模型：补建一个空配置，让它可被检测到。
+            // 目录不存在时 `ensure_models_file` 什么也不做——那属于「未安装」，不是「没配置文件」。
+            ensure_models_file(&file);
+            file
         });
 
     validate_models_file(&file).ok()
@@ -248,5 +301,49 @@ mod tests {
             &home,
         );
         assert_eq!(result, None, "显式位置失效时必须返回 null，而不是回退到默认 profile");
+    }
+
+    #[test]
+    fn ensure_models_file_creates_an_empty_config_when_directory_exists() {
+        let scratch = Scratch::new("ensure-dir");
+        let home = scratch.root.to_string_lossy().to_string();
+        fs::create_dir_all(scratch.path(".workbuddy")).expect("目录可建");
+        let expected = scratch.path(".workbuddy/models.json");
+
+        // 目录已在、配置文件缺失：补建后即可被检测到（装了插件但还没保存过自定义模型）。
+        assert_eq!(
+            resolve_models_file(None, &env_of(&[]), &home).as_deref(),
+            Some(expected.as_str())
+        );
+        assert_eq!(
+            fs::read_to_string(&expected).expect("补建的文件可读"),
+            EMPTY_MODELS_FILE_TEXT
+        );
+
+        // 已有内容的文件绝不被补建逻辑改写：补建只发生在文件缺失时。
+        fs::write(&expected, "[{\"id\":\"mine\"}]").expect("可写");
+        assert_eq!(
+            resolve_models_file(None, &env_of(&[]), &home).as_deref(),
+            Some(expected.as_str())
+        );
+        assert_eq!(fs::read_to_string(&expected).expect("可读"), "[{\"id\":\"mine\"}]");
+    }
+
+    #[test]
+    fn ensure_models_file_invents_neither_a_directory_nor_an_explicit_file() {
+        let scratch = Scratch::new("ensure-none");
+        let home = scratch.root.to_string_lossy().to_string();
+        let default_file = scratch.path(".workbuddy/models.json");
+
+        // 目录不在 = 插件没装：不得建目录、不得建文件，结论仍是「未检测到」。
+        assert_eq!(resolve_models_file(None, &env_of(&[]), &home), None);
+        assert!(!PathBuf::from(&default_file).exists(), "不得凭空造出 models.json");
+        assert!(!PathBuf::from(scratch.path(".workbuddy")).exists(), "不得凭空造出插件目录");
+
+        // 显式（saved）位置失效时同样不补建——既有铁律不受本次优化影响。
+        let saved = scratch.path("saved/models.json");
+        fs::create_dir_all(scratch.path("saved")).expect("目录可建");
+        assert_eq!(resolve_models_file(Some(&saved), &env_of(&[]), &home), None);
+        assert!(!PathBuf::from(&saved).exists(), "显式位置不得被补建");
     }
 }

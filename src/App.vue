@@ -5,6 +5,13 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { action, onState, onDismiss } from './core/bridge.js'
 import { loadView, saveView } from './core/prefs.js'
+import {
+  ACTION_COOLDOWN_MS,
+  COOLDOWN_ACTIONS,
+  FEEDBACK_VISIBLE_MS,
+  rejectionOf,
+  successMessage,
+} from './core/ops.js'
 import { startSilentCheck } from './core/update.js'
 import SideBar from './views/SideBar.vue'
 import ModelList from './views/ModelList.vue'
@@ -32,22 +39,99 @@ watch(view, next => { saveView(next) })
 const busyAction = ref(null)
 const feedback = ref(null) // { text, error }
 
+// ── 操作守卫（防抖 + 节流）与成功反馈（src/core/ops.js 钉住判定与文案）───────
+// 终态动作成功完成的时刻表：进入冷却窗口（ACTION_COOLDOWN_MS）后重复触发会被拒绝——
+// refresh / system-proxy / restart / import 都会在响应后继续改核心状态（重启子进程、
+// 重跑探测、写配置），连点只会把刚拿到的结果又冲掉。失败不写入：马上重试是正当操作。
+const lastFinished = ref({})
+// 成功文案自动消隐的定时器：同一时刻只有一个，新反馈覆盖旧的时先撤旧的。
+let successTimer = 0
+
+function clearSuccessTimer() {
+  if (successTimer) {
+    clearTimeout(successTimer)
+    successTimer = 0
+  }
+}
+
+// 成功反馈 + 冷却登记 + 自动消隐。文案一律来自 ops.js 的 successMessage（唯一来源，
+// 视图不各自造句子）；import 与平台 Key 动作的成功反馈由视图自有机制承担，不在此列。
+function noteSuccess(name, result) {
+  const text = successMessage(name, result)
+  if (COOLDOWN_ACTIONS.includes(name)) {
+    lastFinished.value = { ...lastFinished.value, [name]: Date.now() }
+  }
+  if (!text) return
+  showTimedFeedback(text)
+}
+
+// 展示一条 5 秒后自动消隐的成功/信息文案（import 的三类结果也走这里）。
+function showTimedFeedback(text) {
+  clearSuccessTimer()
+  feedback.value = { text }
+  successTimer = setTimeout(() => {
+    successTimer = 0
+    // 只清成功文案：期间若出现进行中/失败提示（FeedbackBar 的 pending / error 优先级更高），
+    // 那次赋值已经把 feedback 换成了别的对象，这里再赋 null 会把新提示吞掉。
+    if (feedback.value && !feedback.value.error) feedback.value = null
+  }, FEEDBACK_VISIBLE_MS)
+}
+
+// 是否应该拒绝本次触发（在飞互斥 + 完成冷却）：拒绝时给出节流后的可见提示，
+// 连点不再叠加重复文案（FeedbackBar 以 text 为 key，同文不重挂载）。
+function rejectIfGuarded(name) {
+  const reason = rejectionOf(name, { busy: !!busyAction.value, lastFinished: lastFinished.value })
+  if (!reason) return false
+  feedback.value = { text: reason, error: true }
+  return true
+}
+
+// 单模型「重新检测」的行内挂起标记：modelId -> 'pending'（请求还在空中）| 'acked'（核心已确认开始）。
+// 它只补「点击 → 核心快照接手」之间那不到 500ms 的空档；进行中的权威来源是核心状态里的
+// singleProbes（orchestration.rs::note_single_probe 在响应前登记、探测结束时撤销），
+// 「检测中」何时结束也由它决定，前端不猜。
+const reprobeClicked = ref({})
+const reprobing = computed(() => new Set([
+  ...(state.value.singleProbes || []),
+  ...Object.keys(reprobeClicked.value),
+]))
+// 还在空中的那一个（'pending'）：用于把进行中文案从「逐个检测」改成单模型措辞。
+const reprobeRequest = computed(() => Object.keys(reprobeClicked.value)
+  .find(id => reprobeClicked.value[id] === 'pending') || '')
+
+watch(state, (snapshot) => {
+  const running = snapshot?.singleProbes || []
+  for (const [id, phase] of Object.entries(reprobeClicked.value)) {
+    // 核心已经报出这一项 → 标记交还给核心；核心确认过开始、之后的快照里却不再有它 → 探测已结束。
+    // 两种情况都到了撤标记的时候，留着它只会把按钮永久锁死。
+    if (running.includes(id) || phase === 'acked') delete reprobeClicked.value[id]
+  }
+})
+
 function apply(next) {
   state.value = next || {}
 }
 
 async function run(name, value) {
-  if (busyAction.value) return { ok: false, error: '已有操作进行中' }
+  // 已有动作在跑 / 终态动作刚完成：拒绝必须留下可见痕迹（文案由 ops.js 节流约定，
+  // 同一次拒绝期间连点不叠加），模板里的 @click 会丢返回值，只 return 的话用户读到
+  // 的是「按钮坏了」，而不是「前一个还没结束 / 刚完成」。成功冷却的判定在置忙之前：
+  // 冷却窗口内的重复点击不该把 busyAction 占住又立刻释放，那会让按钮闪一下假忙态。
+  if (rejectIfGuarded(name)) return { ok: false, error: 'guarded' }
   busyAction.value = name
   feedback.value = null
+  clearSuccessTimer()
   try {
     const response = await action(name, value)
     if (!response.ok) throw new Error(response.error)
     if (name === 'import') {
       const r = response.result
-      if (r.canceled) feedback.value = { text: '已取消导入，配置未更改。' }
-      else if (r.changed === false) feedback.value = { text: `配置已是最新，共 ${r.count} 个模型，无需重复写入。` }
-      else {
+      if (r.canceled) {
+        // 用户主动取消：不算一次完成的动作，不进冷却（马上换个文件重选是正当操作）。
+        showTimedFeedback('已取消导入，配置未更改。')
+      } else if (r.changed === false) {
+        showTimedFeedback(`配置已是最新，共 ${r.count} 个模型，无需重复写入。`)
+      } else {
         // 逐目标如实汇报：count 是各成功目标之和，只有在拿到 targets 时才知道写进了几家。
         const targets = r.targets || {}
         const okNames = ['workBuddy', 'codeBuddy']
@@ -55,8 +139,28 @@ async function run(name, value) {
           .filter(item => targets[item.key]?.status === 'ok' && targets[item.key].changed)
           .map(item => item.label)
         const scope = okNames.length ? `导入 ${okNames.join(' 与 ')}` : '导入已完成'
-        feedback.value = { text: `导入完成，已将 ${r.count} 个可用模型${scope}。` }
+        showTimedFeedback(`导入完成，已将 ${r.count} 个可用模型${scope}。`)
+        lastFinished.value = { ...lastFinished.value, import: Date.now() }
       }
+    }
+    // /admin/probe 是同步返回 202：核心拒收（正在读取模型、模型不在当前目录、批量探测已占用）
+    // 时给的是**带 2xx** 的 { error: { message } } 或 { started: false, message }，bridge 不会把
+    // 它们判成失败。不落到反馈条就等于「点了没反应」，所以这里补上（只认 probe，别的动作
+    // 的成功载荷里本来就可能带 error，例如 sync.error）。
+    if (name === 'probe') {
+      const refusal = response.result?.error?.message
+        || (response.result?.started === false ? response.result?.message : '')
+      if (refusal) {
+        feedback.value = { text: refusal, error: true }
+      } else {
+        // 提交成功：批量不显示「1/x」之类的假进度，只确认「已开始」；单模型（带 model）
+        // 的落点由行内「检测中」徽章承担，反馈条文案由 ops.js 给出同一份。
+        noteSuccess(name, response.result)
+      }
+    } else {
+      // 其余动作（refresh / restart / system-proxy 等）：响应返回即本轮完成，统一给成功文案；
+      // import 在上面已经写过逐目标文案（noteSuccess 对 import 返回空串，不会覆盖）。
+      noteSuccess(name, response.result)
     }
     return response
   } catch (error) {
@@ -68,13 +172,23 @@ async function run(name, value) {
 }
 
 // 单模型重新检测：只向指定模型发一次探测请求，不重跑全量。
-// 与「检测全部」共用同一 probe 通道（后端 start_probes 按单模型过滤），
-// 所以进行中时按钮自动禁用，由后端返回 { started: false } 兜底。
+// 进行中的展示不在这里，而是行内的 reprobing 标记 + 核心的 singleProbes（见上方 watch）。
 async function reprobeModel(modelId) {
-  const response = await run('probe', { model: modelId })
-  if (response.ok && response.result?.started === false) {
-    feedback.value = { text: response.result.message || '检测正在进行，请稍后重试', error: true }
+  // 防抖：这一行还在飞就不再发第二次。一次探测要跑几十秒并消耗真实额度，连点只会叠出
+  // 多个并发探测，界面上根本分不清谁是谁；拒绝同样要有可见痕迹，不能静默吞掉。
+  if (reprobing.value.has(modelId)) {
+    feedback.value = { text: `（${modelId}）正在检测中，请等它结束。`, error: true }
+    return
   }
+  reprobeClicked.value[modelId] = 'pending'
+  const response = await run('probe', { model: modelId })
+  // 没跑起来（请求失败、或核心以 2xx 拒收 —— 文案已由 run() 落到反馈条）：撤掉标记，
+  // 按钮立刻恢复可点，不会把这一行锁死。跑起来了则交还给核心的 singleProbes。
+  if (response.ok && response.result?.started === true) {
+    reprobeClicked.value[modelId] = 'acked'
+    return
+  }
+  delete reprobeClicked.value[modelId]
 }
 
 // 检测进度：待检队列是壳推送的真实数据，已完成 = 当前模型总数 − 仍在待检的数量。
@@ -94,6 +208,11 @@ const pendingText = computed(() => {
   if (busyAction.value === 'import') return '正在写入 WorkBuddy / CodeBuddy 配置…'
   if (busyAction.value === 'restart') return '正在重启核心服务…'
   if (busyAction.value === 'system-proxy') return '正在应用系统代理设置…'
+  // 单模型重新检测的请求还在空中：措辞必须区别于批量，否则一行「逐个检测」会把
+  // 「只检这一个」说成整库重跑。请求返回后进度由那一行自己承担，这里不再占用反馈条。
+  if (busyAction.value === 'probe' && reprobeRequest.value) {
+    return `正在发起重新检测（${reprobeRequest.value}）…`
+  }
   if (busyAction.value === 'probe' || state.value.probe?.running) {
     const progress = probeProgress.value ? `（${probeProgress.value}）` : ''
     return `正在逐个检测模型${progress}，会向每个模型发送一次简短请求（消耗少量免费额度）…`
@@ -197,7 +316,8 @@ onUnmounted(() => {
           :probe="state.probe"
         >
           <button id="import" class="primary" :disabled="!!busyAction || !!state.probe?.running || state.phase !== 'ready'" @click="run('import')">
-            <span v-if="busyAction" class="spinner" />导入 WorkBuddy / CodeBuddy
+            <!-- spinner 只跟自己的动作绑：任何动作在跑都点亮它，会把「正在检测」误读成「正在导入」 -->
+            <span v-if="busyAction === 'import'" class="spinner" />导入 WorkBuddy / CodeBuddy
           </button>
         </MetricsBar>
 
@@ -220,6 +340,7 @@ onUnmounted(() => {
           :available="state.availableModels || []"
           :probe="state.probe"
           :activity="state.activity"
+          :reprobing="reprobing"
           @reprobe="reprobeModel"
         />
 
@@ -233,7 +354,7 @@ onUnmounted(() => {
 
       <footer v-if="view === 'models'">
         <p id="sync">{{ syncSummary }}</p>
-        <p class="note">启动后自动发送简短请求检测，会使用少量免费额度，不代表工具流程已验证。耗时为完整请求用时，非首字延迟。不可用模型仅在本窗口保留，不供任何插件使用；剩余额度暂不可查询。</p>
+        <p class="note">打开应用默认沿用上次检测的模型与结果（不再每次重跑一遍探测），点「读取免费模型」才会重新获取并逐个检测，检测会向每个模型发送一次简短请求、消耗少量免费额度。耗时为完整请求用时，非首字延迟。不可用模型仅在本窗口保留，不供任何插件使用；剩余额度暂不可查询。</p>
       </footer>
 
       <!-- 非「模型与服务」的视图：各自填满主区并独立滚动，不改变上面两栏布局的任何约束 -->
@@ -244,9 +365,11 @@ onUnmounted(() => {
         v-if="view === 'providers'"
         :busy="!!busyAction"
       />
-      <!-- 该视图内的「导入」也走同一个 run()，反馈必须在本视图可见（只换位置，不复制状态） -->
+      <!-- 非「模型与服务」的视图都要有反馈落点：侧栏的代理开关在任何视图都能按下，
+           只把横幅留在 workbuddy 里，其他视图点坏了就什么都不显示（模型视图的横幅在 .top 内）。
+           同一份 banner、同一条 dismiss，只换位置，不复制状态。 -->
       <FeedbackBar
-        v-if="view === 'workbuddy' && banner"
+        v-if="view !== 'models' && banner"
         :key="banner.text"
         :text="banner.text"
         :error="banner.error"

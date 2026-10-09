@@ -6,7 +6,7 @@
 
 日期：2026-10-09（本机 macOS，Apple Silicon；Rust 核心 + Vue 壳 + Vue 面板）
 
-## 多平台接入 Stage 3 + Stage 5：Key 注入、聚合发现、空集闸门与「平台」视图（2026-10-09，版本推进至 1.1.0）
+## 多平台接入 Stage 3 + Stage 5：Key 注入、聚合发现、空集闸门与「平台」视图（2026-10-09，版本推进至 1.1.0；其后 1.2.0 / 1.3.x 的推进已由维护者裁定作废，当前落点回退为 1.1.2）
 
 ### 沙箱前置实测（同日上午，四轮对照实验）
 
@@ -48,7 +48,7 @@
 - 核心 cargo clippy --all-targets：**0 warning**；壳 cargo test --lib：**9 通过**；
 - git diff --stat src-tauri/core/tests/fixtures 为空（对拍夹具零改动，逐字节等价仍成立）；
 - JS 侧：test:prefs 8 / test:manifest 9 / test:updater-key 13 全绿、npx eslint 0 problem、
-  vite:build 通过、version:check 5 处一致（**1.1.0**——维护者裁定按语义化版本推进 minor 位）。
+  vite:build 通过、version:check 5 处一致（**1.1.0**——当时由维护者裁定按语义化版本推进 minor 位；该裁定已于同日推翻，版本回退并统一为 **1.1.2**）。
 
 ### 🔴 未验证（必须实机确认）
 

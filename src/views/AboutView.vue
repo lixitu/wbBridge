@@ -7,6 +7,21 @@ import { dataDir } from '../core/bridge.js'
 import { check, dismiss, install, restart, setAutoCheck, subscribe } from '../core/update.js'
 import FeedbackBar from './FeedbackBar.vue'
 
+// 更新动作的防抖互斥：install 的状态机已挡重入，但 restart（relaunch）只有插件侧一次
+// 确认窗口，双击会发两次 relaunch 调用；updateState 同步置位 + finally 释放，
+// 双击只生效第一次。check 的重入由 update.js 的状态机拒绝（返回当前快照）。
+const acting = ref(false)
+
+async function guard(action) {
+  if (acting.value) return
+  acting.value = true
+  try {
+    await action()
+  } finally {
+    acting.value = false
+  }
+}
+
 defineProps({
   state: { type: Object, default: () => ({}) },
 })
@@ -40,9 +55,9 @@ function formatBytes(bytes) {
   return `${(value / 1024 / 1024).toFixed(2)} MB`
 }
 
-// 更新条上的唯一主按钮：还没装就下载安装，装好了就重启生效。
+// 更新条上的唯一主按钮：还没装就下载安装，装好了就重启生效。防抖互斥见 guard()。
 function primary() {
-  return update.value.status === 'ready' ? restart() : install()
+  guard(() => (update.value.status === 'ready' ? restart() : install()))
 }
 
 onMounted(async () => {
@@ -127,7 +142,8 @@ onUnmounted(() => {
           v-if="update.status !== 'downloading'"
           type="button"
           class="primary"
-          :disabled="busy"
+          :disabled="busy || acting"
+          :aria-busy="String(acting)"
           @click="primary"
         >{{ update.status === 'ready' ? '重启应用' : '下载并安装' }}</button>
         <button v-else type="button" class="primary" disabled aria-busy="true">
@@ -149,7 +165,7 @@ onUnmounted(() => {
       <p v-if="update.status === 'downloading'" class="progress-text">{{ progressText }}</p>
 
       <div class="update-actions">
-        <button type="button" class="ghost" :disabled="busy" @click="check()">
+        <button type="button" class="ghost" :disabled="busy || acting" @click="guard(() => check())">
           <span v-if="update.status === 'checking'" class="spinner sm" />检查更新
         </button>
         <span v-if="update.checkedAt" class="checked-at">

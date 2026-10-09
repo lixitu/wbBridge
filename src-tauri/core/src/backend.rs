@@ -106,6 +106,11 @@ pub fn free_models_in(providers: &Value, namespace: &str) -> Result<Vec<Value>, 
     let mut models: Vec<Value> = Vec::new();
     if let Some(entries) = provider.get("models").and_then(Value::as_object) {
         for (key, model) in entries {
+            // 声明段的锚点条目（见 runtime::ANCHOR_MODEL_KEY）：OpenCode 会为它合成一条
+            // cost 全 0 的幽灵模型，这里按保留名过滤——它只是让声明段生效的占位，不是真模型。
+            if key == crate::runtime::ANCHOR_MODEL_KEY {
+                continue;
+            }
             let cost = model.get("cost");
             let free = truthy(cost)
                 && cost.and_then(|c| c.get("input")) == Some(&json!(0))
@@ -1836,6 +1841,24 @@ mod tests {
         assert_eq!(models[0]["variants"], json!({}));
         assert_eq!(models[1]["name"], json!("no-name"));
         assert!(models[0].get("input").is_none());
+    }
+
+    /// 声明段的锚点条目（OpenCode 会为它合成 cost 全 0 的幽灵模型）绝不能进入免费列表：
+    /// 幽灵的 cost 形态与免费模型完全一致，唯一判别依据就是保留名。
+    #[test]
+    fn free_models_in_filters_the_injection_anchor_entry() {
+        let providers = json!({ "all": [
+            { "id": "modelscope", "models": {
+                crate::runtime::ANCHOR_MODEL_KEY: {
+                    "name": crate::runtime::ANCHOR_MODEL_KEY,
+                    "cost": { "input": 0, "output": 0, "cache": { "read": 0, "write": 0 } },
+                },
+                "Qwen/Qwen3-8B": { "name": "Qwen3 8B", "cost": { "input": 0, "output": 0 } },
+            } },
+        ] });
+        let models = free_models_in(&providers, "modelscope").unwrap();
+        let ids: Vec<&str> = models.iter().map(|m| m["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["modelscope/Qwen/Qwen3-8B"], "锚点幽灵必须被过滤，真实模型保留");
     }
 
     #[test]

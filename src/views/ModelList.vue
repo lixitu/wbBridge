@@ -9,6 +9,9 @@ const props = defineProps({
   available: { type: Array, default: () => [] },
   probe: { type: Object, default: null },
   activity: { type: Array, default: () => [] },
+  // 单模型「重新检测」正在进行的 id 集合（核心在飞标记与面板点击标记的并集，见 App.vue）。
+  // 用 Set 与 activity 的 activeModels 同形：逐行只查 has()，不再每行 some() 一遍。
+  reprobing: { type: Object, default: () => new Set() },
 })
 
 const selected = defineModel('selected', { type: Object, default: null })
@@ -22,6 +25,8 @@ const resultOf = (id) => props.results[id] || EMPTY_RESULT
 const activeModels = computed(() => new Set((props.activity || []).map(a => a.model)))
 
 const waiting = (id) => props.probe?.running && props.probe?.pending?.includes(id)
+// 换位规则只跟批量队列走：单模型重新检测**不**把该行挪进「检测中」分组——一次探测要跑几十秒，
+// 行在用户刚点过的地方原地显示「检测中」，比十几秒后突然换位更好找。
 const rank = (model) => {
   if (waiting(model.id)) return 1
   if (props.available.includes(model.id)) return 0
@@ -62,7 +67,7 @@ function move(event, step) {
       :in-request="activeModels.has(model.id)"
       :available="available.includes(model.id)"
       :selected="selected?.id === model.id"
-      :probe-running="!!probe?.running"
+      :reprobing="reprobing.has(model.id)"
       @toggle="selected = selected?.id === model.id ? null : model"
       @reprobe="$emit('reprobe', $event)"
     />

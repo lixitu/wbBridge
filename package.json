@@ -1,6 +1,6 @@
 {
   "name": "wb-bridge",
-  "version": "1.1.0",
+  "version": "1.1.2",
   "private": true,
   "description": "WB Bridge — 基于 Tauri 的跨平台桌面应用，通过隔离的 OpenCode 为 WorkBuddy 提供免费模型",
   "type": "module",
@@ -10,6 +10,7 @@
   "scripts": {
     "test": "cargo test --manifest-path src-tauri/core/Cargo.toml",
     "test:prefs": "node --test src/core/prefs.test.js",
+    "test:ops": "node --test src/core/ops.test.js",
     "test:manifest": "node --test scripts/gen-latest-json.test.mjs",
     "test:updater-key": "node --test scripts/with-updater-key.test.mjs",
     "rust:check": "cargo check --manifest-path src-tauri/core/Cargo.toml",

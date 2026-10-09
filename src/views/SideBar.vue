@@ -6,13 +6,22 @@ const logo = '/logo.svg'
 
 const version = __APP_VERSION__
 
-defineProps({
+// 代理开关是受控组件：视觉状态只跟随 proxyOn 真值。原生点击会先把 DOM 打向另一侧，
+// 若动作被守卫拒绝（在飞 / 冷却），App 的状态不变、props 不变，复选框就会停在假位置谎报成功。
+// 因此发出事件后立即把 DOM 拨回真值；真正翻转由核心状态推送驱动（动作期间有「正在应用」横幅）。
+const props = defineProps({
   proxyOn: { type: Boolean, default: false },
   disabled: { type: Boolean, default: false },
   // 当前视图 id：由 App.vue 持有，侧栏只负责高亮与派发切换，不自己维护选中态。
   current: { type: String, default: 'models' },
 })
-defineEmits(['toggle-proxy', 'select'])
+const emit = defineEmits(['toggle-proxy', 'select'])
+
+function onToggleProxy(event) {
+  const target = event.target
+  emit('toggle-proxy', target.checked)
+  target.checked = props.proxyOn === true
+}
 
 // 导航图标：内联 SVG 描边路径（24×24 视框，继承 currentColor）。
 // 用 SVG 而非字符符号（原 ▦▤◔⇄ⓘ）：字符图标随系统字体变化、基线不齐、无法统一线宽与配色。
@@ -116,7 +125,7 @@ const groups = [
             :checked="proxyOn"
             :aria-checked="proxyOn"
             :disabled="disabled"
-            @change="$emit('toggle-proxy', $event.target.checked)"
+            @change="onToggleProxy"
           >
         </label>
       </section>

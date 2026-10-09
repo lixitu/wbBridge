@@ -303,7 +303,12 @@ pub type AdminFn = dyn Fn(Value) -> BoxFuture<Result<Value, BackendError>> + Sen
 pub type RefreshFn = dyn Fn() -> BoxFuture<Result<Value, BackendError>> + Send + Sync;
 pub type ImportFn =
     dyn Fn(Option<Value>) -> BoxFuture<Result<Value, BackendError>> + Send + Sync;
-pub type ProbeFn = dyn Fn(Option<Value>) -> Value + Send + Sync;
+/// `/admin/probe`：收**整份**请求体（`{ model?: string, providers?: string[] }`）。
+/// 早期只把 `body.model` 递进来，多平台定向重检需要 `providers`，因此改为透传整份体，由编排层
+/// 按字段分流。字段的**合法性判定也在编排层**（`requested_providers`）：路由这里若先把 `providers`
+/// 收成 `Option<Vec<String>>`，`providers: "modelscope"` 这种拼错形态会被静默当成「没传」而退化
+/// 成全量探测 —— 那正是要避免的消耗真实额度的行为。
+pub type ProbeFn = dyn Fn(Value) -> Value + Send + Sync;
 pub type ResultFn = dyn Fn(ResultRecord) -> BoxFuture<()> + Send + Sync;
 pub type ActivityFn = dyn Fn(Value) + Send + Sync;
 pub type ShutdownFn = dyn Fn() + Send + Sync;
@@ -575,11 +580,11 @@ impl Server {
         self
     }
 
-    /// 注入 `probe(model)`。
+    /// 注入 `probe(body)`（`{ model?, providers?[] }`，见 [`ProbeFn`]）。
     #[must_use]
     pub fn probe<F>(mut self, probe: F) -> Self
     where
-        F: Fn(Option<Value>) -> Value + Send + Sync + 'static,
+        F: Fn(Value) -> Value + Send + Sync + 'static,
     {
         self.handlers.probe = Arc::new(probe);
         self
@@ -795,7 +800,7 @@ async fn handle(
             Ok(body) => body,
             Err(error) => return error_response(&error),
         };
-        return json_response(StatusCode::ACCEPTED, (handlers.probe)(body.get("model").cloned()));
+        return json_response(StatusCode::ACCEPTED, (handlers.probe)(body));
     }
 
     if action_matches("system-proxy", method, route) {
@@ -1589,8 +1594,9 @@ mod tests {
                     Ok(json!({ "useSystemProxy": enabled }))
                 })
             })
-            .probe(move |model| {
-                *lock(&probed_sink) = model.clone();
+            .probe(move |body| {
+                // 与真实接线一致：处理器收到的是整份请求体（`{ model?, providers?[] }`）。
+                *lock(&probed_sink) = Some(body);
                 json!({ "started": true })
             })
             .on_shutdown(move || shutdown_sink.store(true, Ordering::SeqCst));
@@ -1639,7 +1645,20 @@ mod tests {
             .expect("路由可用");
         assert_eq!(response.status(), StatusCode::ACCEPTED);
         assert_eq!(body_json(response).await, json!({ "started": true }));
-        assert_eq!(lock(&probed).clone(), Some(json!("free-1")));
+        // 处理器收到的是整份请求体，`model` 的取值路径由编排层负责（见 orchestration 的相应单测）。
+        assert_eq!(lock(&probed).clone(), Some(json!({ "model": "free-1" })));
+
+        let response = router
+            .clone()
+            .oneshot(post("/admin/probe", json!({ "providers": ["modelscope"] })))
+            .await
+            .expect("路由可用");
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            lock(&probed).clone(),
+            Some(json!({ "providers": ["modelscope"] })),
+            "定向重检的 providers 字段必须原样递到编排层，路由不做取舍"
+        );
 
         let response = router
             .clone()

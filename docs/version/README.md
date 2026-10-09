@@ -8,8 +8,8 @@
 > **Release 正文必备固定小节**：每份 `RELEASE-NOTES-v{完整版本}.md` 必须包含「macOS 首次打开（ad-hoc 签名放行）」小节——写明应用为 ad-hoc 签名、**未做 Apple 公证**，首次打开（含更新后重新被拦截）提示「已损坏」时确认来源可信后执行放行命令；该小节是发布正文的固定组成部分，**新增版本必须沿用同一小节，不得省略或改写**。
 >
 > **版本纪律（与根目录 `AGENTS.md`「当前基准版本」章节严格对齐）**：
-> - **版本单一来源**：根目录 `package.json` 的 `version`（当前 **1.1.0**）；`src-tauri/tauri.conf.json`
->   与 `src-tauri/Cargo.toml` 的 `[package] version` 是同步落点（当前同为 **1.1.0**）
+> - **版本单一来源**：根目录 `package.json` 的 `version`（当前 **1.1.2**）；`src-tauri/tauri.conf.json`
+>   与 `src-tauri/Cargo.toml` 的 `[package] version` 是同步落点（当前同为 **1.1.2**）
 > - `src-tauri/core/Cargo.toml` 的内部 crate 版本（当前 **0.1.0**，crate `wbbridge-core`）与产品版本**有意解耦**：
 >   它是库自身的演进节奏，**不是**版本号落点，`version:check` 不校验它，也不随产品版本递增
 > - 版本号末位仅在「不同类新功能 / 不同根因新修复 + 用户明确允许」时 +1
@@ -19,6 +19,7 @@
 > - 用户要求版本回退时，根 `package.json`、`AGENTS.md`「当前基准版本」、本目录索引（以及
 >   `src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`）必须同时回退到用户指定值
 > - **即使不推进版本号，也必须追加发布日志**：对应主版本文件顶部新分节，注明日期与"不推进版本号"；历史日志只增不改
+> - **2026-10-09 版本回退（维护者裁定，已执行）**：`1.3.4 → 1.1.1（2026-10-10 随第 7 条优化推进为 1.1.2）`。v1.1.0 之后的六轮改动（重新检测忙态与面板反馈、启动沿用/定向重检/单份备份三项优化、地区不可用 / 不支持函数调用 / 模型撤架三条上游文案改写、备份收敛）都属**同一未发布版本内的补丁与打磨**，此前被逐轮推进成 `1.2.0` 与 `1.3.0~1.3.4`，属**错误推进、已作废**；`1.2.x~1.3.x` **从未构建、从未打标签，不得再占用**。五处落点已统一为 **1.1.2**（`npm run version:check` 实测一致），`src-tauri/Cargo.lock` 内 `wbbridge` 版本由 cargo 同步。回退后：v1.1.0 的 Release 正文在发布前按 1.1.2 出稿（见索引，正文已生成 `RELEASE-NOTES-v1.1.2.md`）；`v1.1.2` 打标签前的追加修复**默认不再递增版本号**。
 
 ---
 
@@ -26,24 +27,26 @@
 
 | 文件 | 覆盖版本 | 状态 |
 |------|---------|------|
-| [v1.1.0 GitHub Release 正文](RELEASE-NOTES-v1.1.0.md) | v1.1.0（多平台免费模型接入：面板「平台」视图 + 自带 Key + 三步申请引导 + `open_external` 壳命令；核心 Key 注入 / 聚合发现 / 空发布集闸门） | 📝 待发布：**尚未构建、未打标签**；版本落点已由 `npm run version:set -- 1.1.0` 改至 1.1.0 且 `version:check` 5 处一致——按铁律先提交、再在该提交上打 `v1.1.0` |
+| [v1.1.2 GitHub Release 正文](RELEASE-NOTES-v1.1.2.md) | v1.1.2（**当前基准版本**）：多平台免费模型接入 + 之后七项改动（modelscope 锚点修复、重新检测「检测中」与面板反馈、启动沿用 / 定向重检 / 不再留备份并清存量、三条上游失败中文说明、空插件目录补建 `models.json`） | 📝 待发布：**尚未构建、未打标签**；正文已出稿（含固定小节「macOS 首次打开（ad-hoc 签名放行）」）——按铁律先提交、再在该提交上打 `v1.1.2` |
+| [v1.1.2 发布日志分节](RELEASE-v1.1.md) | v1.1.2（同上，日志形态：状态 / 回退与推进理由 / 落点 / 内容清单 / 验证 / 未验证） | 📝 待发布：版本已由 `npm run version:set -- 1.1.2` 统一（从误推进的 1.3.4 回退为 1.1.1 后再推进），`version:check` 5 处一致 |
+| [v1.1.0 发布日志分节](RELEASE-v1.1.md) | v1.1.0（多平台免费模型接入：面板「平台」视图 + 自带 Key + 三步申请引导 + `open_external` 壳命令；核心 Key 注入 / 聚合发现 / 空发布集闸门） | 📝 待发布但**不单独出版本号**：代码已提交（`d8984a0`）、**从未构建、未打标签**；1.2.0 与 1.3.0~1.3.4 的推进已裁定作废，本版内容并入 **v1.1.2** 一起发布。Release 正文底本 [`RELEASE-NOTES-v1.1.0.md`](RELEASE-NOTES-v1.1.0.md) 已出稿为 [`RELEASE-NOTES-v1.1.2.md`](RELEASE-NOTES-v1.1.2.md) |
 | [v1.0.5 GitHub Release 正文](RELEASE-NOTES-v1.0.5.md) | v1.0.5（探测回归修复：`start_probes_admin` 二次解包 bug、`chat_only_attempt` 转写闸门回退；面板单模型重新检测按钮） | 📝 待发布：**尚未构建、未打标签**；版本落点已改至 1.0.5 但仍未提交——按铁律先提交、再在该提交上打 `v1.0.5` |
 | [v1.0.4 GitHub Release 正文](RELEASE-NOTES-v1.0.4.md) | v1.0.4（模型发布多插件写入：自动检测 WorkBuddy + CodeBuddy 并向所有检测到的目标分发；`sync.targets` 逐目标状态与顶层 `codeBuddyModelsFile`） | 📝 待发布：**尚未构建、未打标签**；版本落点已改至 1.0.4 但仍未提交——按铁律先提交、再在该提交上打 `v1.0.4` |
 | [v1.0.3 GitHub Release 正文](RELEASE-NOTES-v1.0.3.md) | v1.0.3（多平台接入 Stage 1 + Stage 2、四项安全/数据红线修复、清单 url 空格→点修复与 CI 资产对账闸门） | 📝 待发布：**尚未构建、未打标签**；版本落点（`package.json` / `src-tauri/Cargo.toml` / `Cargo.lock` / `tauri.conf.json` / `AGENTS.md`）仍未提交——按铁律先提交、再在该提交上打 `v1.0.3` |
-| [v1.1 日志](RELEASE-v1.1.md) | v1.1.0（当前基准版本）：多平台免费模型接入，最新在前 | 📝 待发布 |
+| [v1.1 日志](RELEASE-v1.1.md) | v1.1.2（**当前基准版本**）：v1.1.0 多平台免费模型接入 + 之后七项改动，最新在前 | 📝 待发布 |
 | [v1.0 日志](RELEASE-v1.0.md) | v1.0.5 ＋ v1.0.4 ＋ v1.0.3 ＋ v1.0.2 ＋ v1.0.1 ＋ v1.0.0 基线快照，最新在前 | 📝 待发布 |
 | [v1.0.2 GitHub Release 正文](RELEASE-NOTES-v1.0.2.md) | v1.0.2（含 2026-10-03 追加的「渲染与轮询降耗」与「签名注入链路重写 + 单条公钥 + hdiutil dmg」两节） | 📝 标记待维护者定夺（标签 `v1.0.2` 已打出、**Release 已 Publish、23 个资产**；GUI 与更新链路未实机验证，同轮 `latest.json` 的 url 缺陷已修脚本、线上那份待重传） |
 | [v1.0.1 GitHub Release 正文](RELEASE-NOTES-v1.0.1.md) | v1.0.1 | 代码已并入 `main`（`679a2cb`）、远端标签已指向含版本推进的提交；**是否真的发布过 Release / 跑过 CI 未经核验** |
 
 ---
 
-## 版本号落点（实读核验，2026-10-02 随 v1.0.2 推进更新；2026-10-03 复验 5 处一致；同日随 v1.0.3 再推进；2026-10-08 随 v1.0.4 再推进；2026-10-09 随 v1.0.5 再推进）
+## 版本号落点（实读核验，2026-10-02 随 v1.0.2 推进更新；2026-10-03 复验 5 处一致；同日随 v1.0.3 再推进；2026-10-08 随 v1.0.4 再推进；2026-10-09 随 v1.0.5 再推进；同日随 v1.1.0 推进至 1.1.0 后又把误推进的 1.2.0 / 1.3.x 回退，**当前统一为 1.1.2**）
 
 | 位置 | 当前值 | 说明 |
 |------|--------|------|
-| 根目录 `package.json` → `version` | **1.0.5** | **版本唯一来源**；`name = wb-bridge`、`private: true`、`type: module`、`engines.node >= 24`。根级脚本：`test`（`cargo test --manifest-path src-tauri/core/Cargo.toml`）/`test:prefs`、`test:manifest`、`test:updater-key`（三组 `node --test`，v1.0.2 新增，分别覆盖面板偏好、更新清单生成、签名注入，合计 30 用例：prefs 8 + manifest 9 + updater-key 13）/`rust:check`/`lint`（仅 eslint）/`dev`（`tauri dev`）/`vite:dev`/`vite:build`/`build`（= `vite:build && tauri:build && make:dmg`）/`tauri`/`tauri:dev`/`tauri:build`（= `node scripts/with-updater-key.mjs tauri build`，签名注入包装器）/`make:dmg`（`bash scripts/make-dmg.sh`，hdiutil 出 macOS 的 .dmg，非 mac 平台跳过）/`version:set`/`version:check`/`gen:latest`。Node 在此只服务面板构建与 `scripts/*.mjs` |
-| `src-tauri/tauri.conf.json` → `version` | **1.0.5** | 打包与更新元数据读此值；`productName = WB Bridge`、`identifier = app.wbbridge.desktop`、`frontendDist = ../dist`、`bundle.externalBin = []`（核心已静态链接，无 sidecar）、`bundle.createUpdaterArtifacts: true` + `plugins.updater`（v1.0.2 起）；窗口默认 **1120 × 720**、最小 **860 × 560** |
-| `src-tauri/Cargo.toml` → `[package] version` | **1.0.5** | 壳工程侧同步落点（`name = wbbridge`，`rust-version = 1.77`，`tauri = "2"`，本版另加 `tauri-plugin-updater` / `tauri-plugin-process`）；已在 `AGENTS.md`「当前基准版本」表登记 |
+| 根目录 `package.json` → `version` | **1.1.2** | **版本唯一来源**；`name = wb-bridge`、`private: true`、`type: module`、`engines.node >= 24`。根级脚本：`test`（`cargo test --manifest-path src-tauri/core/Cargo.toml`）/`test:prefs`、`test:manifest`、`test:updater-key`（三组 `node --test`，v1.0.2 新增，分别覆盖面板偏好、更新清单生成、签名注入，合计 30 用例：prefs 8 + manifest 9 + updater-key 13）/`rust:check`/`lint`（仅 eslint）/`dev`（`tauri dev`）/`vite:dev`/`vite:build`/`build`（= `vite:build && tauri:build && make:dmg`）/`tauri`/`tauri:dev`/`tauri:build`（= `node scripts/with-updater-key.mjs tauri build`，签名注入包装器）/`make:dmg`（`bash scripts/make-dmg.sh`，hdiutil 出 macOS 的 .dmg，非 mac 平台跳过）/`version:set`/`version:check`/`gen:latest`。Node 在此只服务面板构建与 `scripts/*.mjs` |
+| `src-tauri/tauri.conf.json` → `version` | **1.1.2** | 打包与更新元数据读此值；`productName = WB Bridge`、`identifier = app.wbbridge.desktop`、`frontendDist = ../dist`、`bundle.externalBin = []`（核心已静态链接，无 sidecar）、`bundle.createUpdaterArtifacts: true` + `plugins.updater`（v1.0.2 起）；窗口默认 **1120 × 720**、最小 **860 × 560** |
+| `src-tauri/Cargo.toml` → `[package] version` | **1.1.2** | 壳工程侧同步落点（`name = wbbridge`，`rust-version = 1.77`，`tauri = "2"`，本版另加 `tauri-plugin-updater` / `tauri-plugin-process`）；已在 `AGENTS.md`「当前基准版本」表登记 |
 | `src-tauri/core/Cargo.toml` → `[package] version` | `0.1.0` | **内部库 crate 版本，有意与产品版本解耦**（crate `wbbridge-core`，`rust-version = 1.75`，`publish = false`），不是版本落点、不被 `version:check` 校验、不随产品版本递增 |
 | `src-tauri/core/src/orchestration.rs`（`status.json` 内置） | `0.2.0` | 历史沿革值，沿自上游参考实现（参考 https://github.com/louchi1984-coder/ow-bridge），界面上可见；同处另写 `schemaVersion: 1`；非版本来源 |
 | `src/core/bridge.js` 等面板代码 | 无版本字面量 | 面板为 **Vue 3 + Vite** 源码（`src/` → 构建到 `dist/`），版本号由 `vite.config.js` 在构建期从 `package.json` 注入 `__APP_VERSION__`；`src/core/` 是**前端内核**（IPC 边界），与已归档的 Node 后端无关 |
@@ -68,3 +71,4 @@
 - **v1.0.3 的推进（2026-10-03，满足纪律的两条前提）**：`1.0.2 → 1.0.3` 由**维护者明确要求**，且内容与 v1.0.2 **不同类、不同根因**——新增多平台接入 Stage 1（`providers.rs` 注册表 + `providers.json` 凭据通道 + 三条 `provider-*` 管理动作，`ACTION_ROUTES` 5 → 8）与同日全量代码复审查出的**四个新根因修复**（一次性子进程携带宿主环境、探测路径的转写开关、`status.json` 非对象形状在 `panic = "abort"` 下整进程退出、并发 `modelResults` 互相吞写）。同日的 Stage 2（命名空间参数化）本身是**行为零变化的等价移植**，按纪律不单独构成推进理由，只是随本版一起入库。推进用 `npm run version:set -- 1.0.3`，`version:check` 实测 5 处一致；`src-tauri/Cargo.lock` 由 cargo 自动同步、须一并提交；`bump-version.mjs` 重写 `tauri.conf.json` 时把单行的 `bundle.targets` 展开成多行，属**纯格式副作用**。核心测试基线 207 → **227**（lib 205 + js_parity 11 + red_lines 11），`AGENTS.md` 的基线行随之更正。**发布前置仍未完成**：版本落点提交、`v1.0.3` 标签（必须打在该提交上）、CI 构建与 Publish 都由维护者执行
 - **v1.0.4 的推进（2026-10-08，满足纪律的两条前提）**：`1.0.3 → 1.0.4` 由**维护者明确要求**，且内容与 v1.0.3 **不同类、不同根因**——新增第二个写入目标 CodeBuddy（`targets.rs` 目标定义与聚合、`codebuddy_config.rs` 对照定位、`orchestration.rs` 双目标分发与 `sync.targets`/`codeBuddyModelsFile` 状态形状、面板逐目标展示）。推进用 `npm run version:set -- 1.0.4`，`version:check` 实测 5 处一致；`src-tauri/Cargo.lock` 由 cargo 自动同步、须一并提交。核心测试基线 227 → **237**（lib 215 + js_parity 11 + red_lines 11，新增 10 项），`AGENTS.md` 的基线行随之更正。**发布前置仍未完成**：版本落点提交、`v1.0.4` 标签（必须打在该提交上）、CI 构建与 Publish 都由维护者执行
 - **v1.0.5 的推进（2026-10-09，满足纪律的两条前提）**：`1.0.4 → 1.0.5` 由**维护者明确要求**，且内容与 v1.0.4 **不同类、不同根因**——v1.0.3 引入的 `probe_meta()` 让 `chat_only_attempt` 带上 `probe: true`，关闭了 `backend.rs` 两处转写闸门，导致升级后全部模型探测不可用；本版回退该标记恢复转写兜底。同时修复 `start_probes_admin` 二次解包 bug（单模型探测请求退化为全量探测），并新增面板单模型「重新检测」按钮（`ModelRow.vue` + `App.vue::reprobeModel()`）。版本落点由 `bump-version.mjs` 手动改写 5 处一致。**发布前置仍未完成**：版本落点提交、`v1.0.5` 标签（必须打在该提交上）、CI 构建与 Publish 都由维护者执行
+- **v1.1.0 → v1.1.1 的回退（2026-10-09，维护者裁定「版本号推进不正确」）＋ v1.1.1 → v1.1.2 的推进（2026-10-10，并入第 7 条优化）**：v1.1.0 之后六轮改动被逐轮推进成 `1.2.0`、`1.3.0`、`1.3.1`、`1.3.2`、`1.3.3`、`1.3.4`，维护者裁定**这些推进不正确**——它们都属同一未发布版本（v1.1.0 从未构建、从未打标签）内的补丁与打磨，不应当占用 minor 位与连续 patch 位。已按裁定把版本**回退并统一为 1.1.1，2026-10-10 随第 7 条优化推进为 1.1.2**：`npm run version:set -- 1.1.2` 改写 5 处落点、`src-tauri/Cargo.lock` 内 `wbbridge` 版本由 `cargo metadata` 同步、`npm run version:check` 实测「全部 5 处版本号一致（1.1.2）」；`AGENTS.md` 各轮条目内的 `1.2.x` / `1.3.x` 标注同步改为「v1.1.2 轮内追加（原记 X 已作废）」。`1.2.x~1.3.x` **从未构建、从未打标签，不得再占用**；本轮换回后，`v1.1.2` 打标签前的追加修复默认不再递增版本号。**发布前置仍未完成**：落点提交、`v1.1.2` 标签（必须打在该提交上）、CI 构建与 Publish 都由维护者执行

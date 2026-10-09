@@ -20,8 +20,8 @@
 
 | 动作（面板 / 托盘） | HTTP 路由 | 方法 | 载荷 | 说明 |
 |---|---|---|---|---|
-| `refresh` | `/admin/refresh` | POST | 无 | 重新读取免费模型目录（含重启运行时） |
-| `probe` | `/admin/probe` | POST | `{ "model"?: string }` | 探测模型；不传 model 表示探测全部 |
+| `refresh` | `/admin/refresh` | POST | 无 | 重新读取**全部**免费模型目录（含重启运行时），并重新发布 |
+| `probe` | `/admin/probe` | POST | `{ "model"?: string, "providers"?: string[] }` | 探测模型：`model` = 只重检这一个模型；`providers` = **只重取并重检这几个注册表平台**的模型（其余平台的目录与探测结果原样保留），与 `model` 互斥；两者都不传 = 探测全部。平台 id 必须来自注册表。该端点无论接受还是拒绝都返回 **202**，拒绝形态是 `{ "error": { "message", "type": "invalid_request_error" } }`（拼错/空数组/非数组/同时传两者）——**绝不**把形态不对的请求静默降级成全量探测（那会按整份目录消耗探测额度） |
 | `import` | `/admin/import` | POST | `{ "modelsFile"?: string }` | 导入 / 切换 WorkBuddy 配置路径 |
 | `system-proxy` | `/admin/system-proxy` | POST | `{ "enabled": boolean }` | 切换系统代理并重读模型 |
 | `shutdown` | `/admin/shutdown` | POST | 无 | 先响应、再触发一次优雅退出 |
@@ -96,8 +96,8 @@
 | CodeBuddy | `models.json`（默认 `~/.codebuddy/`） | `BUDDY_CODEBUDDY_MODELS_FILE` > settings `codeBuddyModelsFile`（预留，当前恒空）> `CODEBUDDY_CONFIG_DIR` > `CODEBUDDY_DATA_FOLDER_NAME` > 平台默认 | `codeBuddyModelsFile` | `codeBuddy` |
 
 - **「已安装」的判定只有一条：定位函数返回 `Some`**（候选文件必须通过 `validate_models_file` 的路径与形状校验）。不猜进程、不猜注册表；显式位置失效时绝不静默回退（与 WorkBuddy 既有约定一致）。
-- 两个目标共用同一套幂等写入（`sync::sync_models`：OWNER 归属标记、冲突不覆盖、文件锁、二次读取、原子替换），CodeBuddy 不是第二套实现。
-- `sync` 形状（加法式变更，`schemaVersion` 不递增）：新增 `sync.targets.{workBuddy,codeBuddy}`，每个目标 `status` ∈ `ok|missing|error`，`ok` 携带 `count/changed/backup?`，`missing` 携带 `reason`，`error` 携带 `error`；顶层 `count` = 各成功目标之和；顶层 `error` 仅在「至少一个目标被定位且全部定位目标都失败」时出现（部分失败不算顶层失败）；新增顶层 `codeBuddyModelsFile` 字段。
+- 两个目标共用同一套幂等写入（`sync::sync_models`：OWNER 归属标记、冲突不覆盖、文件锁、二次读取、原子替换），CodeBuddy 不是第二套实现。**不再写 `.bak` 备份**（2026-10-09 用户裁定：备份从来没有读取方、面板也没有恢复入口，却按发布次数在插件配置目录里无限堆积）；每次同步（含内容无变化的那次）会按同名族白名单 `<配置文件名>.buddy-bridge-<纯 ASCII 数字>.bak` 清扫旧版本攒下的存量备份，用户自己命名的 `*.bak` 与任何其它文件一律不碰。
+- `sync` 形状（加法式变更，`schemaVersion` 不递增）：新增 `sync.targets.{workBuddy,codeBuddy}`，每个目标 `status` ∈ `ok|missing|error`，`ok` 携带 `count/changed`（早期版本还带 `backup`，随「不再写备份」一并移除，面板从未读过它），`missing` 携带 `reason`，`error` 携带 `error`；顶层 `count` = 各成功目标之和；顶层 `error` 仅在「至少一个目标被定位且全部定位目标都失败」时出现（部分失败不算顶层失败）；新增顶层 `codeBuddyModelsFile` 字段。
 - 面板侧：集成视图逐目标展示状态（缺 `targets` 时回退单行展示，兼容旧核心）；底部摘要行的措辞已不绑定单一目标。
 
 ## 运行形态与传输落点

@@ -141,9 +141,6 @@ pub fn aggregate_sync(outcomes: Vec<(Target, Option<Result<SyncOutcome, String>>
                     crate::json::number_from_f64(outcome.count as f64),
                 );
                 entry.insert("changed".to_string(), Value::Bool(outcome.changed));
-                if let Some(backup) = &outcome.backup {
-                    entry.insert("backup".to_string(), Value::String(backup.clone()));
-                }
             }
             Some(Err(message)) => {
                 located += 1;
@@ -230,7 +227,7 @@ mod tests {
     }
 
     fn outcome(count: u64, changed: bool) -> Result<SyncOutcome, String> {
-        Ok(SyncOutcome { changed, count, backup: None })
+        Ok(SyncOutcome { changed, count })
     }
 
     #[test]
@@ -303,6 +300,30 @@ mod tests {
         let detected = detect_targets(None, &env_of(&[]), &home);
         assert_eq!(detected[1], (Target::CodeBuddy, None));
         assert!(detected[0].1.is_some(), "WorkBuddy 不受 CodeBuddy 状态影响");
+    }
+
+    #[test]
+    fn empty_plugin_directories_are_detected_after_creating_models_file() {
+        // 两个插件目录都在、但都没保存过 models.json：补建空配置后两个目标都应被检出。
+        let scratch = Scratch::new("dirs-only");
+        let home = scratch.home();
+        fs::create_dir_all(scratch.root.join(".workbuddy")).expect("目录可建");
+        fs::create_dir_all(scratch.root.join(".codebuddy")).expect("目录可建");
+        let wb = scratch.root.join(".workbuddy/models.json").to_string_lossy().to_string();
+        let cb = scratch.root.join(".codebuddy/models.json").to_string_lossy().to_string();
+
+        assert_eq!(
+            detect_targets(None, &env_of(&[]), &home),
+            vec![(Target::WorkBuddy, Some(wb.clone())), (Target::CodeBuddy, Some(cb.clone()))]
+        );
+        assert_eq!(
+            fs::read_to_string(&wb).expect("可读"),
+            crate::workbuddy_config::EMPTY_MODELS_FILE_TEXT
+        );
+        assert_eq!(
+            fs::read_to_string(&cb).expect("可读"),
+            crate::workbuddy_config::EMPTY_MODELS_FILE_TEXT
+        );
     }
 
     #[test]

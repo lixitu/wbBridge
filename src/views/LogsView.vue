@@ -17,6 +17,8 @@ function formatBytes(bytes) {
 }
 
 async function load() {
+  // 同步防抖：双击「刷新」在重渲染前会穿透模板 disabled，叠发两次 read_log 请求。
+  if (loading.value) return
   loading.value = true
   error.value = null
   const response = await readLog()

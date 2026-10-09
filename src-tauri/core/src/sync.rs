@@ -1,6 +1,6 @@
 //! `core/src/sync.js` 的 Rust 等价实现（方案B 阶段二）。
 //!
-//! 职责：把探测到的模型合并进 WorkBuddy 的 `models.json`，并用「文件锁 + 二次读取 + .bak +
+//! 职责：把探测到的模型合并进 WorkBuddy 的 `models.json`，并用「文件锁 + 二次读取 +
 //! 原子替换」保证并发刷新不会互相踩踏。这里刻意保持**同步阻塞**实现：Node 侧是 `fs/promises`，
 //! 但整个写入过程极短，Rust 侧由阶段三的调用方放进 `spawn_blocking`（`atomic::replace_with_retry`
 //! 内部还有最长 1.5s 的退避睡眠，更不能直接压在 async 执行器线程上）。
@@ -120,29 +120,27 @@ pub struct SyncOptions {
     pub require_existing: bool,
 }
 
-/// `syncModels` 的结果（对应 JS 的 `{ changed, count, backup? }`）。
+/// `syncModels` 的结果（JS 原形态是 `{ changed, count, backup? }`）。
 ///
-/// JS 在「无变化」时返回的对象**没有** `backup` 键，而在首次建文件时 `backup` 是
-/// `undefined`（`JSON.stringify` 会丢掉它）；[`SyncOutcome::to_json`] 复刻了这两种形态。
+/// 🔴 **有意的行为分叉（2026-10-09 用户裁定）**：JS 与本项目 1.3.3 及以前都会在写盘前留一份
+/// `<配置文件>.buddy-bridge-<毫秒>.bak`，现在**不再产生任何备份**，`backup` 这个键因此从返回形态
+/// 里消失（`tests/fixtures/sync.json` 已同步更正并记录该分叉）。取舍：备份从来没有读取方，
+/// 面板也没有恢复入口，它唯一的作用是手工救急，却会在用户的插件配置目录里按发布次数无限堆积；
+/// 保留下来的保护是「文件锁 + 二次读取 + 原子替换」，仍然不可能写出半个文件。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncOutcome {
     /// 是否真的改动了文件。
     pub changed: bool,
     /// 合并后属于本服务的条目数。
     pub count: u64,
-    /// 备份文件路径（仅当存在旧文件且发生了写入）。
-    pub backup: Option<String>,
 }
 
 impl SyncOutcome {
-    /// 对应 JS `JSON.stringify(result)` 后的对象形态。
+    /// 对应 JS `JSON.stringify(result)` 后的对象形态（`backup` 见上方分叉说明）。
     pub fn to_json(&self) -> Value {
         let mut object = Map::new();
         object.insert("changed".to_string(), Value::Bool(self.changed));
         object.insert("count".to_string(), Value::from(self.count));
-        if let Some(backup) = &self.backup {
-            object.insert("backup".to_string(), Value::String(backup.clone()));
-        }
         Value::Object(object)
     }
 }
@@ -156,7 +154,7 @@ pub type ReplaceFn = fn(&Path, &Path) -> Result<(), ReplaceError>;
 /// 单测里需要携带状态时，把状态放进 `thread_local!` 或写成 `fn` 参数（`before_reread` 会收到文件路径）。
 #[derive(Debug, Clone, Copy)]
 pub struct SyncIo {
-    /// `Date.now()`：锁过期判定与 `.bak` 命名各调用一次。
+    /// `Date.now()`：锁过期判定（`.bak` 命名已随「不再写备份」一并移除）。
     pub now: fn() -> u64,
     /// `randomUUID()`：临时文件名后缀。
     pub temp_suffix: fn() -> String,
@@ -495,11 +493,13 @@ pub fn sync_models_with(
     let count = owned_count(&merged);
 
     if json::js_stringify(&merged) == json::js_stringify(&document) {
+        // 无变化也是「一次成功的同步」：旧版攒下的存量备份就是靠这里收尾的，而启动沿用让
+        // 无变化成为常态，缺了这一句，升级后那些文件永远没有机会被清掉。
+        sweep_old_backups(file);
         guard.release();
         return Ok(SyncOutcome {
             changed: false,
             count,
-            backup: None,
         });
     }
 
@@ -514,27 +514,65 @@ pub fn sync_models_with(
         ));
     }
 
-    let mut backup = None;
-    if let Some(text) = &old {
-        let backup_path = sibling(file, &format!(".buddy-bridge-{}.bak", (io.now)()));
-        let mut handle =
-            create_new_private(&backup_path).map_err(|error| io_error(&error, &backup_path))?;
-        handle
-            .write_all(text.as_bytes())
-            .and_then(|()| handle.flush())
-            .map_err(|error| io_error(&error, &backup_path))?;
-        drop(handle);
-        backup = Some(backup_path.to_string_lossy().into_owned());
-    }
-
     atomic_write_with(file, &format!("{}\n", json::js_stringify_pretty(&merged)), io)?;
+    sweep_old_backups(file);
     guard.release();
 
     Ok(SyncOutcome {
         changed: true,
         count,
-        backup,
     })
+}
+
+/// 清掉**旧版本**留下的同族备份：`<配置文件>.buddy-bridge-<毫秒>.bak`。
+///
+/// 1.3.3 及以前每次写盘都留一份，用户目录里按发布次数堆积（几天下来几十个），而那些旧内容
+/// 从来没有读取方、面板也没有恢复入口。现在不再写备份，但**存量必须能自己收干净**：无变化的
+/// 同步也算一次同步，所以两条路径都调用它。
+///
+/// 判定是**逐段白名单**而不是通配删除：文件名必须以 `<配置文件名>.buddy-bridge-` 开头、
+/// 以 `.bak` 结尾、中间全是 ASCII 数字，且必须是普通文件。用户放在同一目录里的任何其它文件
+/// （包括自己命名的 `*.bak`）都不在删除范围内；列目录失败静默返回——清理属收尾，绝不能把一次
+/// 已成功的同步报成失败。
+fn sweep_old_backups(file: &Path) {
+    let Some((prefix, dir)) = backup_prefix(file) else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        if !backup_of(&prefix, &entry) {
+            continue;
+        }
+        let _ = fs::remove_file(entry.path());
+    }
+}
+
+/// `<配置文件名>.buddy-bridge-` 前缀与其所在目录。
+fn backup_prefix(file: &Path) -> Option<(String, &Path)> {
+    let dir = file.parent()?;
+    let name = file.file_name()?.to_string_lossy().into_owned();
+    Some((format!("{name}.buddy-bridge-"), dir))
+}
+
+/// 这个目录项是不是本工具旧版留下的备份（只删文件，判定见 [`sweep_old_backups`]）。
+///
+/// 非数字中段直接不认；目录也算不认。非 ASCII 文件名在 lossy 形态里会变成替换字符，
+/// 所以数字判定顺带挡住了「前缀后缀巧合对上、中间是乱码」的误删。
+fn backup_of(prefix: &str, entry: &fs::DirEntry) -> bool {
+    if entry.file_type().map_or(true, |file_type| file_type.is_dir()) {
+        return false;
+    }
+    let name = entry.file_name();
+    let Some(stem) = name.to_str() else {
+        return false;
+    };
+    let Some(rest) = stem.strip_prefix(prefix) else {
+        return false;
+    };
+    match rest.strip_suffix(".bak") {
+        Some(stamp) => !stamp.is_empty() && stamp.bytes().all(|byte| byte.is_ascii_digit()),
+        None => false,
+    }
 }
 
 /// `fs.readFile(file, 'utf8')` + `catch(e => e.code === 'ENOENT' && !requireExisting ? null : e)`。
@@ -749,8 +787,7 @@ mod tests {
             outcome,
             SyncOutcome {
                 changed: true,
-                count: 1,
-                backup: None
+                count: 1
             }
         );
         assert_eq!(outcome.to_json(), json!({ "changed": true, "count": 1 }));
@@ -759,6 +796,19 @@ mod tests {
         assert!(text.contains("\n  {\n    \"id\": \"OC · a\","), "{text}");
         assert!(!dir.join("models.json.buddy-bridge.lock").exists());
         assert!(!dir.join("models.json.test-uuid.tmp").exists());
+        assert_eq!(file_names(&dir), ["models.json".to_string()], "首轮写入不该有备份");
+    }
+
+    /// 目录里的**全部**文件名（排序后返回）：备份策略的断言必须能同时看出「该删的删了」
+    /// 和「不该删的一个没少」，按模式过滤就看不出后者。
+    fn file_names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .expect("列目录")
+            .flatten()
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .collect();
+        names.sort();
+        names
     }
 
     #[test]
@@ -772,33 +822,80 @@ mod tests {
             sync_models_with(&file, &[model("a")], "http://e", "k", &options, &test_io()).expect("二次");
         assert!(!outcome.changed);
         assert_eq!(outcome.count, 1);
-        assert_eq!(outcome.backup, None);
         assert_eq!(fs::read_to_string(&file).expect("读取"), first);
-        assert!(!dir.join("models.json.buddy-bridge-1700000000000.bak").exists());
+        assert_eq!(file_names(&dir), ["models.json".to_string()]);
     }
 
     #[test]
-    fn sync_writes_backup_named_with_frozen_clock() {
-        let dir = sandbox("sync-backup");
+    fn a_changed_sync_writes_no_backup_and_sweeps_the_whole_family() {
+        let dir = sandbox("sync-backup-sweep");
         let file = dir.join("models.json");
-        fs::write(&file, "{\n  \"models\": []\n}\n").expect("预置");
-        let outcome = sync_models_with(
-            &file,
-            &[model("a")],
-            "http://e",
-            "k",
-            &SyncOptions::default(),
-            &test_io(),
-        )
-        .expect("同步");
-        let backup = dir.join("models.json.buddy-bridge-1700000000000.bak");
+        let options = SyncOptions::default();
+        fs::write(&file, "[{\"id\":\"own-1\"}]").expect("预置");
+
+        // 1.3.3 及以前每轮写盘都留一份，几天下来攒了几十个；升级后一个都不该再多写。
+        // 中段非数字、后缀不是 .bak、以及用户自己命名的备份，都**不在**删除范围内。
+        for name in [
+            "models.json.buddy-bridge-1500000000000.bak",
+            "models.json.buddy-bridge-1600000000000.bak",
+            "models.json.buddy-bridge-999999999999.bak",
+            "models.json.buddy-bridge-abc.bak",
+            "models.json.my-own.bak",
+            "models.json.buddy-bridge-1600000000000.tmp",
+        ] {
+            fs::write(dir.join(name), "遗留").expect("预置");
+        }
+
+        sync_models_with(&file, &[model("a")], "http://e", "k", &options, &test_io()).expect("写入");
+
         assert_eq!(
-            outcome.backup,
-            Some(backup.to_string_lossy().into_owned())
+            file_names(&dir),
+            [
+                "models.json".to_string(),
+                "models.json.buddy-bridge-1600000000000.tmp".to_string(),
+                "models.json.buddy-bridge-abc.bak".to_string(),
+                "models.json.my-own.bak".to_string(),
+            ],
+            "同族三份遗留备份要一次清干净，不匹配白名单的文件一个都不能少"
+        );
+        assert!(fs::read_to_string(&file)
+            .expect("读取")
+            .contains("OC · a"));
+    }
+
+    #[test]
+    fn an_unchanged_sync_still_sweeps_leftover_backups() {
+        let dir = sandbox("sync-unchanged-sweep");
+        let file = dir.join("models.json");
+        let options = SyncOptions::default();
+        fs::write(&file, "[{\"id\":\"own-1\"}]").expect("预置");
+        sync_models_with(&file, &[model("a")], "http://e", "k", &options, &test_io()).expect("建立基线");
+        let published = fs::read_to_string(&file).expect("读取");
+
+        // 启动沿用让「内容相同」成为常态：清理若只挂在写盘之后，存量备份永远删不掉。
+        // 12 位与 13 位并存，字典序会把 999999999999 排在最后，数值判定才能把它一起删掉。
+        for stamp in [1_500_000_000_000_u64, 999_999_999_999] {
+            fs::write(
+                dir.join(format!("models.json.buddy-bridge-{stamp}.bak")),
+                "遗留备份",
+            )
+            .expect("预置");
+        }
+        fs::write(dir.join("models.json.my-own.bak"), "用户自己的").expect("预置");
+
+        let outcome = sync_models_with(&file, &[model("a")], "http://e", "k", &options, &test_io())
+            .expect("内容相同的那次");
+        assert!(!outcome.changed, "内容相同应报无变化");
+
+        assert_eq!(
+            file_names(&dir),
+            ["models.json".to_string(), "models.json.my-own.bak".to_string()],
+            "无变化也要收敛存量"
         );
         assert_eq!(
-            fs::read_to_string(&backup).expect("备份"),
-            "{\n  \"models\": []\n}\n"
+            fs::read_to_string(&file).expect("配置"),
+            published,
+            "清理不得动到正在使用的配置"
         );
     }
 

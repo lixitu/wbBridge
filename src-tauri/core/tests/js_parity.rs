@@ -1012,7 +1012,7 @@ fn sync_options(input: &Value) -> sync::SyncOptions {
     }
 }
 
-/// 与 JS 侧冻结时钟一致的 `SyncIo`：`.bak` 名与锁过期判定都用 `FIXED_MILLIS`。
+/// 与 JS 侧冻结时钟一致的 `SyncIo`：锁过期判定用 `FIXED_MILLIS`（`.bak` 命名已随分叉移除）。
 fn parity_sync_io() -> sync::SyncIo {
     sync::SyncIo {
         now: || FIXED_MILLIS as u64,

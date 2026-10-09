@@ -303,6 +303,9 @@ struct App {
     runtime: Arc<Mutex<Option<Arc<Started>>>>,
     stopping: Arc<AtomicBool>,
     probing: Arc<AtomicBool>,
+    /// 「重新检测」正在进行中的模型 id。与 `probing`（整批探测的互斥锁）刻意分开：
+    /// 单模型探测不互斥、不进批量队列，但面板需要知道它还在跑，否则按钮看起来点了没反应。
+    single_probes: Arc<Mutex<Vec<String>>>,
     serving: Arc<AtomicBool>,
     activities: Arc<Mutex<HashMap<String, ActivityEntry>>>,
     probe_abort: Arc<AbortController>,
@@ -496,6 +499,42 @@ fn restored_model_results(previous: &Value) -> Value {
         .cloned()
         .filter(Value::is_object)
         .unwrap_or_else(|| json!({}))
+}
+
+/// 上一份模型目录只有在是**数组**时才能沿用；形状不对（或根本没有）就回落空目录。
+///
+/// 目录里的条目就是探测时写进 `app.models` 的那份形态（带内部 `id`），所以沿用之后
+/// `/v1/models` 与请求校验立刻能用同一套判定。**展示**沿用不等于**放行**沿用：
+/// 能不能被 WorkBuddy 用仍由 `usable_models()`（目录 ∩ `validated` ∩ 结果为 ok）决定，
+/// 一份被手工改过的 `status.json` 顶多让面板多显示几行。
+fn restored_models(previous: &Value) -> Vec<Value> {
+    previous
+        .get("models")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// 从沿用的目录与历史结果重建「已通过校验」集合：只认 `ok === true` 且带字符串 `id` 的条目。
+///
+/// 判定与 `usable_models()` 用的是同一个表达式，所以「沿用上次结果」与「重新探测」不会有两套口径；
+/// `ok: 1` 这种 truthy 但不是 `true` 的（外部改写过 status.json）一律不算通过。
+fn validated_from_results(models: &[Value], results: &Value) -> HashSet<String> {
+    models
+        .iter()
+        .filter_map(|model| {
+            let id = model.get("id").and_then(Value::as_str)?;
+            (results.get(id).and_then(|entry| entry.get("ok")) == Some(&json!(true)))
+                .then(|| id.to_string())
+        })
+        .collect()
+}
+
+/// 本轮是否值得沿用上一轮：目录非空**且**至少一个模型的历史判定是通过。
+///
+/// 全败的那一轮没什么可省的时间，走原来的「清旧 + 重新发现 + 重新探测」才是对的结果。
+fn reusable_previous(models: &[Value], validated: &HashSet<String>) -> bool {
+    !models.is_empty() && !validated.is_empty()
 }
 
 /// 把状态快照串行写入 `status.json`（对应 `statusWrites` 链）。
@@ -951,7 +990,15 @@ fn spawn_activity_timer(app: Arc<App>) {
 // ---------------------------------------------------------------------------
 
 /// `startProbes(modelID, reveal, autoImport)` 的入口守卫与响应体（同步返回，任务后台执行）。
-fn start_probes(model_id: Option<Value>, reveal: bool, auto_import: bool) -> Value {
+///
+/// `scope` 只作用于「全量选择」那一条分支（`model_id` 为空）：定向重检时选中的是清单内平台的
+/// 全部模型。单模型重新检测与全量读取都传 [`Scope::All`]，语义与升级前逐字节一致。
+fn start_probes(
+    model_id: Option<Value>,
+    reveal: bool,
+    auto_import: bool,
+    scope: &Scope,
+) -> Value {
     let app = global_app();
     if app.stopping.load(Ordering::Relaxed) || lock(&app.refresh).is_some() {
         return json!({ "error": { "message": "请等待模型读取完成", "type": "invalid_request_error" } });
@@ -963,7 +1010,11 @@ fn start_probes(model_id: Option<Value>, reveal: bool, auto_import: bool) -> Val
             .filter(|model| model.get("id").and_then(Value::as_str) == Some(id))
             .cloned()
             .collect(),
-        None => models.clone(),
+        None => models
+            .iter()
+            .filter(|model| scope.covers(model))
+            .cloned()
+            .collect(),
     };
     if selected.is_empty() {
         return json!({ "error": { "message": "模型不在当前目录中", "type": "invalid_request_error" } });
@@ -971,8 +1022,19 @@ fn start_probes(model_id: Option<Value>, reveal: bool, auto_import: bool) -> Val
     // 单模型探测不与批量探测互斥：直接 spawn 独立 task，不走 probing 全局锁
     if model_id.is_some() {
         let model = selected.into_iter().next().unwrap();
+        let id = model
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        // 先登记再 spawn：内存快照与 status.json 写链的入队都发生在响应之前，所以
+        // `started: true` 到手后，面板看到的**下一份**快照就带着这个模型 —— 行内「检测中」
+        // 由核心说了算，前端不需要靠「结果什么时候变」去猜探测有没有跑完。
+        note_single_probe(&id, true);
         tokio::spawn(async move {
             run_single_probe(model).await;
+            // 无论这次探测走到哪个分支（通过、降级、失败、关停提前返回），结束时都撤销。
+            note_single_probe(&id, false);
         });
         return json!({ "started": true });
     }
@@ -1001,6 +1063,30 @@ fn drop_pending(pending: &mut Vec<String>, model_id: &str) {
     if let Some(index) = pending.iter().position(|id| id == model_id) {
         pending.remove(index);
     }
+}
+
+/// 「重新检测」在飞集合的增删本体（拆出来是为了能脱离全局 `App` 直接单测集合语义）。
+/// 先移除再按需登记：重复登记同一个模型仍然只有一条，撤销不存在的 id 是无操作。
+fn update_single_probes(pending: &mut Vec<String>, model_id: &str, running: bool) {
+    pending.retain(|id| id != model_id);
+    if running {
+        pending.push(model_id.to_string());
+    }
+}
+
+/// 登记/撤销单模型探测，并把**整份**集合发布到状态顶层的 `singleProbes`。
+///
+/// 为什么是独立顶层键而不是 `probe` 里的一个字段：`apply_patch` 对顶层键是整体替换，
+/// 而批量探测每检完一个模型就重写整个 `probe` 对象（`{ running, current, pending }`），
+/// 放进 `probe` 的标记会被批量探测顺手抹掉，两个入口从此互相覆盖对方的进行中状态。
+fn note_single_probe(model_id: &str, running: bool) {
+    let app = global_app();
+    let pending = {
+        let mut guard = lock(&app.single_probes);
+        update_single_probes(&mut guard, model_id, running);
+        guard.clone()
+    };
+    update_and_persist(json!({ "singleProbes": pending }));
 }
 
 async fn run_probe_batch(
@@ -1352,8 +1438,75 @@ async fn chat_only_attempt(model: &Value) -> Result<(), BridgeError> {
 // 读取与重启（refresh / readModels / setSystemProxy）
 // ---------------------------------------------------------------------------
 
+/// 一轮「读取 + 探测」的作用范围：全量，或只针对清单里的注册表平台。
+///
+/// 定向范围存在的理由是**时间与额度**：一次全量重检要为目录里每个模型发一次真实请求
+/// （每模型 `PROBE_TIMEOUT_MS` = 60s 预算），而换一家平台的 Key 只可能影响那一家的模型。
+/// 命名空间是全限定 id 的第一段（`model_status::split_namespace`），与模型发现用的是同一套拆分。
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Scope {
+    All,
+    Platforms(Vec<String>),
+}
+
+impl Scope {
+    /// 这个 id 是否落在本范围内。无命名空间的 id 只属于全量范围（注册表平台必带前缀）。
+    fn covered(&self, id: &str) -> bool {
+        match self {
+            Scope::All => true,
+            Scope::Platforms(platforms) => {
+                let (namespace, _) = crate::model_status::split_namespace(id);
+                !namespace.is_empty() && platforms.iter().any(|p| p == namespace)
+            }
+        }
+    }
+
+    /// 模型条目是否落在本范围内（按 `id` 判定）。
+    fn covers(&self, model: &Value) -> bool {
+        let id = model.get("id").and_then(Value::as_str).unwrap_or_default();
+        self.covered(id)
+    }
+
+    /// 定向范围的人类可读名（只用于文案，全量范围没有）。
+    fn labels(&self) -> String {
+        match self {
+            Scope::All => String::new(),
+            Scope::Platforms(platforms) => platforms
+                .iter()
+                .map(|id| {
+                    providers::find(id).map(|provider| provider.label).unwrap_or(id)
+                })
+                .collect::<Vec<_>>()
+                .join(" / "),
+        }
+    }
+}
+
+/// 定向重取的合并规则：**只**替换清单内平台的条目，其余平台的目录原样保留。
+/// 全量范围等价于「直接用新目录」。该平台已经消失的模型因此会跟着掉出去
+/// （新目录的这一段里没有它）。
+fn merge_scoped_models(old: &[Value], discovered: &[Value], scope: &Scope) -> Vec<Value> {
+    let mut merged: Vec<Value> = old.iter().filter(|model| !scope.covers(model)).cloned().collect();
+    merged.extend(discovered.iter().filter(|model| scope.covers(model)).cloned());
+    merged
+}
+
+/// 把范围内模型的「已校验」标记摘掉：换 Key 之后这些模型必须重新探测才算可用，
+/// 而其余平台的标记不能被牵连（那正是「只重检这一家」的另一半）。全量范围就是原有的清空语义。
+fn strip_validated(validated: &mut HashSet<String>, scope: &Scope) {
+    if scope == &Scope::All {
+        validated.clear();
+        return;
+    }
+    validated.retain(|id| !scope.covered(id));
+}
+
 /// `refresh(restartRuntime, useSystemProxy)` 的去重入口（对应 `refreshing` promise 复用）。
-async fn refresh(restart_runtime: bool, use_system_proxy: Option<bool>) -> Result<Value, BackendError> {
+async fn refresh(
+    restart_runtime: bool,
+    use_system_proxy: Option<bool>,
+    scope: Scope,
+) -> Result<Value, BackendError> {
     let app = global_app();
     let existing = lock(&app.refresh).clone();
     if let Some(slot) = existing {
@@ -1399,15 +1552,23 @@ async fn refresh(restart_runtime: bool, use_system_proxy: Option<bool>) -> Resul
             Ok(env) => {
                 let proxy_env = to_env_map(&env);
                 let app = global_app();
-                lock(&app.validated).clear();
-                *lock(&app.models) = Vec::new();
-                update_and_persist(json!({
-                    "phase": "reading",
-                    "message": "正在读取免费模型…",
-                    "models": [],
-                    "availableModels": []
-                }));
-                run_refresh(restart_runtime, enabled, proxy_env).await
+                if scope == Scope::All {
+                    lock(&app.validated).clear();
+                    *lock(&app.models) = Vec::new();
+                    update_and_persist(json!({
+                        "phase": "reading",
+                        "message": "正在读取免费模型…",
+                        "models": [],
+                        "availableModels": []
+                    }));
+                } else {
+                    // 定向读取：目录、结果、面板列表都原样留着，只把这一家的条目换成新的。
+                    // 不动 phase（全量读取才用「正在读取」把列表清空）。
+                    update_and_persist(json!({
+                        "message": format!("正在重新读取 {} 的免费模型…", scope.labels())
+                    }));
+                }
+                run_refresh(restart_runtime, enabled, proxy_env, &scope).await
             }
         };
         // 对应 JS 的 `finally { refreshing = null }`：只有当前代次才有权释放链位。
@@ -1429,17 +1590,74 @@ async fn refresh(restart_runtime: bool, use_system_proxy: Option<bool>) -> Resul
 /// 与 JS 一致：探测只在未处于关停流程时启动，且不自动导入。
 async fn read_models() -> Result<Value, BackendError> {
     let app = global_app();
-    let result = refresh(true, None).await?;
+    let result = refresh(true, None, Scope::All).await?;
     if !app.stopping.load(Ordering::Relaxed) {
-        start_probes(None, true, false);
+        start_probes(None, true, false, &Scope::All);
     }
     Ok(result)
+}
+
+/// 定向重取 + 重检：面板在保存/清除某家平台的 Key 后触发，只动这一（几）家的模型。
+///
+/// 为什么必须重启隔离子进程：平台 Key 只在子进程**启动时**经 `OPENCODE_CONFIG_CONTENT` 注入
+/// （红线：Key 不进 `ENV_ALLOW`、不进独立环境变量），不换进程就永远读不到新 Key。
+/// 为什么走 `/admin/probe` 而不是 `/admin/refresh`：后者的语义是「全量重读 + 全量重检」，
+/// 正是本功能要省掉的那件事。
+///
+/// 响应是即时的（`/admin/probe` 本来就返回 202），进行中的展示来自核心推送的状态：
+/// `probe.running/current/pending` 与逐模型结果，面板不需要自己猜何时结束。
+fn probe_platforms(scope: Scope) -> Value {
+    let app = global_app();
+    // 与 `refresh` 的前置闸门同一条：批量探测在跑时定向重取会直接被 refresh 拒成
+    // Err("请等待检测完成")，而那时 202 已经发出去了，面板只会看到「已应用」却什么也没变。
+    // 所以这里在**回应之前**拒掉，拒绝理由必须是面板当场能显示的。
+    if app.stopping.load(Ordering::Relaxed)
+        || app.probing.load(Ordering::Relaxed)
+        || lock(&app.refresh).is_some()
+    {
+        return json!({ "error": { "message": "请等待模型读取或检测完成", "type": "invalid_request_error" } });
+    }
+    let labels = scope.labels();
+    tokio::spawn(async move {
+        // 与全量读取共用同一条 refresh 链位：并发互斥、结果复用都由它保证，这里不再自造闸门。
+        if let Err(error) = refresh(true, None, scope.clone()).await {
+            log_line(&format!("定向重取 {labels} 失败：{}", error.message));
+            // 顶掉那句「正在重新读取 …」，否则状态消息停在进行中的措辞上再也不会变。
+            update_and_persist(json!({
+                "message": format!("定向重取 {labels} 失败：{}", error.message)
+            }));
+            return;
+        }
+        let app = global_app();
+        if app.stopping.load(Ordering::Relaxed) {
+            return;
+        }
+        // reveal = false：定向路径的目录已经整体落盘（见 `run_refresh`），逐个揭示只会重复追加。
+        let response = start_probes(None, false, true, &scope);
+        let started = response.get("started") == Some(&json!(true));
+        if started {
+            return;
+        }
+        // 这一家现在一个模型都没有（Key 无效 / 上游目录里根本没这家），或批量探测被占用：
+        // 探测没有对象可跑，但目录已经变了，必须按现有发布集重发一次配置，
+        // 否则插件配置里留着的是换 Key 之前的旧条目。
+        let message = response
+            .get("error")
+            .and_then(|error| error.get("message"))
+            .and_then(Value::as_str)
+            .or_else(|| response.get("message").and_then(Value::as_str))
+            .unwrap_or("没有可探测的模型");
+        log_line(&format!("定向重检 {labels} 未启动：{message}；已按现有目录重发配置"));
+        sync_published(None, false);
+    });
+    json!({ "started": true })
 }
 
 async fn run_refresh(
     restart_runtime: bool,
     use_system_proxy: bool,
     proxy_env: Env,
+    scope: &Scope,
 ) -> Result<Value, BackendError> {
     let app = global_app();
     if restart_runtime {
@@ -1494,12 +1712,25 @@ async fn run_refresh(
         }
         Ok(models) => models,
     };
-    *lock(&app.models) = discovered.clone();
-    update_and_persist(json!({
+    // 定向范围：其余平台的目录原样留着，清单内那一段整体换成刚发现的。全量范围等价于直接用新目录。
+    let merged = merge_scoped_models(&app.models(), &discovered, scope);
+    {
+        // 清单内平台刚换过 Key，它名下的模型必须重新探测才算可用；其余平台的标记不受牵连。
+        let mut validated = lock(&app.validated);
+        strip_validated(&mut validated, scope);
+    }
+    *lock(&app.models) = merged.clone();
+    let mut patch = json!({
         "phase": "ready",
-        "message": format!("运行中 · {} 个免费模型", discovered.len())
-    }));
-    Ok(json!({ "count": discovered.len() }))
+        "message": format!("运行中 · {} 个免费模型", merged.len())
+    });
+    if scope != &Scope::All {
+        // 全量读取的列表由随后的逐个揭示填（`start_probes(reveal = true)`）；定向读取不走那条路径，
+        // 目录必须在这里整体落盘，否则面板与 status.json 里的 `models` 还停在换 Key 之前。
+        patch["models"] = json!(merged);
+    }
+    update_and_persist(patch);
+    Ok(json!({ "count": merged.len() }))
 }
 
 /// `watchRuntime`：子进程意外退出即置错误状态并关停（对应 `child.on('exit')`）。
@@ -1565,8 +1796,10 @@ async fn shutdown(code: u8) -> u8 {
     if let Some(sender) = lock(&app.server_stop).as_ref() {
         let _ = sender.send(true);
     }
-    // 用户意图的清空：关停时插件侧不应残留本工具条目。
-    sync_published(Some(Vec::new()), true);
+    // 关停**不再清空**插件配置（2026-10-09 用户裁定）：本工具名下的条目原样留着，下次启动直接
+    // 沿用，省掉「每次开应用都重跑一遍全量探测」。代价如实记录：应用没在跑的这段时间里，
+    // WorkBuddy 侧这些模型指向的是已停掉的端点，请求会失败；一旦应用起来，启动沿用那条路径
+    // 会用**当前**端点与 Key 重发一遍配置，不需要用户再动。
     let runtime = lock(&app.runtime).clone();
     if let Some(runtime) = runtime {
         runtime.stop().await;
@@ -1814,6 +2047,14 @@ fn bootstrap(options: &StartOptions) -> Result<Arc<App>, String> {
             && settings.get("useSystemProxy") != Some(&json!(false)));
     let endpoint = format!("http://127.0.0.1:{port}/v1");
 
+    // 沿用上一轮的模型目录与探测结果（2026-10-09 用户裁定：每次打开应用都重跑一遍全量探测
+    // 太费时间）。三份数据必须一起恢复：目录决定「有哪些模型」，modelResults 决定「面板显示
+    // 什么」，validated 决定「请求能过哪个」—— 只恢复其中一份都会得到「面板有模型、实际全 404」。
+    // 「读取免费模型」仍然走完整的重新发现 + 重新探测，是唯一的刷新入口。
+    let previous_models = restored_models(&previous);
+    let previous_results = restored_model_results(&previous);
+    let previous_validated = validated_from_results(&previous_models, &previous_results);
+
     let state = json!({
         "schemaVersion": STATUS_SCHEMA_VERSION,
         "useSystemProxy": use_system_proxy,
@@ -1823,8 +2064,8 @@ fn bootstrap(options: &StartOptions) -> Result<Arc<App>, String> {
         "pid": std::process::id(),
         "version": "0.2.0",
         "opencodeVersion": Value::Null,
-        "models": [],
-        "modelResults": restored_model_results(&previous),
+        "models": Value::Array(previous_models.clone()),
+        "modelResults": previous_results,
         // 用量跨重启延续（与 modelResults 同法）：上一份形状合法就整体沿用，`since` 与累计值都不重置；
         // 缺字段/形状不对（旧版核心写的 status.json）才重建基线。
         "usage": previous
@@ -1835,6 +2076,7 @@ fn bootstrap(options: &StartOptions) -> Result<Arc<App>, String> {
         "sync": Value::Null,
         "availableModels": [],
         "probe": { "running": false },
+        "singleProbes": [],
     });
 
     let (probe_abort_controller, _) = AbortSignal::channel();
@@ -1851,12 +2093,13 @@ fn bootstrap(options: &StartOptions) -> Result<Arc<App>, String> {
         settings: Arc::new(Mutex::new(settings)),
         workbuddy_models_file: Arc::new(Mutex::new(None)),
         codebuddy_models_file: Arc::new(Mutex::new(None)),
-        models: Arc::new(Mutex::new(Vec::new())),
-        validated: Arc::new(Mutex::new(HashSet::new())),
+        models: Arc::new(Mutex::new(previous_models)),
+        validated: Arc::new(Mutex::new(previous_validated)),
         binary: Arc::new(Mutex::new(None)),
         runtime: Arc::new(Mutex::new(None)),
         stopping: Arc::new(AtomicBool::new(false)),
         probing: Arc::new(AtomicBool::new(false)),
+        single_probes: Arc::new(Mutex::new(Vec::new())),
         serving: Arc::new(AtomicBool::new(false)),
         activities: Arc::new(Mutex::new(HashMap::new())),
         probe_abort: Arc::new(probe_abort_controller),
@@ -1903,11 +2146,16 @@ fn bootstrap(options: &StartOptions) -> Result<Arc<App>, String> {
 
 async fn startup_sequence(app: &App) -> Result<String, BackendError> {
     update_and_persist(json!({ "phase": "starting" }));
-    // 与 JS 的 `await syncPublished([])` 一致：先把 WorkBuddy 名下的旧条目清掉再开始下载，
-    // 否则启动窗口内 WorkBuddy 仍能看到上一轮发布的、此刻并不保证可用的模型。
-    // 用户意图的清空：显式允许空集。
-    sync_published(Some(Vec::new()), true);
-    drain_sync().await;
+    // 沿用判定必须在「清旧发布」之前：一旦先清了插件配置，本轮就没有可沿用的东西了。
+    // 可沿用的条件 = 上一轮的目录非空 **且** 至少一个模型的历史判定是通过（见 `reusable_previous`）。
+    let restored = reusable_previous(&app.models(), &lock(&app.validated).clone());
+    if !restored {
+        // 与 JS 的 `await syncPublished([])` 一致：先把 WorkBuddy 名下的旧条目清掉再开始下载，
+        // 否则启动窗口内 WorkBuddy 仍能看到上一轮发布的、此刻并不保证可用的模型。
+        // 用户意图的清空：显式允许空集。
+        sync_published(Some(Vec::new()), true);
+        drain_sync().await;
+    }
 
     // 系统代理：全新安装优先跟随系统代理，但没有手工代理的机器必须能直连下载；
     // 显式保存过的「开」保持严格。
@@ -1998,8 +2246,31 @@ async fn startup_sequence(app: &App) -> Result<String, BackendError> {
         return Err(BackendError::plain("Dedicated approval-gated agent missing"));
     }
 
-    refresh(false, None).await?;
-    start_probes(None, true, true);
+    if restored {
+        // 沿用上一轮：既不重新发现模型、也不重新探测，直接按历史通过的那一批就绪。
+        // 但**必须**重发一次配置：本次启动的端点与 Key 可能和上次不同（端口被占时壳另择端口、
+        // api-key 缺失时随机重生成），沿用旧配置的话 WorkBuddy 拿着失效的端点只会连不上。
+        let usable = usable_models();
+        let ids: Vec<Value> = usable
+            .iter()
+            .map(|model| model.get("id").cloned().unwrap_or(Value::Null))
+            .collect();
+        log_line(&format!(
+            "沿用上次检测结果：{} 个模型目录、{} 个已通过，跳过重新读取与重新探测",
+            app.models().len(),
+            usable.len()
+        ));
+        update_and_persist(json!({
+            "phase": "ready",
+            "message": format!("运行中 · {} 个免费模型（沿用上次检测结果）", usable.len()),
+            "availableModels": ids,
+        }));
+        // 空集闸门照常生效：沿用判定要求至少一个通过，这里不会因空集被拒。
+        sync_published(None, false);
+    } else {
+        refresh(false, None, Scope::All).await?;
+        start_probes(None, true, true, &Scope::All);
+    }
     Ok(format!(
         "WB Bridge ready at {}; {} free models",
         app.endpoint,
@@ -2089,11 +2360,79 @@ fn build_server(app: &App) -> (axum::Router, ServerControl) {
         .build()
 }
 
-/// `POST /admin/probe`：JS 的 `probe(body.model)`（单模型手动探测，不自动导入）。
-/// 服务端已从请求体提取了 `model` 字段的值（字符串或 null），这里直接透传给 `start_probes`，
-/// 不再二次解包 —— 否则对字符串调 `get("model")` 会返回 None，退化为全量探测。
-fn start_probes_admin(model: Option<Value>) -> Value {
-    start_probes(model, false, false)
+/// `/admin/probe` 的 `providers` 字段解析（定向重检）。返回值就是该给客户端的东西：
+/// `Ok(None)` = 没传这个字段（走原有的全量/单模型语义），`Ok(Some(ids))` = 去重后的注册表平台 id，
+/// `Err(拒绝体)` = 形态不对，**原样**带回面板可见的 2xx 拒绝（`/admin/probe` 本来就返回 202，
+/// 非 2xx 会被 `server.rs` 的鉴权链当成功处理不了的那些情形另说）。
+///
+/// 校验必须在这里做而不是交给调用方：拼错一个平台名如果被静默降级成「没传」，用户点的是一次定向
+/// 重检、实际消耗的是全目录的探测额度（每模型 60s 预算），这是最坏的一种「点了没反应」。
+fn requested_providers(body: &Value) -> Result<Option<Vec<String>>, Value> {
+    let Some(value) = body.get("providers") else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let refusal = |message: String| {
+        json!({ "error": { "message": message, "type": "invalid_request_error" } })
+    };
+    let known = providers::PROVIDERS
+        .iter()
+        .map(|provider| provider.id)
+        .collect::<Vec<_>>()
+        .join(" / ");
+    let Some(items) = value.as_array() else {
+        return Err(refusal(format!(
+            "providers 必须是平台 id 数组（可选：{known}）"
+        )));
+    };
+    if items.is_empty() {
+        return Err(refusal(format!(
+            "providers 是空数组：请给出要重新检测的平台（可选：{known}）"
+        )));
+    }
+    let mut ids: Vec<String> = Vec::with_capacity(items.len());
+    for item in items {
+        let Some(id) = item.as_str() else {
+            return Err(refusal(format!(
+                "providers 只能是平台 id 字符串（可选：{known}）"
+            )));
+        };
+        if providers::find(id).is_none() {
+            // id 来自请求体，回显只用于指出哪一个拼错了；这里不含任何 Key 材料。
+            return Err(refusal(format!("未知平台「{id}」（可选：{known}）")));
+        }
+        if !ids.iter().any(|kept| kept == id) {
+            ids.push(id.to_string());
+        }
+    }
+    Ok(Some(ids))
+}
+
+/// `POST /admin/probe`：JS 的 `probe(body)`（手动探测，不自动导入）。
+///
+/// 服务端现在递来**整份**请求体：`model` 的取值路径与语义一字未动（还是原样透传给 `start_probes`，
+/// 不再二次解包 —— 对字符串调 `get("model")` 会返回 None，退化成全量探测，那是 v1.0.5 修掉的 bug），
+/// 新增的 `providers` 走定向重检那条路。
+fn start_probes_admin(body: Value) -> Value {
+    let platforms = match requested_providers(&body) {
+        Ok(platforms) => platforms,
+        Err(refusal) => return refusal,
+    };
+    let model = body.get("model").cloned();
+    let Some(platforms) = platforms else {
+        return start_probes(model, false, false, &Scope::All);
+    };
+    if model.as_ref().is_some_and(truthy) {
+        return json!({
+            "error": {
+                "message": "model 与 providers 只能二选一：单模型重新检测请只传 model，整平台重检请只传 providers",
+                "type": "invalid_request_error"
+            }
+        });
+    }
+    probe_platforms(Scope::Platforms(platforms))
 }
 
 async fn import_models(selected: Option<Value>) -> Result<Value, BackendError> {
@@ -2167,7 +2506,7 @@ async fn set_system_proxy(enabled: Value) -> Result<Value, BackendError> {
     if lock(&app.refresh).is_some() || app.probing.load(Ordering::Relaxed) || app.stopping.load(Ordering::Relaxed) {
         return Err(BackendError::plain("请等待读取和检测完成"));
     }
-    refresh(true, Some(enabled)).await?;
+    refresh(true, Some(enabled), Scope::All).await?;
     if app.stopping.load(Ordering::Relaxed) {
         return Ok(json!({ "useSystemProxy": enabled }));
     }
@@ -2175,7 +2514,7 @@ async fn set_system_proxy(enabled: Value) -> Result<Value, BackendError> {
     app.write_settings(next_settings)
         .await
         .map_err(BackendError::plain)?;
-    start_probes(None, true, false);
+    start_probes(None, true, false, &Scope::All);
     Ok(json!({ "useSystemProxy": enabled }))
 }
 
@@ -2303,6 +2642,35 @@ mod tests {
         assert!(pending.is_empty());
     }
 
+    /// 重新检测的在飞集合：面板的「检测中」完全由它驱动，所以漏撤会让按钮永远点不动、
+    /// 重复登记会凭空多出一条，撤销从未登记过的 id 则绝不能 panic。
+    #[test]
+    fn single_probe_marker_is_idempotent_and_only_drops_its_own_id() {
+        let mut pending: Vec<String> = Vec::new();
+        update_single_probes(&mut pending, "a", true);
+        update_single_probes(&mut pending, "a", true);
+        assert_eq!(pending, vec!["a".to_string()], "同一模型重复登记只算一份");
+        update_single_probes(&mut pending, "b", true);
+        assert_eq!(pending, vec!["a".to_string(), "b".to_string()]);
+        update_single_probes(&mut pending, "a", false);
+        assert_eq!(pending, vec!["b".to_string()], "撤销不能连带别人的在飞标记");
+        update_single_probes(&mut pending, "a", false);
+        assert_eq!(pending, vec!["b".to_string()]);
+        update_single_probes(&mut pending, "b", false);
+        assert!(pending.is_empty());
+    }
+
+    /// 在飞标记必须是**顶层**键：批量探测每检完一个模型就整体重写 `probe`
+    /// （`apply_patch` 对顶层键是替换而非深合并），标记若挂在 `probe` 里会被顺手抹掉，
+    /// 面板的行内「检测中」因此在批量探测期间反复消失。
+    #[test]
+    fn single_probe_marker_survives_the_batch_probe_rewrite() {
+        let mut state = json!({ "singleProbes": ["OC · A"], "probe": { "running": true, "pending": ["OC · B"] } });
+        apply_patch(&mut state, &json!({ "probe": { "running": true, "pending": [] } }), None, None);
+        assert_eq!(state["singleProbes"], json!(["OC · A"]));
+        assert_eq!(state["probe"]["pending"], json!([]));
+    }
+
     /// 数据红线：探测入口的元信息必须带 `probe` 标记 —— `backend.rs` 的两处转写闸门靠它
     /// 在探测路径禁用辅助模型转写。丢掉标记等于让转写重新参与「模型是否可用」的判决。
     #[test]
@@ -2334,6 +2702,188 @@ mod tests {
             restored_model_results(&previous),
             json!({ "OC · Foo": { "ok": true } })
         );
+    }
+
+    /// 「沿用上次检测结果」这条路径的三件套必须一起成立：目录是数组才收、只有 `ok === true`
+    /// 才算通过、可沿用判定要求目录与通过集**都**非空 —— 全败的那一轮没什么时间可省，
+    /// 照常走「清旧 + 重新发现 + 重新探测」才是对的结果。
+    #[test]
+    fn previous_models_are_reused_only_when_a_passing_set_exists() {
+        let models = json!([
+            { "id": "opencode/free-a", "name": "Free A" },
+            { "id": "modelscope/Qwen/Qwen3-8B", "name": "Qwen3 8B" },
+            { "id": "zhipuai/glm-4.5-flash", "name": "GLM" }
+        ]);
+        let results = json!({
+            // 通过：进沿用集合
+            "opencode/free-a": { "ok": true },
+            // 失败：不进
+            "modelscope/Qwen/Qwen3-8B": { "ok": false },
+            // truthy 但不是 true（外部改写过 status.json）：不进，口径与 usable_models 一致
+            "zhipuai/glm-4.5-flash": { "ok": 1 },
+            // 历史结果里在场、但已不在目录中：不得凭空让请求通过
+            "opencode/gone": { "ok": true }
+        });
+        let restored = restored_models(&json!({ "models": models, "modelResults": results }));
+        assert_eq!(restored.len(), 3, "目录整体沿用，逐条判定交给 validated / modelResults");
+        assert_eq!(
+            validated_from_results(&restored, &results),
+            HashSet::from(["opencode/free-a".to_string()]),
+            "沿用集合必须只认目录内、且历史判定为 true 的模型"
+        );
+        assert!(reusable_previous(&restored, &validated_from_results(&restored, &results)));
+
+        // 全败的一轮：不沿用
+        let failed = json!({ "opencode/free-a": { "ok": false } });
+        let validated = validated_from_results(&restored, &failed);
+        assert!(validated.is_empty(), "无通过模型时沿用集合必须是空集");
+        assert!(!reusable_previous(&restored, &validated), "全败的那一轮照常重新探测");
+
+        // 目录形状不对（或压根没有上一份 status.json）：一律空目录 → 不沿用
+        for shape in [json!([]), json!("x"), json!(3), json!(null), Value::Null] {
+            let restored = restored_models(&json!({ "models": shape, "modelResults": results }));
+            assert!(restored.is_empty(), "非数组的上一份 models 必须被丢弃：{shape}");
+            assert!(!reusable_previous(&restored, &HashSet::new()));
+        }
+    }
+
+    /// 定向重检的请求体解析：宁缺毋滥。拼错平台名若被静默当成「没传」，用户点的是一次定向
+    /// 重检、实际烧掉的却是全目录的探测额度（每模型 60s 预算），那是最难查的一种错。
+    #[test]
+    fn a_targeted_recheck_only_accepts_a_deduped_registry_platform_list() {
+        // 没传这个字段（或显式 null）：沿用原有语义（全量 / 单模型）
+        assert_eq!(requested_providers(&json!({})).unwrap(), None);
+        assert_eq!(requested_providers(&json!({ "providers": null })).unwrap(), None);
+        assert_eq!(
+            requested_providers(&json!({ "providers": ["modelscope", "modelscope", "zhipuai"] }))
+                .unwrap(),
+            Some(vec!["modelscope".to_string(), "zhipuai".to_string()]),
+            "重复的平台只留一份"
+        );
+
+        // 字符串而非数组 / 空数组 / 混入数字 / 未注册平台：一律原样拒绝，绝不降级成全量
+        for body in [
+            json!({ "providers": "modelscope" }),
+            json!({ "providers": [] }),
+            json!({ "providers": ["modelscope", 42] }),
+            json!({ "providers": ["nope"] }),
+        ] {
+            let refusal = requested_providers(&body).expect_err("必须拒绝");
+            let error = refusal.get("error").expect("拒绝必须是 error 信封");
+            assert_eq!(
+                error.get("type").and_then(Value::as_str),
+                Some("invalid_request_error"),
+                "{body}"
+            );
+            assert!(
+                error
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| !text.is_empty()),
+                "拒绝必须给出可读原因：{body}"
+            );
+        }
+    }
+
+    /// 作用范围只按命名空间（全限定 id 的第一段）判定：`opencode/…` 与无命名空间的 id 不属于
+    /// 任何注册表平台，定向范围绝不能把它们的目录条目与通过标记一起摘掉。
+    #[test]
+    fn a_targeted_scope_only_covers_its_own_namespace() {
+        let all = Scope::All;
+        assert!(all.covered("opencode/free") && all.covered("bare") && all.covered(""));
+        let one = Scope::Platforms(vec!["modelscope".to_string()]);
+        assert!(one.covered("modelscope/Qwen/Qwen3-8B"), "本平台自己的模型在范围内");
+        for outside in ["opencode/free", "siliconflow-cn/deepseek", "bare", ""] {
+            assert!(!one.covered(outside), "定向范围不得覆盖：{outside}");
+        }
+        assert!(!one.covers(&json!({ "name": "没有 id 的条目" })));
+        assert_eq!(all.labels(), "", "全量范围没有人类可读名");
+        assert_eq!(one.labels(), "ModelScope");
+        assert_eq!(
+            Scope::Platforms(vec!["modelscope".to_string(), "zhipuai".to_string()]).labels(),
+            "ModelScope / 智谱"
+        );
+    }
+
+    /// 定向重取只替换清单内平台那一段目录：其余平台原样保留，本平台已消失的模型跟着掉出去
+    /// （清除 Key 后重新应用就靠这条把该平台的条目摘干净）。
+    #[test]
+    fn a_targeted_refresh_replaces_only_its_own_platform_in_the_catalog() {
+        let old: Vec<Value> = json!([
+            { "id": "opencode/free-a" },
+            { "id": "modelscope/kept" },
+            { "id": "modelscope/retired" },
+            { "id": "zhipuai/glm-4.5-flash" }
+        ])
+        .as_array()
+        .unwrap()
+        .clone();
+        let discovered: Vec<Value> = json!([{ "id": "modelscope/kept" }, { "id": "modelscope/new" }])
+            .as_array()
+            .unwrap()
+            .clone();
+        fn ids(models: &[Value]) -> Vec<&str> {
+            models
+                .iter()
+                .filter_map(|model| model.get("id").and_then(Value::as_str))
+                .collect()
+        }
+
+        let merged = merge_scoped_models(&old, &discovered, &Scope::Platforms(vec!["modelscope".to_string()]));
+        assert_eq!(
+            ids(&merged),
+            vec!["opencode/free-a", "zhipuai/glm-4.5-flash", "modelscope/kept", "modelscope/new"],
+            "其余平台的条目不动，本平台以新目录为准"
+        );
+
+        // 该平台 Key 已清除 → 发现结果为空：本平台的条目全部掉出，其余保留
+        let cleared = merge_scoped_models(&old, &[], &Scope::Platforms(vec!["modelscope".to_string()]));
+        assert_eq!(ids(&cleared), vec!["opencode/free-a", "zhipuai/glm-4.5-flash"]);
+
+        // 全量范围 = 既有的「整份替换」语义
+        assert_eq!(merge_scoped_models(&old, &discovered, &Scope::All), discovered);
+    }
+
+    /// 换 Key 之后必须重新探测才算可用，但只摘本平台的通过标记；
+    /// 全量范围保持原有的「清空」语义。
+    #[test]
+    fn rechecking_one_platform_clears_only_that_platforms_passing_mark() {
+        let mut validated = HashSet::from([
+            "opencode/free-a".to_string(),
+            "modelscope/kept".to_string(),
+            "zhipuai/glm-4.5-flash".to_string(),
+        ]);
+        strip_validated(&mut validated, &Scope::Platforms(vec!["modelscope".to_string()]));
+        assert_eq!(
+            validated,
+            HashSet::from(["opencode/free-a".to_string(), "zhipuai/glm-4.5-flash".to_string()])
+        );
+        strip_validated(&mut validated, &Scope::All);
+        assert!(validated.is_empty(), "全量范围沿用既有的清空语义");
+    }
+
+    /// `/admin/probe` 的拒绝必须在碰到编排状态（全局实例）之前就返回：面板靠这份 202 信封
+    /// 把「点了没反应」讲清楚，而 `model` 与 `providers` 同时在场时谁也不该被静默忽略。
+    #[test]
+    fn the_probe_endpoint_refuses_ambiguous_and_unknown_requests_before_probing() {
+        for body in [
+            json!({ "model": "opencode/free-a", "providers": ["modelscope"] }),
+            json!({ "providers": ["nope"] }),
+            json!({ "providers": [] }),
+            json!({ "providers": "modelscope" }),
+        ] {
+            let refusal = start_probes_admin(body.clone());
+            assert_eq!(
+                refusal.get("error").and_then(|e| e.get("type")).and_then(Value::as_str),
+                Some("invalid_request_error"),
+                "{body}"
+            );
+            assert!(refusal
+                .get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(Value::as_str)
+                .is_some_and(|text| !text.is_empty()));
+        }
     }
 
     /// 并发请求各自读旧 `modelResults` 再整体回写时，后写者会吞掉先写者的那一键。

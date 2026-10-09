@@ -762,6 +762,10 @@ pub fn isolated_config(providers_section: Value) -> Value {
     config
 }
 
+/// 注入声明段的锚点模型 key（保留名）：非空 models 段的占位条目。
+/// `free_models_in` 会按它过滤合成的幽灵条目；key 带前缀避免与任何真实模型撞名。
+pub const ANCHOR_MODEL_KEY: &str = "wbbridge-provider-anchor";
+
 /// 从数据目录读出已配置的注册表平台，构造 OpenCode `provider` 声明段。
 ///
 /// 返回 `(声明段, 已配置平台 id 列表)`：前者经 `isolated_config` 进 `OPENCODE_CONFIG_CONTENT`，
@@ -783,6 +787,18 @@ pub fn providers_section_for(data_dir: &str) -> (Value, Vec<String>) {
                 "options": {
                     "baseURL": provider.base_url,
                     "apiKey": key,
+                },
+                // 🔴 非空 models 段是调用链生效的前提（2026-10-09 六组沙箱对照实验收敛的结论）：
+                // 对 models.dev 在册的 provider，经 OPENCODE_CONFIG_CONTENT 注入的声明段
+                // **不带 models 键**时，该平台全部模型的调用都会在 ai-sdk 层报
+                //   AI_APICallError: Model id : <id> , has no provider supported
+                // 带任意非空 models 段后，声明的 baseURL/apiKey 即对该 provider 的全部
+                // catalog 模型生效（对照实验：请求打到真实 API、返回上游鉴权错误 = 链路正确）。
+                // 空对象 `{}` 会把 catalog 合并清空（发现 0 模型），因此必须放一个**锚点条目**：
+                // key 是本工具的保留名，OpenCode 会为它合成一条 cost 全 0 的幽灵模型——
+                // `free_models_in` 按保留名把它过滤掉，绝不进入模型列表与探测队列。
+                "models": {
+                    ANCHOR_MODEL_KEY: {},
                 },
             }),
         );
@@ -1294,7 +1310,11 @@ mod tests {
         assert_eq!(section["modelscope"]["npm"], json!("@ai-sdk/openai-compatible"));
         assert_eq!(section["modelscope"]["options"]["baseURL"], json!("https://api-inference.modelscope.cn/v1"));
         assert_eq!(section["modelscope"]["options"]["apiKey"], json!("ms-key"), "必须复用 check_key 的裁剪结果");
+        // models 段必须非空且只含锚点条目（缺 models 键 → ai-sdk 报 has no provider supported；
+        // 空对象 → catalog 合并被清空、发现 0 模型；锚点幽灵由 free_models_in 过滤）。
+        assert_eq!(section["modelscope"]["models"], json!({ ANCHOR_MODEL_KEY: {} }));
         assert_eq!(section["zhipuai"]["options"]["apiKey"], json!("glm-key"));
+        assert_eq!(section["zhipuai"]["models"], json!({ ANCHOR_MODEL_KEY: {} }));
         assert!(section.get("siliconflow-cn").is_none(), "未配置平台整段不出现");
 
         let _ = std::fs::remove_dir_all(&dir);
