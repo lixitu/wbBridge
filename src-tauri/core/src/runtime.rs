@@ -725,8 +725,19 @@ pub async fn find_runtime(
 }
 
 /// `isolatedConfig`：权限全 ask/deny、autoupdate 关、share 禁用、两个自定义 agent。
-pub fn isolated_config() -> Value {
-    json!({
+///
+/// `providers_section` 是多平台接入的注入位：调用方从 `providers.json` 读出**已配置**的
+/// 注册表平台，构造 `{ "<id>": { npm, options: { baseURL, apiKey } } }` 传入；未配置的平台
+/// 整段不出现（不是注入空 Key）。空段时输出与多平台接入之前逐字节一致。
+/// 🔴 Key 只经这条配置内容通道交给 OpenCode（2026-10-09 沙箱实测 `/provider` 响应不回显）；
+/// 绝不进 `ENV_ALLOW`、不进独立环境变量、不写日志。
+pub fn isolated_config(providers_section: Value) -> Value {
+    // 非对象（含 Null）一律按空段处理：防御异常输入把整个隔离配置带偏。
+    let section = match providers_section {
+        Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+    let mut config = json!({
         "permission": native_permissions(),
         "autoupdate": false,
         "share": "disabled",
@@ -744,7 +755,40 @@ pub fn isolated_config() -> Value {
                 "permission": native_permissions(),
             },
         },
-    })
+    });
+    if !section.is_empty() {
+        config["provider"] = Value::Object(section);
+    }
+    config
+}
+
+/// 从数据目录读出已配置的注册表平台，构造 OpenCode `provider` 声明段。
+///
+/// 返回 `(声明段, 已配置平台 id 列表)`：前者经 `isolated_config` 进 `OPENCODE_CONFIG_CONTENT`，
+/// 后者供编排层把模型发现收敛到「已配置平台」（未配置平台不出模型，避免对无 Key 平台探测 401）。
+/// 读盘失败（文件不存在/坏 JSON）与 `providers.json` 的容错语义一致：按「没有任何平台配置」处理。
+/// 🔴 返回的声明段内含 Key，只在内存中传给 `isolated_config`，不得落日志、不得进任何返回值。
+pub fn providers_section_for(data_dir: &str) -> (Value, Vec<String>) {
+    let keys = crate::providers::read_keys(data_dir);
+    let mut section = serde_json::Map::new();
+    let mut configured: Vec<String> = Vec::new();
+    for provider in crate::providers::PROVIDERS {
+        let Some(key) = keys.get(provider.id).and_then(Value::as_str) else {
+            continue;
+        };
+        section.insert(
+            provider.id.to_string(),
+            json!({
+                "npm": provider.npm,
+                "options": {
+                    "baseURL": provider.base_url,
+                    "apiKey": key,
+                },
+            }),
+        );
+        configured.push(provider.id.to_string());
+    }
+    (Value::Object(section), configured)
 }
 
 /// `startBackend` 使用的环境变量白名单：其余（尤其其他 provider 的 Key 与
@@ -783,7 +827,13 @@ pub fn allowed_environment(host_env: &Env) -> Env {
 }
 
 /// 组装子进程环境（白名单 + XDG 隔离 + 代理 + OPENCODE_* 覆盖）。
-pub fn isolated_environment(root: &str, proxy_env: &Env, password: &str, host_env: &Env) -> Env {
+pub fn isolated_environment(
+    root: &str,
+    proxy_env: &Env,
+    password: &str,
+    host_env: &Env,
+    providers_section: Value,
+) -> Env {
     let mut env: Env = allowed_environment(host_env);
     for name in ["config", "data", "cache", "state"] {
         env.insert(
@@ -806,7 +856,7 @@ pub fn isolated_environment(root: &str, proxy_env: &Env, password: &str, host_en
     }
     env.insert(
         "OPENCODE_CONFIG_CONTENT".to_string(),
-        js_stringify(&isolated_config()),
+        js_stringify(&isolated_config(providers_section)),
     );
     // Bun 运行时在向上游模型 API 和 models.opencode.ai 发 HTTPS 请求时，
     // 若用户网络存在 TLS 拦截（公司代理/VPN/ZScaler 等），会因不信任拦截
@@ -937,7 +987,11 @@ pub async fn start_backend(
         }
     }
     let password = generate_password();
-    let env = isolated_environment(&root, proxy_env, &password, &host_env);
+    // 多平台接入：启动时读一次已配置的平台 Key 并构造声明段。Key 只经
+    // OPENCODE_CONFIG_CONTENT 进子进程（见 isolated_config 的凭据纪律）；
+    // Key 变更后需重启核心才会重新读取（最小改动，不做热重载）。
+    let (providers_section, _configured) = providers_section_for(data_dir);
+    let env = isolated_environment(&root, proxy_env, &password, &host_env, providers_section);
     let project = join_host(&[&root, "project"]);
 
     // 启动常驻服务前先刷新目录，避免首份目录快照落在内嵌的过期版本上。
@@ -1184,7 +1238,7 @@ mod tests {
 
     #[test]
     fn isolated_config_keeps_every_permission_gate() {
-        let config = isolated_config();
+        let config = isolated_config(Value::Null);
         assert_eq!(config["permission"]["*"], json!("ask"));
         assert_eq!(config["permission"]["task"], json!("deny"));
         assert_eq!(config["autoupdate"], json!(false));
@@ -1197,6 +1251,55 @@ mod tests {
         );
     }
 
+    /// 多平台接入：声明段只认对象输入；空段时 provider 键整段不出现，与接入前逐字节一致；
+    /// 非空段整体挂到 config["provider"] 下，不触碰权限表与自定义 agent。
+    #[test]
+    fn isolated_config_treats_empty_section_as_absent_provider_block() {
+        let empty = isolated_config(Value::Null);
+        assert!(empty.get("provider").is_none(), "空段不得出现 provider 键");
+
+        let json_input = isolated_config(json!({}));
+        assert!(json_input.get("provider").is_none(), "空对象同样视为空段");
+
+        let section = json!({
+            "zhipuai": { "npm": "@ai-sdk/openai-compatible", "options": { "baseURL": "https://x", "apiKey": "k" } }
+        });
+        let with = isolated_config(section);
+        assert_eq!(with["provider"]["zhipuai"]["npm"], json!("@ai-sdk/openai-compatible"));
+        assert_eq!(with["provider"]["zhipuai"]["options"]["baseURL"], json!("https://x"));
+        assert_eq!(with["provider"]["zhipuai"]["options"]["apiKey"], json!("k"));
+        // 权限与 agent 不受注入影响。
+        assert_eq!(with["permission"]["*"], json!("ask"));
+        assert_eq!(with["agent"]["buddy-bridge"]["mode"], json!("primary"));
+    }
+
+    /// providers_section_for：只收注册表内已配置平台；未配置/注册表外整段不出现。
+    #[test]
+    fn providers_section_for_lists_only_configured_registered_platforms() {
+        let dir = std::env::temp_dir().join(format!("wbbridge-section-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("临时目录");
+        let data_dir = dir.to_string_lossy().to_string();
+
+        // 空目录：没有任何平台配置。
+        let (section, configured) = providers_section_for(&data_dir);
+        assert_eq!(section, json!({}));
+        assert!(configured.is_empty());
+
+        // 配置两家（含首尾空白裁剪语义），另一家写注册表外的残留键。
+        crate::providers::set_key(&data_dir, "modelscope", " ms-key ").expect("写入 modelscope");
+        crate::providers::set_key(&data_dir, "zhipuai", "glm-key").expect("写入 zhipuai");
+        let (section, configured) = providers_section_for(&data_dir);
+        assert_eq!(configured, vec!["modelscope".to_string(), "zhipuai".to_string()]);
+        assert_eq!(section["modelscope"]["npm"], json!("@ai-sdk/openai-compatible"));
+        assert_eq!(section["modelscope"]["options"]["baseURL"], json!("https://api-inference.modelscope.cn/v1"));
+        assert_eq!(section["modelscope"]["options"]["apiKey"], json!("ms-key"), "必须复用 check_key 的裁剪结果");
+        assert_eq!(section["zhipuai"]["options"]["apiKey"], json!("glm-key"));
+        assert!(section.get("siliconflow-cn").is_none(), "未配置平台整段不出现");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn isolated_environment_never_leaks_unlisted_variables() {
         let host = env_of(&[
@@ -1207,7 +1310,7 @@ mod tests {
             ("EMPTY_ONE", ""),
         ]);
         let proxy = env_of(&[("HTTPS_PROXY", "http://127.0.0.1:7890")]);
-        let env = isolated_environment("/data/opencode", &proxy, "pw", &host);
+        let env = isolated_environment("/data/opencode", &proxy, "pw", &host, Value::Null);
         assert_eq!(env.get("PATH").map(String::as_str), Some("/usr/bin"));
         assert_eq!(env.get("HOME").map(String::as_str), Some("/Users/test"));
         assert_eq!(env.get("HTTPS_PROXY").map(String::as_str), Some("http://127.0.0.1:7890"));

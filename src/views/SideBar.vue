@@ -1,6 +1,8 @@
 <script setup>
 // 侧栏：品牌、分组导航（五个视图均已实现，点击即切换）、运行设置。
-import logo from '../public/logo.svg'
+// 品牌图标是 public 目录里的静态资源，构建时原样拷到产物根，因此只按 URL 引用、不做 JS import
+// （import public 资源会让 Vite 报 "Assets in public directory cannot be imported from JavaScript"）。
+const logo = '/logo.svg'
 
 const version = __APP_VERSION__
 
@@ -17,6 +19,7 @@ defineEmits(['toggle-proxy', 'select'])
 // 全部内联，不产生任何外部资源请求（CSP default-src 'self'）。
 const ICONS = {
   models: 'M4.8 4.8h5.4v5.4H4.8zM13.8 4.8h5.4v5.4h-5.4zM4.8 13.8h5.4v5.4H4.8zM13.8 13.8h5.4v5.4h-5.4z',
+  providers: 'M12 3.6l7.2 4.2v8.4L12 20.4l-7.2-4.2V7.8Z M12 12.2l7-4.1M12 12.2v8M12 12.2L5 8.1',
   logs: 'M5 6.5h14M5 12h14M5 17.5h8',
   usage: 'M12 4a8 8 0 1 0 8 8h-8V4Z',
   workbuddy: 'M8 8.5h10.5l-3-3M16 15.5H5.5l3 3',
@@ -24,11 +27,14 @@ const ICONS = {
   proxy: 'M12 4.5v7M7.6 6.8a7 7 0 1 0 8.8 0',
 }
 
-// 导航分组：五个视图均已实现，点击即切换主区；当前视图常驻高亮。
+// 导航分组：六个视图均已实现，点击即切换主区；当前视图常驻高亮。
 const groups = [
   {
     title: '模型',
-    items: [{ id: 'models', icon: 'models', label: '模型与服务' }],
+    items: [
+      { id: 'models', icon: 'models', label: '模型与服务' },
+      { id: 'providers', icon: 'providers', label: '平台' },
+    ],
   },
   {
     title: '运行',

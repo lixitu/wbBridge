@@ -506,6 +506,52 @@ async fn core_action(app: AppHandle, state: State<'_, AppState>, action: String,
     .map_err(|e| format!("动作线程已崩溃：{e}"))?
 }
 
+/// 用系统默认浏览器打开外部链接（申请 Key 的官方页等）。
+///
+/// Tauri WebView 里 `target="_blank"` 默认不调起系统浏览器（点击静默失败），外链必须经壳转发。
+/// 安全边界：只允许 https 协议 + RFC 3986 合法字符白名单；URL 只以命令行参数传给系统打开器
+/// （macOS `open` / Windows `explorer` 直接传参不经 shell 解析 / Linux `xdg-open`），
+/// 白名单是最后一道防线，不依赖调用方的引号处理。应用自有命令，不经 capability 授权。
+#[tauri::command]
+fn open_external(url: String) -> Result<(), String> {
+    let lower = url.to_ascii_lowercase();
+    if !lower.starts_with("https://") {
+        return Err(format!("不允许的链接协议（仅 https）：{url}"));
+    }
+    if url.is_empty() || url.len() > 2048 {
+        return Err("链接长度非法".to_string());
+    }
+    const URL_SAFE: &[u8] = b":/?#[]@!$&'()*+,;=-._~%";
+    if !url
+        .bytes()
+        .all(|c| c.is_ascii_alphanumeric() || URL_SAFE.contains(&c))
+    {
+        return Err("链接包含非法字符".to_string());
+    }
+
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("open");
+        c.arg(&url);
+        c
+    };
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        // explorer 直接传参：不经 cmd /C shell 解析，杜绝元字符注入。
+        let mut c = std::process::Command::new("explorer");
+        c.arg(&url);
+        c
+    };
+    #[cfg(target_os = "linux")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(&url);
+        c
+    };
+    cmd.spawn().map_err(|e| format!("打开链接失败: {e}"))?;
+    Ok(())
+}
+
 #[tauri::command]
 async fn restart_core(app: AppHandle) -> Result<(), String> {
     // 同上：stop_core 最坏等十余秒，必须离开主线程；AppHandle 是 'static，可在闭包内重新取状态。
@@ -697,7 +743,8 @@ pub fn run() {
             restart_core,
             core_running,
             data_dir_path,
-            read_log
+            read_log,
+            open_external
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

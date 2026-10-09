@@ -124,6 +124,19 @@ export async function readLog() {
   }
 }
 
+// 用系统浏览器打开外部链接（申请 Key 的官方页）。WebView 里 target=_blank 默认点不开，
+// 必须经壳的 open_external 命令转发（壳侧有 https + 字符白名单校验）。只收 URL、不做任何 IO。
+export async function openExternal(url) {
+  ensureBridge()
+  try {
+    const { invoke } = window.__TAURI__.core
+    await invoke('open_external', { url })
+    return { ok: true, result: {} }
+  } catch (error) {
+    return { ok: false, error: String(error) }
+  }
+}
+
 // 壳实际使用的数据目录（status.json / 运行日志都在这里）。
 export async function dataDir() {
   ensureBridge()

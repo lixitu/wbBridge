@@ -635,15 +635,49 @@ fn attach_translator(started: &Started) {
 // 同步发布（syncPublished）
 // ---------------------------------------------------------------------------
 
-/// `syncPublished(published)`：把发布集串行写入所有已检测到的插件配置 —— WorkBuddy 与
+/// `syncPublished(published, allowEmpty)`：把发布集串行写入所有已检测到的插件配置 —— WorkBuddy 与
 /// CodeBuddy 的 `models.json`；未检测到的目标在 `sync.targets` 里报 `missing` 及原因。
 ///
-/// `None` 表示按 `usableModels()` 取值（与 JS 默认参数一致）。
-fn sync_published(published: Option<Vec<Value>>) {
+/// `published = None` 表示按 `usableModels()` 取值（与 JS 默认参数一致）。
+///
+/// 🔴 空发布集闸门（多平台接入后由「可选」变「必须」）：`allow_empty = false` 时发布集为空
+/// 直接拒绝发布并写 `sync.error`——一轮全败（如上游全挂、Key 全部失效）不得清空插件配置里
+/// 本工具名下的既有条目。关停（`shutdown`）、启动清旧（`startup_sequence`）、换文件（`import_models`）
+/// 三处是用户意图的清空，调用方显式传 `true`。
+fn sync_published(published: Option<Vec<Value>>, allow_empty: bool) {
     let app = global_app();
     let models = published.unwrap_or_else(usable_models);
     let endpoint = format!("{}/chat/completions", app.endpoint);
     let key = app.bridge_key.to_string();
+
+    if env_text("BUDDY_NO_SYNC").as_deref() == Some("1") {
+        let count = models.len() as u64;
+        chain_sync(async move {
+            update_and_persist(json!({
+                "sync": { "skipped": true, "count": count, "time": now_iso8601() }
+            }));
+        });
+        return;
+    }
+
+    // 空发布集闸门：sync_models 的既有保护（mergeModels 的 allowEmpty=false）在聚合层
+    // 自然报错（每目标 Err("Empty model discovery; …") → aggregate_sync 顶层 error），
+    // 无需另造错误形状；这里的提前返回只是避免明知会全败还去动盘。
+    if models.is_empty() && !allow_empty {
+        let message = "Empty model discovery; existing configuration preserved";
+        chain_sync(async move {
+            update_and_persist(json!({
+                "sync": {
+                    "targets": {},
+                    "count": 0,
+                    "changed": false,
+                    "error": message,
+                    "time": now_iso8601(),
+                }
+            }));
+        });
+        return;
+    }
 
     if env_text("BUDDY_NO_SYNC").as_deref() == Some("1") {
         let count = models.len() as u64;
@@ -1101,7 +1135,7 @@ async fn run_probe_batch(
         update_and_persist(json!({ "probe": { "running": true, "pending": pending.clone() } }));
     }
     if auto_import && !app.stopping.load(Ordering::Relaxed) {
-        sync_published(None);
+        sync_published(None, false);
     }
     app.probing.store(false, Ordering::Relaxed);
     update_and_persist(json!({ "probe": { "running": false } }));
@@ -1140,7 +1174,7 @@ async fn run_single_probe(model: Value) {
     let error = match outcome {
         ProbeOutcome::Passed => {
             record(&model_id, true, None, None, None, duration_ms, "probe", None, &meta.snapshot()).await;
-            sync_published(None);
+            sync_published(None, false);
             return;
         }
         ProbeOutcome::Failed(cause) => cause,
@@ -1179,7 +1213,7 @@ async fn run_single_probe(model: Value) {
                     &meta.snapshot(),
                 )
                 .await;
-                sync_published(None);
+                sync_published(None, false);
             }
             Err(chat_error) => {
                 if !app.stopping.load(Ordering::Relaxed) {
@@ -1426,6 +1460,8 @@ async fn run_refresh(
             next.stop().await;
             return Ok(json!({}));
         }
+        next.backend
+            .set_configured_providers(configured_provider_ids(&app.data_dir));
         attach_translator(&next);
         let old = {
             let mut guard = lock(&app.runtime);
@@ -1529,7 +1565,8 @@ async fn shutdown(code: u8) -> u8 {
     if let Some(sender) = lock(&app.server_stop).as_ref() {
         let _ = sender.send(true);
     }
-    sync_published(Some(Vec::new()));
+    // 用户意图的清空：关停时插件侧不应残留本工具条目。
+    sync_published(Some(Vec::new()), true);
     let runtime = lock(&app.runtime).clone();
     if let Some(runtime) = runtime {
         runtime.stop().await;
@@ -1868,7 +1905,8 @@ async fn startup_sequence(app: &App) -> Result<String, BackendError> {
     update_and_persist(json!({ "phase": "starting" }));
     // 与 JS 的 `await syncPublished([])` 一致：先把 WorkBuddy 名下的旧条目清掉再开始下载，
     // 否则启动窗口内 WorkBuddy 仍能看到上一轮发布的、此刻并不保证可用的模型。
-    sync_published(Some(Vec::new()));
+    // 用户意图的清空：显式允许空集。
+    sync_published(Some(Vec::new()), true);
     drain_sync().await;
 
     // 系统代理：全新安装优先跟随系统代理，但没有手工代理的机器必须能直连下载；
@@ -1935,6 +1973,9 @@ async fn startup_sequence(app: &App) -> Result<String, BackendError> {
             .await
             .map_err(BackendError::plain)?,
     );
+    started
+        .backend
+        .set_configured_providers(configured_provider_ids(&app.data_dir));
     attach_translator(&started);
     *lock(&app.runtime) = Some(started.clone());
     update_and_persist(json!({ "opencodeVersion": started.version.clone() }));
@@ -2085,7 +2126,8 @@ async fn import_models(selected: Option<Value>) -> Result<Value, BackendError> {
                 .map(|path| std::fs::metadata(path).is_ok())
                 .unwrap_or(false);
         if outdated {
-            sync_published(Some(Vec::new()));
+            // 用户意图的清空：换配置文件时清掉旧文件名下条目。
+            sync_published(Some(Vec::new()), true);
             drain_sync().await;
             if let Some(error) = app
                 .snapshot()
@@ -2107,7 +2149,8 @@ async fn import_models(selected: Option<Value>) -> Result<Value, BackendError> {
         *lock(&app.workbuddy_models_file) = Some(selected_file.clone());
         update_and_persist(json!({ "modelsFile": selected_file }));
     }
-    sync_published(None);
+    // 导入动作：发布集为空时拒绝写入（闸门），错误经下方 sync.error 检查返回给面板。
+    sync_published(None, false);
     drain_sync().await;
     let sync = app.snapshot().get("sync").cloned().unwrap_or(Value::Null);
     if let Some(error) = sync.get("error").and_then(Value::as_str) {
@@ -2134,6 +2177,13 @@ async fn set_system_proxy(enabled: Value) -> Result<Value, BackendError> {
         .map_err(BackendError::plain)?;
     start_probes(None, true, false);
     Ok(json!({ "useSystemProxy": enabled }))
+}
+
+/// 已配置平台 id 列表（不含任何 Key 材料）：模型发现的收敛闸门。
+/// 读盘在调用方所在上下文同步执行——调用点都刚跑完 `spawn_blocking` 的启动链路，
+/// 这份小文件的读取成本可忽略；结果只进 `Backend::set_configured_providers`。
+fn configured_provider_ids(data_dir: &str) -> Vec<String> {
+    runtime::providers_section_for(data_dir).1
 }
 
 /// 平台动作共用的执行外壳：`providers.json` 是数据目录里的小文件，同步 IO 挪到
@@ -2235,6 +2285,7 @@ fn install_signal_handlers() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::{free_models, free_models_in};
 
     /// `drop_pending` 按 id 移除：待探测列表只收录带字符串 id 的模型，按位置 `remove(0)` 在列表
     /// 提前耗尽时会 panic，整批探测停在 `running` 且 `probing` 永远为真。
@@ -2479,6 +2530,58 @@ mod tests {
         let usage = accumulate_usage(&fresh_usage(), "", false, 50);
         assert_eq!(usage["total"], json!({ "requests": 1, "ok": 0, "failed": 1 }));
         assert_eq!(usage["models"], json!({}), "无模型 ID 时不得创建模型条目");
+    }
+
+    /// 空发布集闸门的可测内核：闸门语义 = 「发布集为空 + 不允许空集 → 拒绝」。
+    /// `sync_published` 本体依赖已装入的核心实例（global_app），这里把判定提成纯函数同款逻辑
+    /// 钉住：三处用户意图清空传 `true`，探测/导入路径传 `false`，参数弄反会让全败清空插件配置。
+    #[test]
+    fn empty_publication_gate_rejects_only_when_disallowed() {
+        let gate = |empty: bool, allow_empty: bool| empty && !allow_empty;
+        // 探测收尾 / 导入动作（allow_empty=false）：全败空集必须拒绝。
+        assert!(gate(true, false), "空集且不允许空 → 拒绝发布");
+        // 关停 / 启动清旧 / 换文件（allow_empty=true）：空集是用户意图，必须放行。
+        assert!(!gate(true, true), "空集但显式允许 → 放行");
+        // 非空发布集与闸门无关。
+        assert!(!gate(false, false));
+        assert!(!gate(false, true));
+        // 闸门写进 status.json 的形状：与 aggregate_sync 顶层 error 同形，面板不用分叉。
+        let message = "Empty model discovery; existing configuration preserved";
+        let sync = json!({ "targets": {}, "count": 0, "changed": false, "error": message });
+        assert_eq!(sync["error"], json!(message));
+        assert_eq!(sync["count"], json!(0));
+    }
+
+    /// 聚合发现的可测内核：free_models_in 对注册表平台的发现与包装一致（Stage 2 已钉），
+    /// 这里钉住「聚合顺序 = opencode 在前、注册表已配置平台按注册表序在后」，
+    /// 面板的分组展示依赖这个稳定顺序。
+    #[test]
+    fn aggregated_discovery_keeps_opencode_first_then_registry_order() {
+        let providers = json!({ "all": [
+            { "id": "zhipuai", "models": { "glm-4.5-flash": { "name": "GLM-4.5 Flash", "cost": { "input": 0, "output": 0 } } } },
+            { "id": "opencode", "models": { "free": { "name": "Free", "cost": { "input": 0, "output": 0 } } } },
+            { "id": "modelscope", "models": { "Qwen/Qwen3-8B": { "name": "Qwen3 8B", "cost": { "input": 0, "output": 0 } } } },
+        ] });
+        let mut models = free_models(&providers).unwrap();
+        for namespace in ["zhipuai", "modelscope"] {
+            models.extend(free_models_in(&providers, namespace).unwrap());
+        }
+        let ids: Vec<&str> = models.iter().map(|m| m["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["opencode/free", "zhipuai/glm-4.5-flash", "modelscope/Qwen/Qwen3-8B"]);
+    }
+
+    /// 单平台失败不丢其他平台：free_models_in 对缺失平台的 Err 由调用方记日志并继续。
+    #[test]
+    fn single_platform_failure_does_not_drop_other_platforms() {
+        let providers = json!({ "all": [
+            { "id": "opencode", "models": { "free": { "name": "Free", "cost": { "input": 0, "output": 0 } } } },
+        ] });
+        let mut models = free_models(&providers).unwrap();
+        // siliconflow-cn 在 catalog 里缺失：Err 必须发生，但聚合继续。
+        let error = free_models_in(&providers, "siliconflow-cn").unwrap_err();
+        assert_eq!(error.message, "OpenCode provider missing");
+        models.extend(free_models_in(&providers, "opencode").unwrap());
+        assert_eq!(models.len(), 2, "失败平台不丢已发现的模型");
     }
 
     /// 平台动作的边界校验：只认注册表里的 id，Key 形状在进入写盘路径之前就必须成立。

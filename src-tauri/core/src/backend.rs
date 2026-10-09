@@ -303,6 +303,8 @@ struct Inner {
     state: Mutex<BackendState>,
     events: Mutex<Option<AbortController>>,
     translator: Mutex<Option<TranslatorHook>>,
+    /// 多平台发现闸门：已配置 Key 的注册表平台 id（启动时由编排层注入，不含 Key）。
+    configured_providers: Mutex<Vec<String>>,
 }
 
 /// watch promise 一旦落定就永远返回同一结果（对应 JS 里可被反复 `Promise.race` 的 promise）。
@@ -354,6 +356,7 @@ impl Backend {
                 base: base.into(),
                 password: password.into(),
                 log: Arc::new(log),
+                configured_providers: Mutex::new(Vec::new()),
                 state: Mutex::new(BackendState::default()),
                 events: Mutex::new(None),
                 translator: Mutex::new(None),
@@ -977,16 +980,41 @@ impl Backend {
     }
 
     /// `models()`：拉取 /provider 并筛选免费模型。
+    ///
+    /// 多平台接入后的聚合发现：`opencode` 命名空间（判定与错误文案一字不动）+ 每个**已配置**
+    /// 注册表平台的同名调用。单平台失败不丢其他平台：失败只记日志，聚合照常返回。
+    /// 已配置集合由编排层经 [`Backend::set_configured_providers`] 在启动时注入（读 providers.json，
+    /// 只有 id、不含 Key）；未配置平台即使出现在 `/provider` 的 catalog 里也不发现——避免对
+    /// 无 Key 平台探测 401。
     pub async fn models(&self) -> Result<Vec<Value>, BackendError> {
         let providers = self.request("/provider", "GET", None, None, None).await?;
-        let models = free_models(&providers)
+        let mut models = free_models(&providers)
             .map_err(|error| BackendError::bridge(&error))?;
+        let configured = lock(&self.inner.configured_providers).clone();
+        for namespace in configured {
+            match free_models_in(&providers, &namespace) {
+                Ok(found) => models.extend(found),
+                Err(error) => {
+                    // 单平台不可用只记日志：catalog 缺该平台属于上游目录事实，不是本服务故障；
+                    // 其余平台照常发布。错误信息只含平台 id 与上游文案，不含 Key。
+                    (self.inner.log)(&format!(
+                        "Provider {namespace} discovery failed: {}",
+                        error.message
+                    ));
+                }
+            }
+        }
         if models.is_empty() {
             return Err(BackendError::plain(
                 "No free text models found; existing list preserved",
             ));
         }
         Ok(models)
+    }
+
+    /// 注入「已配置平台 id 集合」（多平台发现的收敛闸门）。只收 id，不收 Key。
+    pub fn set_configured_providers(&self, ids: Vec<String>) {
+        *lock(&self.inner.configured_providers) = ids;
     }
 
     /// `translate(...)`：交给辅助模型的一次有界转写；探测路径不会走到这里。

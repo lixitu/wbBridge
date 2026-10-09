@@ -14,7 +14,7 @@ const PREFIX = 'wb.'
 
 // 侧栏导航的视图 id（与 SideBar.vue 的 groups 一一对应）。恢复偏好时用它做存在性校验，
 // 视图被改名或删除后，旧偏好会自然回落默认值而不是渲染一个不存在的视图。
-export const VIEW_IDS = ['models', 'logs', 'usage', 'workbuddy', 'about']
+export const VIEW_IDS = ['models', 'providers', 'logs', 'usage', 'workbuddy', 'about']
 
 export const DEFAULTS = {
   view: 'models',

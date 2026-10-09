@@ -34,6 +34,9 @@ export default defineConfig({
     chunkSizeWarningLimit: 1500,
   },
   server: {
+    // 必须显式绑 IPv4 回环：不设 host 时 Vite 按 `localhost` 解析后在本机只监听 [::1]，
+    // 而壳的 devUrl 走 IPv4 连不上，WebView 直接白页。写死 127.0.0.1 与 devUrl 对齐。
+    host: '127.0.0.1',
     port: 41990,
     strictPort: true,
   },

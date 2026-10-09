@@ -4,6 +4,60 @@
 > 该日期之后的条目描述 Rust 形态；下方的 2026-09-30 条目属于**迁移前的 Node/sidecar 时代**，作为历史
 > 保留原样（其 97 项测试、`src/core/`、`src-tauri/binaries/` 等结论已不再对应当前仓库）。
 
+日期：2026-10-09（本机 macOS，Apple Silicon；Rust 核心 + Vue 壳 + Vue 面板）
+
+## 多平台接入 Stage 3 + Stage 5：Key 注入、聚合发现、空集闸门与「平台」视图（2026-10-09，版本推进至 1.1.0）
+
+### 沙箱前置实测（同日上午，四轮对照实验）
+
+用本机托管的真实 OpenCode 1.18.35（壳数据目录 runtime）在 /tmp 一次性目录里按核心完全相同的隔离方式
+（env_clear + 白名单 + XDG 隔离 + OPENCODE_CONFIG_CONTENT + 随机端口 + Basic 鉴权）做了四轮实验，实测结论：
+
+1. `/provider` **无条件**返回全部 226 家 catalog（对照组零自定义配置同样返回），注入声明段不是平台出现的前提；
+2. 四家注册表平台（modelscope 7 / siliconflow-cn 44 / tencent-tokenhub 3 / zhipuai 17 模型）的 cost
+   字段随 catalog 合并保留，既有 CostZero 判定直接可用：免费模型 ModelScope 7、SiliconFlow 3、腾讯 2、智谱 3；
+3. 最小声明段 `{ npm, options: { baseURL, apiKey } }` 即可完成鉴权注入，**不需要**自带 models 清单
+   （路线图 §2.3 的「注册表白名单」前提被推翻，Stage 4 的模型清单因此不需要）；
+4. `/provider` 响应不回显注入的 apiKey（options 为空对象）；OPENCODE_CONFIG_CONTENT 通道下
+   buddy-bridge / buddy-chat 两个自定义 agent 在 `/agent` 可见（配置文件通道不可见，但核心不走该通道）。
+
+实验目录已清理，仓库工作区未被污染（假 Key 只用于列表验证，未调用任何模型、未产生费用）。
+
+### 改了什么
+
+- `runtime.rs`：`isolated_config(providers_section)`（空段输出与接入前逐字节一致）；新增
+  `providers_section_for(data_dir) -> (声明段, 已配置平台 id)`；`isolated_environment` 与 `start_backend`
+  串联注入。Key 只经 OPENCODE_CONFIG_CONTENT 进子进程，不进 ENV_ALLOW。
+- `backend.rs`：Inner 新增 `configured_providers: Mutex<Vec<String>>`（只存 id，不含 Key）；
+  `Backend::models()` 改聚合发现：opencode 判定与错误文案一字不动 + 逐个已配置平台 free_models_in，
+  单平台失败只记日志不丢其他平台；`set_configured_providers` 注入。
+- `orchestration.rs`：启动与刷新两条 start_backend 链路在 attach_translator 前注入已配置平台；
+  `sync_published` 加显式 allow_empty 入参——探测收尾/单模型通过/chatOnly 降级/导入动作传 false
+  （空集提前拒绝并写 sync.error，形状与 aggregate_sync 顶层 error 同形），关停/启动清旧/换文件
+  三处用户意图清空传 true。
+- 面板：新增 `src/views/ProvidersView.vue`（四家平台卡片：状态徽章 / Key 表单（password 型输入，
+  保存后立即清空、不回显不掩码）/「如何申请 Key」展开区（四家官方入口已核实：modelscope.cn/my/access/token、
+  cloud.siliconflow.cn/account/ak、console.cloud.tencent.com/tokenhub/apikey、open.bigmodel.cn/usercenter/apikeys）/
+  保存 / 清除后自动热生效（触发 refresh 重读，无需重启应用；底部「读取免费模型（重新应用）」兜底按钮））；prefs.js 的 VIEW_IDS 加 providers；SideBar「模型」组加入口；App.vue 接分支；
+  ModelRow.vue 改渲染 model.id（Stage 5 已知偏差一并清掉）。
+
+### 实测数字（全部实跑）
+
+- 核心 cargo test：**243 通过 / 0 失败**（lib 221 + js_parity 11 + red_lines 11；基线 238 + 新增 5：
+  runtime 2 项注入语义、orchestration 3 项闸门/聚合顺序/单平台失败隔离）；
+- 核心 cargo clippy --all-targets：**0 warning**；壳 cargo test --lib：**9 通过**；
+- git diff --stat src-tauri/core/tests/fixtures 为空（对拍夹具零改动，逐字节等价仍成立）；
+- JS 侧：test:prefs 8 / test:manifest 9 / test:updater-key 13 全绿、npx eslint 0 problem、
+  vite:build 通过、version:check 5 处一致（**1.1.0**——维护者裁定按语义化版本推进 minor 位）。
+
+### 🔴 未验证（必须实机确认）
+
+- GUI 实机：平台视图渲染、Key 输入保存、重启后模型发现、逐模型状态与探测，全部未在 Tauri GUI 点过；
+- 真实 Key 端到端：四家任一家录入真实 Key 后探测通过、真实对话成功、WorkBuddy/CodeBuddy 发布——
+  假 Key 无法证明 @ai-sdk/openai-compatible 对四家 baseURL 的实际调用行为（尤其 zhipuai 的 /api/paas/v4）；
+- Key 变更后的热生效路径（set-provider-key → 面板自动 refresh → 隔离子进程重启 → 重新读 providers.json → 重新注入）只有代码链路证据；
+- 探测对已配置平台的额度消耗（ModelScope 7 + SiliconFlow 3 + 腾讯 2 + 智谱 3 ≈ 15 模型，每模型各 60s 预算）。
+
 日期：2026-10-02（本机 macOS，Apple Silicon；Rust 核心 + Vue 壳 + Vue 面板）
 
 日期：2026-10-03（本机 macOS，Apple Silicon；Rust 核心 + Vue 壳 + Vue 面板）

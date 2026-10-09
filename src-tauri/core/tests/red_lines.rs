@@ -209,7 +209,7 @@ fn native_tools_stay_ask_or_deny_and_never_allow() {
 
 #[test]
 fn isolated_runtime_config_keeps_autoupdate_off_and_agents_present() {
-    let config = runtime::isolated_config();
+    let config = runtime::isolated_config(Value::Null);
     assert_eq!(
         config.get("autoupdate"),
         Some(&json!(false)),
@@ -261,6 +261,7 @@ fn subprocess_environment_only_passes_the_allow_list() {
         &HashMap::new(),
         "generated-password",
         &host,
+        Value::Null,
     );
     assert!(!env.contains_key("OPENAI_API_KEY"), "宿主 provider Key 泄漏进子进程");
     assert!(!env.contains_key("ANTHROPIC_API_KEY"), "宿主 provider Key 泄漏进子进程");

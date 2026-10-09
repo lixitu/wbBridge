@@ -8,8 +8,8 @@
 > **Release 正文必备固定小节**：每份 `RELEASE-NOTES-v{完整版本}.md` 必须包含「macOS 首次打开（ad-hoc 签名放行）」小节——写明应用为 ad-hoc 签名、**未做 Apple 公证**，首次打开（含更新后重新被拦截）提示「已损坏」时确认来源可信后执行放行命令；该小节是发布正文的固定组成部分，**新增版本必须沿用同一小节，不得省略或改写**。
 >
 > **版本纪律（与根目录 `AGENTS.md`「当前基准版本」章节严格对齐）**：
-> - **版本单一来源**：根目录 `package.json` 的 `version`（当前 **1.0.5**）；`src-tauri/tauri.conf.json`
->   与 `src-tauri/Cargo.toml` 的 `[package] version` 是同步落点（当前同为 **1.0.5**）
+> - **版本单一来源**：根目录 `package.json` 的 `version`（当前 **1.1.0**）；`src-tauri/tauri.conf.json`
+>   与 `src-tauri/Cargo.toml` 的 `[package] version` 是同步落点（当前同为 **1.1.0**）
 > - `src-tauri/core/Cargo.toml` 的内部 crate 版本（当前 **0.1.0**，crate `wbbridge-core`）与产品版本**有意解耦**：
 >   它是库自身的演进节奏，**不是**版本号落点，`version:check` 不校验它，也不随产品版本递增
 > - 版本号末位仅在「不同类新功能 / 不同根因新修复 + 用户明确允许」时 +1
@@ -26,10 +26,12 @@
 
 | 文件 | 覆盖版本 | 状态 |
 |------|---------|------|
+| [v1.1.0 GitHub Release 正文](RELEASE-NOTES-v1.1.0.md) | v1.1.0（多平台免费模型接入：面板「平台」视图 + 自带 Key + 三步申请引导 + `open_external` 壳命令；核心 Key 注入 / 聚合发现 / 空发布集闸门） | 📝 待发布：**尚未构建、未打标签**；版本落点已由 `npm run version:set -- 1.1.0` 改至 1.1.0 且 `version:check` 5 处一致——按铁律先提交、再在该提交上打 `v1.1.0` |
 | [v1.0.5 GitHub Release 正文](RELEASE-NOTES-v1.0.5.md) | v1.0.5（探测回归修复：`start_probes_admin` 二次解包 bug、`chat_only_attempt` 转写闸门回退；面板单模型重新检测按钮） | 📝 待发布：**尚未构建、未打标签**；版本落点已改至 1.0.5 但仍未提交——按铁律先提交、再在该提交上打 `v1.0.5` |
 | [v1.0.4 GitHub Release 正文](RELEASE-NOTES-v1.0.4.md) | v1.0.4（模型发布多插件写入：自动检测 WorkBuddy + CodeBuddy 并向所有检测到的目标分发；`sync.targets` 逐目标状态与顶层 `codeBuddyModelsFile`） | 📝 待发布：**尚未构建、未打标签**；版本落点已改至 1.0.4 但仍未提交——按铁律先提交、再在该提交上打 `v1.0.4` |
 | [v1.0.3 GitHub Release 正文](RELEASE-NOTES-v1.0.3.md) | v1.0.3（多平台接入 Stage 1 + Stage 2、四项安全/数据红线修复、清单 url 空格→点修复与 CI 资产对账闸门） | 📝 待发布：**尚未构建、未打标签**；版本落点（`package.json` / `src-tauri/Cargo.toml` / `Cargo.lock` / `tauri.conf.json` / `AGENTS.md`）仍未提交——按铁律先提交、再在该提交上打 `v1.0.3` |
-| [v1.0 日志](RELEASE-v1.0.md) | v1.0.5（当前基准版本）＋ v1.0.4 ＋ v1.0.3 ＋ v1.0.2 ＋ v1.0.1 ＋ v1.0.0 基线快照，最新在前 | 📝 待发布 |
+| [v1.1 日志](RELEASE-v1.1.md) | v1.1.0（当前基准版本）：多平台免费模型接入，最新在前 | 📝 待发布 |
+| [v1.0 日志](RELEASE-v1.0.md) | v1.0.5 ＋ v1.0.4 ＋ v1.0.3 ＋ v1.0.2 ＋ v1.0.1 ＋ v1.0.0 基线快照，最新在前 | 📝 待发布 |
 | [v1.0.2 GitHub Release 正文](RELEASE-NOTES-v1.0.2.md) | v1.0.2（含 2026-10-03 追加的「渲染与轮询降耗」与「签名注入链路重写 + 单条公钥 + hdiutil dmg」两节） | 📝 标记待维护者定夺（标签 `v1.0.2` 已打出、**Release 已 Publish、23 个资产**；GUI 与更新链路未实机验证，同轮 `latest.json` 的 url 缺陷已修脚本、线上那份待重传） |
 | [v1.0.1 GitHub Release 正文](RELEASE-NOTES-v1.0.1.md) | v1.0.1 | 代码已并入 `main`（`679a2cb`）、远端标签已指向含版本推进的提交；**是否真的发布过 Release / 跑过 CI 未经核验** |
 

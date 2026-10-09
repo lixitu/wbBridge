@@ -52,7 +52,7 @@ const timing = computed(() => {
       </svg>
     </span>
     <span class="model-info">
-      <span class="model-name">OC · {{ model.name }}</span>
+      <span class="model-name">{{ model.id }}</span>
       <span class="duration">{{ timing }}</span>
     </span>
     <span class="badges">

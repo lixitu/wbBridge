@@ -16,12 +16,13 @@ import LogsView from './views/LogsView.vue'
 import UsageView from './views/UsageView.vue'
 import IntegrationView from './views/IntegrationView.vue'
 import AboutView from './views/AboutView.vue'
+import ProvidersView from './views/ProvidersView.vue'
 
 const state = ref({})
 const selected = ref(null)
 // 详情无结果时共享同一个空对象：引用稳定，ModelDetails 不被无关状态推送触发更新。
 const EMPTY_RESULT = {}
-// 当前视图：与 SideBar 的 item.id 一一对应（'models' | 'logs' | 'usage' | 'workbuddy' | 'about'）。
+// 当前视图：与 SideBar 的 item.id 一一对应（'models' | 'providers' | 'logs' | 'usage' | 'workbuddy' | 'about'）。
 // 视图状态由根组件持有，侧栏只派发切换事件，避免两处各存一份选中态。
 // 初值来自 prefs（上次停留的视图）；非法或已删除的视图名会在读取时回落 'models'。
 const view = ref(loadView())
@@ -238,6 +239,11 @@ onUnmounted(() => {
       <!-- 非「模型与服务」的视图：各自填满主区并独立滚动，不改变上面两栏布局的任何约束 -->
       <LogsView v-if="view === 'logs'" />
       <UsageView v-if="view === 'usage'" :usage="state.usage" />
+      <!-- 平台视图：Key 管理与申请引导；保存/清除后自动热生效（refresh 重读），无需重启应用 -->
+      <ProvidersView
+        v-if="view === 'providers'"
+        :busy="!!busyAction"
+      />
       <!-- 该视图内的「导入」也走同一个 run()，反馈必须在本视图可见（只换位置，不复制状态） -->
       <FeedbackBar
         v-if="view === 'workbuddy' && banner"
