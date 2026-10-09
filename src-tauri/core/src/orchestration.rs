@@ -1192,7 +1192,9 @@ async fn chat_only_attempt(model: &Value) -> Result<(), BridgeError> {
         AbortSignal::timeout(Duration::from_secs(30)),
     ]);
     let context = RequestContext {
-        meta: SharedMeta::new(probe_meta()),
+        // chat-only 降级路径放开转写闸门：主探测（probe_single_model）仍带 probe:true
+        // 禁用转写，但 chat_only_attempt 作为兜底需要辅助模型修复响应才能通过。
+        meta: SharedMeta::new(json!({})),
         signal,
         activity: Activity::silent(),
     };
@@ -1934,11 +1936,10 @@ fn build_server(app: &App) -> (axum::Router, ServerControl) {
 }
 
 /// `POST /admin/probe`：JS 的 `probe(body.model)`（单模型手动探测，不自动导入）。
+/// 服务端已从请求体提取了 `model` 字段的值（字符串或 null），这里直接透传给 `start_probes`，
+/// 不再二次解包 —— 否则对字符串调 `get("model")` 会返回 None，退化为全量探测。
 fn start_probes_admin(model: Option<Value>) -> Value {
-    match model {
-        Some(value) => start_probes(value.get("model").cloned(), false, false),
-        None => start_probes(None, false, false),
-    }
+    start_probes(model, false, false)
 }
 
 async fn import_models(selected: Option<Value>) -> Result<Value, BackendError> {

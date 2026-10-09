@@ -12,6 +12,7 @@ const props = defineProps({
 })
 
 const selected = defineModel('selected', { type: Object, default: null })
+defineEmits(['reprobe'])
 
 // 行级 props 引用稳定：无结果的行共享同一个空对象（不随父级重渲染换引用），
 // ModelRow 只在自身数据真正变化时更新，不被 usage 等无关字段的状态推送波及。
@@ -61,7 +62,9 @@ function move(event, step) {
       :in-request="activeModels.has(model.id)"
       :available="available.includes(model.id)"
       :selected="selected?.id === model.id"
+      :probe-running="!!probe?.running"
       @toggle="selected = selected?.id === model.id ? null : model"
+      @reprobe="$emit('reprobe', $event)"
     />
     <!-- 空列表：模型还没扫出来。配 spinner 明确「正在进行」，避免被读成「就是没有模型」。 -->
     <p v-if="!models.length" class="empty" role="status">

@@ -66,6 +66,16 @@ async function run(name, value) {
   }
 }
 
+// 单模型重新检测：只向指定模型发一次探测请求，不重跑全量。
+// 与「检测全部」共用同一 probe 通道（后端 start_probes 按单模型过滤），
+// 所以进行中时按钮自动禁用，由后端返回 { started: false } 兜底。
+async function reprobeModel(modelId) {
+  const response = await run('probe', { model: modelId })
+  if (response.ok && response.result?.started === false) {
+    feedback.value = { text: response.result.message || '检测正在进行，请稍后重试', error: true }
+  }
+}
+
 // 检测进度：待检队列是壳推送的真实数据，已完成 = 当前模型总数 − 仍在待检的数量。
 // 只反映这一帧的快照，不做外推；拿不到总数或待检数时返回空串，宁可不显示也不猜数字。
 const probeProgress = computed(() => {
@@ -209,6 +219,7 @@ onUnmounted(() => {
           :available="state.availableModels || []"
           :probe="state.probe"
           :activity="state.activity"
+          @reprobe="reprobeModel"
         />
 
         <ModelDetails

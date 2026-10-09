@@ -4,7 +4,52 @@
 > 命名规则：`RELEASE-v{主版本}.md`；次版本迭代追加到文件顶部新分节。
 > 版本纪律以根目录 `AGENTS.md`「当前基准版本」章节为准，本文件不另立规则。
 > 整理规则：同类问题多次修复的条目合并为一条，统一记述于最终修复版本；被合并的早期版本保留编号与合并指向，不再重复正文。
-> 当前最新版本：**v1.0.4**。
+> 当前最新版本：**v1.0.5**。
+
+---
+
+## v1.0.5
+
+> **状态**:。五处落点已一致为 `1.0.5`（手动改写 `package.json` / `tauri.conf.json` / `Cargo.toml` / `package-lock.json` + `AGENTS.md` 两行），但**尚未构建任何安装包、尚未打标签**，且版本落点提交仍未执行——按铁律先提交、再在那一个提交上打 `v1.0.5`。
+> **日期**: 2026-10-09
+> **上一版本**: v1.0.4（五处落点已一致、尚未打标签）
+> **GitHub Release 正文**: [`RELEASE-NOTES-v1.0.5.md`](RELEASE-NOTES-v1.0.5.md)
+> **本版主题**: 探测回归修复 + 单模型重新检测——升级后全部模型不可用的根因修复，并新增面板单模型重新检测功能
+> **版本推进理由**: 与 v1.0.4 **不同类、不同根因**——v1.0.3 引入的 `probe_meta()` 让 `chat_only_attempt` 带上 `probe: true`，关闭了 `backend.rs` 两处转写闸门，导致升级后全部模型探测不可用；本版回退该标记恢复转写兜底。同时修复 `start_probes_admin` 二次解包 bug，并新增面板单模型重新检测按钮。**维护者明确要求推进版本号**，末位 +1。
+
+### 一、版本号落点（手动改写 + `npm run version:check` 待验）
+
+| 位置 | 值 | 说明 |
+|---|---|---|
+| 根 `package.json` → `version` | **1.0.5** | 版本单一来源 |
+| `src-tauri/tauri.conf.json` → `version` | **1.0.5** | 打包产物版本与更新清单 `version` 来源 |
+| `src-tauri/Cargo.toml` → `[package] version` | **1.0.5** | 壳工程同步落点（`src-tauri/Cargo.lock` 由 cargo 自动同步，须一并提交） |
+| `AGENTS.md`「当前基准版本」两行 | **1.0.5** | 文档侧同步落点 |
+| 面板 `__APP_VERSION__` | `v1.0.5` | `vite.config.js` 构建期注入（自带 `v` 前缀），非独立落点 |
+
+### 二、本版内容
+
+#### 1. 回退 `chat_only_attempt` 转写闸门（根因修复）
+
+- **根因**：v1.0.3 全量代码复审时，将 `chat_only_attempt` 的 meta 从 `json!({})` 改为 `probe_meta()`（`{ probe: true }`）。这关闭了 `backend.rs:1575`（第二次重试时的 `translate` 转写）和 `backend.rs:1619`（无 tool_calls 且 handoff miss 时的 `rescue` 转写）两处闸门。主探测失败后降级到 chat-only 路径，升级前靠辅助模型转写兜底通过，升级后转写被禁用 → 全部模型不可用。
+- **修复**：[orchestration.rs:1197](file:///Users/wbtrex/website/localServer/node/trexwb/git/wbBridge/src-tauri/core/src/orchestration.rs#L1197) 的 meta 回退为 `json!({})`，恢复转写闸门开放。主探测路径 `probe_single_model` 仍带 `probe: true` 不变。
+
+#### 2. 修复 `start_probes_admin` 二次解包 bug
+
+- **根因**：`POST /admin/probe` 服务端从请求体提取 `body.get("model")` 后传给 `start_probes_admin(model)`，但该函数又对字符串值调 `value.get("model")`，返回 `None` → 单模型探测请求退化为全量探测。
+- **修复**：[orchestration.rs:1939](file:///Users/wbtrex/website/localServer/node/trexwb/git/wbBridge/src-tauri/core/src/orchestration.rs#L1939) 直接透传 `start_probes(model, false, false)`。
+
+#### 3. 面板单模型重新检测按钮
+
+- `ModelRow.vue`：外层 `<button>` 改为 `<div role="option" tabindex="0">`（避免嵌套 button 无效 HTML），不可用模型行内新增「重新检测」按钮，仅在 `result.ok === false` 且无检测进行时显示。
+- `ModelList.vue`：透传 `probe-running` prop 和 `@reprobe` 事件。
+- `App.vue`：新增 `reprobeModel(modelId)` 函数，调用 `run('probe', { model: modelId })` → `POST /admin/probe { model: id }`。
+
+### 三、验证
+
+- ✅ `vite:build` 编译通过
+- ✅ `cargo build`（壳）编译通过
+- 🔴 **未验证**：单模型重新检测的端到端 GUI 效果、回退后真实模型探测通过率须实机点一遍
 
 ---
 

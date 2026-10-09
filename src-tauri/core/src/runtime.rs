@@ -808,6 +808,13 @@ pub fn isolated_environment(root: &str, proxy_env: &Env, password: &str, host_en
         "OPENCODE_CONFIG_CONTENT".to_string(),
         js_stringify(&isolated_config()),
     );
+    // Bun 运行时在向上游模型 API 和 models.opencode.ai 发 HTTPS 请求时，
+    // 若用户网络存在 TLS 拦截（公司代理/VPN/ZScaler 等），会因不信任拦截
+    // 证书而报 "self signed certificate"。Bun 不读取 macOS 系统钥匙串，
+    // 所以即使拦截证书已安装到系统钥匙串也无济于事。这里关闭 TLS 验证
+    // 让探测和对话能正常工作；wbBridge 本身的 HTTP API 在 127.0.0.1
+    // 上不受影响。
+    env.insert("NODE_TLS_REJECT_UNAUTHORIZED".to_string(), "0".to_string());
     env
 }
 

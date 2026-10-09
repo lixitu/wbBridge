@@ -10,8 +10,9 @@ const props = defineProps({
   inRequest: { type: Boolean, default: false },
   available: { type: Boolean, default: false },
   selected: { type: Boolean, default: false },
+  probeRunning: { type: Boolean, default: false },
 })
-defineEmits(['toggle'])
+defineEmits(['toggle', 'reprobe'])
 
 const LABELS = { timeout: '检测超时', quota: '额度不足', rate_limit: '请求受限', access: '访问受限' }
 
@@ -22,6 +23,8 @@ const statusLabel = computed(() => {
   return LABELS[props.result?.category] || (props.result?.ok === false ? '不可用' : '待检测')
 })
 const unavailable = computed(() => !props.waiting && !props.inRequest && !props.available && (props.result?.ok === false || !props.available))
+// 仅在模型不可用且当前无检测任务时显示重新检测按钮
+const canReprobe = computed(() => unavailable.value && !props.waiting && !props.probeRunning)
 
 const timing = computed(() => {
   const r = props.result
@@ -32,7 +35,7 @@ const timing = computed(() => {
 </script>
 
 <template>
-  <button class="model" :class="{ selected }" role="option" :aria-selected="String(selected)" @click="$emit('toggle')">
+  <div class="model" :class="{ selected }" role="option" :aria-selected="String(selected)" tabindex="0" @click="$emit('toggle')" @keydown.enter="$emit('toggle')" @keydown.space.prevent="$emit('toggle')">
     <span class="model-icon" aria-hidden="true">
       <span v-if="waiting" class="spinner" />
       <svg
@@ -56,8 +59,15 @@ const timing = computed(() => {
       <span v-if="model.reasoning" class="badge reasoning">推理</span>
       <span v-if="model.images" class="badge images">图片</span>
       <span class="badge" :class="{ unavailable: unavailable && !available, waiting: waiting || inRequest }">{{ statusLabel }}</span>
+      <button
+        v-if="canReprobe"
+        class="reprobe-btn"
+        :disabled="probeRunning"
+        title="重新检测此模型"
+        @click.stop="$emit('reprobe', model.id)"
+      >重新检测</button>
     </span>
-  </button>
+  </div>
 </template>
 
 <style scoped>
@@ -74,6 +84,7 @@ const timing = computed(() => {
   min-height: 69px;
   width: 100%;
   white-space: normal;
+  cursor: pointer;
   transition: background var(--dur-1) var(--ease-standard),
               border-color var(--dur-1) var(--ease-standard),
               box-shadow var(--dur-2) var(--ease-standard);
@@ -102,6 +113,7 @@ const timing = computed(() => {
   box-shadow: var(--shadow-s);
 }
 .model.selected::before { height: 26px; opacity: 1; }
+.model:focus-visible { outline: 2px solid var(--green); outline-offset: -2px; }
 .model-icon { display: flex; align-items: center; justify-content: center; width: 26px; flex-shrink: 0; color: var(--green); }
 .model-icon svg { width: 22px; height: 22px; }
 .model-icon .spinner { margin-right: 0; }
@@ -125,4 +137,19 @@ const timing = computed(() => {
 /* 进行中的徽章轻微呼吸，与行内 spinner 一起表达「尚未结束」；减弱动效时由全局规则压成静态 */
 .waiting { color: var(--muted-strong); background: var(--panel); animation: badge-pulse 1.6s ease-in-out infinite; }
 @keyframes badge-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .62; } }
+/* 重新检测按钮：仅在不可用模型上出现，pill 形态与徽章一致但可点击 */
+.reprobe-btn {
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  padding: 4px 9px;
+  border-radius: 999px;
+  border: none;
+  background: var(--orange-bg);
+  color: var(--badge-unavailable-fg);
+  cursor: pointer;
+  transition: opacity var(--dur-1) var(--ease-standard);
+}
+.reprobe-btn:hover:not(:disabled) { opacity: 0.75; }
+.reprobe-btn:disabled { cursor: not-allowed; opacity: 0.4; }
 </style>
