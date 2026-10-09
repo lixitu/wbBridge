@@ -922,9 +922,6 @@ fn start_probes(model_id: Option<Value>, reveal: bool, auto_import: bool) -> Val
     if app.stopping.load(Ordering::Relaxed) || lock(&app.refresh).is_some() {
         return json!({ "error": { "message": "请等待模型读取完成", "type": "invalid_request_error" } });
     }
-    if app.probing.load(Ordering::Relaxed) {
-        return json!({ "started": false, "message": "检测正在进行" });
-    }
     let models = app.models();
     let selected: Vec<Value> = match model_id.as_ref().and_then(Value::as_str) {
         Some(id) => models
@@ -936,6 +933,14 @@ fn start_probes(model_id: Option<Value>, reveal: bool, auto_import: bool) -> Val
     };
     if selected.is_empty() {
         return json!({ "error": { "message": "模型不在当前目录中", "type": "invalid_request_error" } });
+    }
+    // 单模型探测不与批量探测互斥：直接 spawn 独立 task，不走 probing 全局锁
+    if model_id.is_some() {
+        let model = selected.into_iter().next().unwrap();
+        tokio::spawn(async move {
+            run_single_probe(model).await;
+        });
+        return json!({ "started": true });
     }
     // 真正的占用声明必须原子：两个并发 `/admin/probe` 都能通过上面的 `load` 检查，
     // 先后 `store(true)` 就会各起一批探测，同一模型被并发探测、结果互相覆盖。
@@ -1100,6 +1105,114 @@ async fn run_probe_batch(
     }
     app.probing.store(false, Ordering::Relaxed);
     update_and_persist(json!({ "probe": { "running": false } }));
+}
+
+/// 单模型重新检测：不经过 probing 全局锁，不修改批量探测的 pending 状态，
+/// 只更新该模型的 modelResults。与批量探测并发运行时，两者各自写自己的结果键，
+/// 不会互相覆盖（`update_with_usage` 的锁内逐键合并）。
+async fn run_single_probe(model: Value) {
+    let app = global_app();
+    if app.stopping.load(Ordering::Relaxed) {
+        return;
+    }
+    let model_id = model
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let all_models = app.models();
+
+    let started = Instant::now();
+    let meta = SharedMeta::new(probe_meta());
+    let (deadline, signal) = AbortSignal::channel();
+    let timer = tokio::spawn({
+        let deadline = deadline.clone();
+        async move {
+            tokio::time::sleep(Duration::from_millis(PROBE_TIMEOUT_MS)).await;
+            deadline.abort();
+        }
+    });
+
+    let outcome = probe_single_model(&model, &all_models, &meta, signal).await;
+    timer.abort();
+    let duration_ms = started.elapsed().as_millis() as i64;
+
+    let error = match outcome {
+        ProbeOutcome::Passed => {
+            record(&model_id, true, None, None, None, duration_ms, "probe", None, &meta.snapshot()).await;
+            sync_published(None);
+            return;
+        }
+        ProbeOutcome::Failed(cause) => cause,
+    };
+    let timed = deadline.signal().is_aborted() && !app.probe_abort.signal().is_aborted();
+    let error = probe::probe_failure(error, timed);
+    if app.stopping.load(Ordering::Relaxed) {
+        return;
+    }
+    if error.code == "no_action" {
+        record(
+            &model_id,
+            true,
+            Some("探测时只返回文本、未产生动作；已按仅对话发布"),
+            None,
+            Some("chat_only"),
+            duration_ms,
+            "probe",
+            Some(true),
+            &meta.snapshot(),
+        )
+        .await;
+    } else if probe::format_unsupported(&error) {
+        let degrade = chat_only_attempt(&model).await;
+        match degrade {
+            Ok(()) => {
+                record(
+                    &model_id,
+                    true,
+                    Some(&format!("工具转换不兼容：{}", error.message)),
+                    None,
+                    Some("chat_only"),
+                    duration_ms,
+                    "probe",
+                    Some(true),
+                    &meta.snapshot(),
+                )
+                .await;
+                sync_published(None);
+            }
+            Err(chat_error) => {
+                if !app.stopping.load(Ordering::Relaxed) {
+                    record(
+                        &model_id,
+                        false,
+                        Some(&chat_error.message),
+                        Some(status_value(i64::from(chat_error.status))),
+                        Some(&chat_error.code),
+                        duration_ms,
+                        "probe",
+                        None,
+                        &meta.snapshot(),
+                    )
+                    .await;
+                }
+            }
+        }
+    } else {
+        let message = if timed { "Model probe timed out".to_string() } else { error.message.clone() };
+        record(
+            &model_id,
+            false,
+            Some(&message),
+            Some(status_value(i64::from(error.status))),
+            Some(&error.code),
+            duration_ms,
+            "probe",
+            None,
+            &meta.snapshot(),
+        )
+        .await;
+    }
 }
 
 enum ProbeOutcome {

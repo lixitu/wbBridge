@@ -23,8 +23,8 @@ const statusLabel = computed(() => {
   return LABELS[props.result?.category] || (props.result?.ok === false ? '不可用' : '待检测')
 })
 const unavailable = computed(() => !props.waiting && !props.inRequest && !props.available && (props.result?.ok === false || !props.available))
-// 仅在模型不可用且当前无检测任务时显示重新检测按钮
-const canReprobe = computed(() => unavailable.value && !props.waiting && !props.probeRunning)
+// 不可用模型始终显示重新检测按钮；批量探测进行中时该按钮 disabled，但单模型不在检测队列时仍可点击
+const canReprobe = computed(() => unavailable.value)
 
 const timing = computed(() => {
   const r = props.result
@@ -62,7 +62,7 @@ const timing = computed(() => {
       <button
         v-if="canReprobe"
         class="reprobe-btn"
-        :disabled="probeRunning"
+        :disabled="waiting"
         title="重新检测此模型"
         @click.stop="$emit('reprobe', model.id)"
       >重新检测</button>
