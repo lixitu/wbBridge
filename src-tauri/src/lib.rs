@@ -305,7 +305,7 @@ fn watch_status(app: AppHandle) {
             // 让面板显示「就绪」却没有核心在跑、连重试入口都不见；改为持续播报失败原因，
             // 直到晚挂载的面板监听器收到（setup 里那一次 emit 必然早于监听注册）。
             if let Some((message, by_exit)) = service_down(&state) {
-                if announced.as_deref() != Some(message.as_str()) || ticks % 8 == 0 {
+                if announced.as_deref() != Some(message.as_str()) || ticks.is_multiple_of(8) {
                     announced = Some(message.clone());
                     if let Some(tray) = state.tray.lock().unwrap().as_ref() {
                         let _ = tray.set_tooltip(Some(if by_exit {

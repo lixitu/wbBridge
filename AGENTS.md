@@ -205,7 +205,7 @@ wbBridge/
 │       │   ├── providers.rs      ← 平台注册表（四家，唯一真相）+ providers.json 凭据通道（0600、只回是否已配置）
 │       │   ├── repair.rs         ← 信封/工具格式修复与辅助模型转写（含 CLIENT_CONVENTIONS）
 │       │   ├── handoff.rs        ← 原生工具 handoff：构建客户端动作、拒绝反馈、动作校验
-│       │   ├── sync.rs           ← WorkBuddy models.json 原子写 + 增量合并（OWNER 标记、锁、.bak）
+│       │   ├── sync.rs           ← WorkBuddy models.json 原子写 + 增量合并（OWNER 标记、锁；**不写备份**，只清扫存量同族 `.bak`）
 │       │   ├── workbuddy_config.rs ← models.json 定位与校验（不猜测、不创建文件）
 │   ├── codebuddy_config.rs ← CodeBuddy models.json 定位（对照 workbuddy_config.rs）
 │   ├── targets.rs ← 写入目标：检测、分发、聚合
@@ -228,7 +228,7 @@ wbBridge/
 ```
 
 > **为什么核心是 `src-tauri/core/` 而不是并进壳的单个 crate**：核心仍是独立 crate（`wbbridge-core`，
-> 且是**独立 workspace**），壳通过 `path = "core"` 依赖把它静态编进同一进程。这样核心的 238 个测试
+> 且是**独立 workspace**），壳通过 `path = "core"` 依赖把它静态编进同一进程。这样核心的 278 个测试
 > 不必编译 tauri/webkit 依赖图（CI 的 Linux 测试任务因此无需装 libwebkit2gtk），`wbbridge-core`
 > 也能单独构建出可执行文件做进程级冒烟；同时全部 Rust 代码物理位置都在 `src-tauri/` 下。
 > 合并成单 crate 会把这三点全部丢掉，故不采用。
@@ -326,12 +326,12 @@ start_backend
 | `protocol.rs` | `BridgeError`（`with`/`status`/`code`）、`prepare`、`PreparedRequest`、`decode`、`completion`/`completion_with`、`send_sse`、`random_hex_id`/`random_uuid`、`parse_image_data_url` | OpenAI 兼容入参校验、信封解码、响应组装、SSE |
 | `backend.rs` | `Backend`（`complete`、`set_translator`）、`native_permissions()`、`free_models`（= `free_models_in(providers, OPENCODE_NAMESPACE)` 的包装）、`free_models_in(providers, namespace)`、`model_target(model)`、`shrink_permission`、`to_bridge_error` | OpenCode HTTP 客户端、事件流、原生审批拦截、免费模型发现（命名空间已参数化） |
 | `runtime.rs` | `find_runtime`、`isolated_config()`、`isolated_environment`、`allowed_environment`（`ENV_ALLOW` 白名单过滤，**每一次 spawn 都必须先过它**，含 `--version` 这类一次性调用）、`ENV_ALLOW`、`start_backend`/`Started`、`stop_backend`、`runtime_candidates`、`compare_versions`、`generate_password`、`RuntimeOptions`、`FetchFn/LatestFn/…` | 运行时定位/下载/校验/启动与隔离配置 |
-| `probe.rs` | `PROBE_TIMEOUT_MS`、`probe_tools`、`probe_body`、`judge_probe`、`format_unsupported`、`tool_call_unsupported`（上游明说「该模型不支持函数/工具调用」→ 归入格式类失败、走 chatOnly 降级）、`retryable_probe_codes`、`probe_model`、`probe_failure`（上游英文原文的唯一文案改写漏斗：地区拒绝 + 模型已下线）、`region_unavailable_message`（上游按出口 IP 的地区拒绝 → 可读中文文案，code/status 原样保留）、`deprecated_model_message`（提供方撤架 → 可读中文文案，同法只改文案）、`should_retry` | 模型探测协议与判定 |
-| `providers.rs` | `PROVIDERS`（**四家平台的复核过集合**：`modelscope` / `siliconflow-cn` / `tencent-tokenhub` / `zhipuai`）、`Provider{id,label,npm,base_url}`、`PROVIDERS_FILE`（`providers.json`）、`MAX_KEY_CHARS`、`find`/`check_key`/`read_keys`/`status`/`set_key`/`clear_key` | 多平台接入的注册表（唯一真相，随版本发布、不做远程拉取）与 `providers.json` 凭据通道：读盘容错（坏文件＝没配过）、写盘走 `sync::atomic_write`（临时文件 `0600` 独占创建再 rename）、`status()` 只回 `id/label/configured` |
+| `probe.rs` | `PROBE_TIMEOUT_MS`、`probe_tools`、`probe_body`、`judge_probe`、`format_unsupported`、`tool_call_unsupported`（上游明说「该模型不支持函数/工具调用」→ 归入格式类失败、走 chatOnly 降级）、`chat_only_fallback_confirms_chat_only`（兜底的纯对话请求也以同理由被拒 → 确认仅对话，不得整个丢弃）、`retryable_probe_codes`、`probe_model`、`probe_failure`（**上游英文原文的唯一文案改写漏斗**：地区拒绝 → 撤架 → 未承接服务 id → 未知服务 id → 模型已下线，`code`/`status` 逐字保留、不触发重试）、`region_unavailable_message`（上游按出口 IP 的地区拒绝 → 可读中文文案）、`deprecated_model_message`（提供方撤架 → 可读中文文案）、`unserved_model_message`（ModelScope 网关 `has no provider supported` → 说明该 id 未被在线推理承接）、`unknown_service_id_message`（同一句上游拒绝按**措辞**分流两种说明：「不在在线清单里」与「这把 Key 没有该模型的访问权限」）、`should_retry` | 模型探测协议与判定 |
+| `providers.rs` | `PROVIDERS`（**四家平台的复核过集合**：`modelscope` / `siliconflow-cn` / `tencent-tokenhub` / `zhipuai`）、`Provider{id,label,npm,base_url,models}`、`DeclaredModel{id,name,context,output,tool_call}`、`PROVIDERS_FILE`（`providers.json`）、`MAX_KEY_CHARS`、`find`/`check_key`/`read_keys`/`status`/`set_key`/`clear_key` | 多平台接入的注册表（唯一真相，随版本发布、不做远程拉取）与 `providers.json` 凭据通道：读盘容错（坏文件＝没配过）、写盘走 `sync::atomic_write`（临时文件 `0600` 独占创建再 rename）、`status()` 只回 `id/label/configured`。`Provider.models` 是**该平台的权威模型清单**——非空即替代 models.dev 的 catalog 声明，同时约束注入段（`runtime::providers_section_for`）与发现阶段的放行集合（`backend::free_models_in`）；空切片＝沿用 catalog + 锚点占位。目前只有 `modelscope` 带清单（9 条，2026-10-10 实测自其公开 `/v1/models` 并按真实 Key 剔除打不通的条目），其余三家为空 |
 | `repair.rs` | `REPAIR_SYSTEM`、`client_conventions`、`raw_material`、`tool_catalog`、`repair_body`、`extract_json`、`translator_request`、`resend_prompt`、`RepairDeps`、`repair` | 格式修复与辅助模型转写 |
 | `handoff.rs` | `build_handoff`、`handoff_input`、`reject_feedback`、`validate_action`、`has_category` | 原生工具 handoff 协议 |
-| `sync.rs` | `OWNER`（`'buddy-bridge-v1'`）、`LOCK_STALE_MS`、`atomic_write`、`merge_models`、`sync_models`/`sync_models_with`、`SyncOptions`、`SyncOutcome`、`SyncIo`、`SyncError`、`prune_old_backups`（写出备份后只留同族最新那一份）、`prune_to_latest_backup`（内容无变化的同步也收敛遗留备份，取同族**数值最大**的时间戳为保留项，一份都没有就什么都不做） | WorkBuddy 配置写入与增量合并 |
-| `workbuddy_config.rs` | `validate_models_file`、`resolve_models_file`、`resolve_models_path`、`ConfigError`、`INVALID_PATH_MESSAGE` | models.json 定位与校验 |
+| `sync.rs` | `OWNER`（`'buddy-bridge-v1'`）、`LOCK_STALE_MS`、`atomic_write`、`merge_models`、`sync_models`/`sync_models_with`、`SyncOptions`、`SyncOutcome`、`SyncIo`、`SyncError`；私有的 `sweep_old_backups`/`backup_prefix`/`backup_of`（**写路径不再产生任何备份**，这三个只负责清扫旧版攒下的同族 `<file>.buddy-bridge-<毫秒>.bak` 存量，两条出口都调用） | WorkBuddy 配置写入与增量合并 |
+| `workbuddy_config.rs` | `validate_models_file`、`ensure_models_file`、`EMPTY_MODELS_FILE_TEXT`（`"[]\n"`）、`resolve_models_file`、`resolve_models_path`、`ConfigError`、`INVALID_PATH_MESSAGE`、`MODELS_FILE_NAME`/`DEFAULT_DATA_FOLDER` | models.json 定位与校验：插件目录已在而配置文件缺失时补建空配置（文件已存在绝不改写、父目录不存在绝不建目录、显式位置失效一律不补建） |
 | `codebuddy_config.rs` | `DEFAULT_DATA_FOLDER`（`.codebuddy`）、`MISSING_MESSAGE`、`resolve_models_file` | CodeBuddy `models.json` 定位的对照实现（优先级与空串假值语义与 WorkBuddy 版逐行对照、复用同一校验器、失效绝不静默回退） |
 | `targets.rs` | `Target{WorkBuddy,CodeBuddy}`、`Target::ALL`、`resolve_target_models_file`、`detect_targets`、`validate_selected_models_file`（导入链对称包装，保留原始错误）、`missing_reason`、`aggregate_sync` | 模型发布写入目标的唯一真相：「已安装」只以定位成功判定；`aggregate_sync` 产出 `sync.targets` 形状（count 为各成功目标之和、顶层 error 仅在全部定位目标失败时出现） |
 | `system_proxy.rs` | `parse_system_proxy`、`system_proxy_environment`、`environment_from_output`、`parse_windows_proxy`、`js_number`、`ProxyError` | 系统代理发现与子进程 env 映射 |
@@ -534,9 +534,9 @@ start_backend
 
 | 项 | 值 | 来源 |
 |---|---|---|
-| 版本单一来源 | **1.1.9** | 根 `package.json` 的 `version` |
-| 壳工程同步落点 | **1.1.9** | `src-tauri/tauri.conf.json` 与 `src-tauri/Cargo.toml` 的 `[package] version` |
-| 核心 crate 版本 | **1.1.9** | `src-tauri/core/Cargo.toml`（`wbbridge-core --version` 输出；自 2026-10-10 起随产品版本同步，`version:set`/`version:check` 均覆盖） |
+| 版本单一来源 | **1.1.10** | 根 `package.json` 的 `version` |
+| 壳工程同步落点 | **1.1.10** | `src-tauri/tauri.conf.json` 与 `src-tauri/Cargo.toml` 的 `[package] version` |
+| 核心 crate 版本 | **1.1.10** | `src-tauri/core/Cargo.toml`（`wbbridge-core --version` 输出；自 2026-10-10 起随产品版本同步，`version:set`/`version:check` 均覆盖） |
 | 状态内置版本 | `0.2.0` | `src-tauri/core/src/orchestration.rs` 写入 `status.json` 的 `version`（沿自上游参考实现，界面上可见） |
 | 上游调研基线 | `0.2.5` | `docs/research/upstream-architecture.md` |
 | 测试基线 | **271 通过 / 0 失败**（lib 249 + js_parity 11 + red_lines 11，约 0.3s）；壳 `cargo test --lib` 9 通过；JS 侧 `test:prefs` 8 + `test:ops` 11 + `test:manifest` 9 + `test:updater-key` 13 通过（合计 41） | `src-tauri/core/` 下 `cargo test`、`src-tauri/` 下 `cargo test --lib`、仓库根四个 `npm run test:*` |

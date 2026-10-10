@@ -208,7 +208,8 @@ pub fn unserved_model_message(message: &str) -> Option<String> {
     ))
 }
 
-/// 判定并改写上文的「提供方没有这个服务 id」。命中返回可直接展示的新文案，否则 `None`。
+/// 判定并改写上文的「提供方没有这个服务 id / 这个 Key 没被开通」。命中返回可直接展示的新文案，
+/// 否则 `None`。
 ///
 /// 腾讯混元 TokenHub 对**鉴权已通过**的请求答复
 /// `The model or service ID <id> does not exist. … Service IDs are available in the Online
@@ -216,6 +217,11 @@ pub fn unserved_model_message(message: &str) -> Option<String> {
 /// 发出去的那个，说明 Key 与链路都通，只是它的在线推理列表里没有这个条目。与 ModelScope 的
 /// `has no provider supported` 是同一类事实（目录声明宽于网关实况）的**不同措辞形态**，所以另开
 /// 一个判定而不是把上一个的正则放宽——后者会把两种不同原文混成一句话。
+///
+/// 同一个句式还有第二种形态：ModelScope 对 `PaddlePaddle/ERNIE-4.5-*` 答复
+/// `The model does not exist or you do not have access to it.`（HTTP 401）—— 条目**在**它的
+/// `/v1/models` 清单里，只是这把 Key 没被开通。锅与下一步都不同（该去申请开通，不是换模型），
+/// 所以按原文里是否有「没有访问权」再分一支，不能把两种都说成「清单里没这个条目」。
 ///
 /// 判定收紧在「`does not exist` / `not exist(ed)`」与「model / service (id) / endpoint 类主语」
 /// 同时在场（间隔 ≤60 字符）：`The file does not exist`、鉴权失败、限流、上下文超长、函数调用
@@ -228,9 +234,24 @@ pub fn unknown_service_id_message(message: &str) -> Option<String> {
     if !re.is_match(message) {
         return None;
     }
-    Some(format!(
-        "提供方没有把这个服务 id 挂在在线推理清单里（原文：{message}）。请求已经带上你的 Key 打到了对方、鉴权也通过，是它的服务列表里没有这个条目：它不会被发布，也不会重复消耗探测额度。请以对方控制台的在线推理服务列表为准，改用其中在册的模型。"
-    ))
+    // 「没有访问权」的措辞形态（ModelScope 用 `or you do not have access to it`）。
+    let blocked = regex::Regex::new(
+        r"(?i)(?:do\s+not|don'?t|cannot)\s+have\s+access|no\s+access\s+permission|access\s+denied",
+    )
+    .ok()?;
+    Some(if blocked.is_match(message) {
+        format!(
+            "你的这把 Key 没有该模型的访问权限（原文：{message}）。这个条目确实在对方的模型清单里，\
+             但要先在对方控制台为该模型开通授权才能调用：它不会被发布，也不会重复消耗探测额度。\
+             请到对方的模型页确认开通状态，或改用已开通的模型。"
+        )
+    } else {
+        format!(
+            "提供方没有把这个服务 id 挂在在线推理清单里（原文：{message}）。请求已经带上你的 Key \
+             打到了对方、鉴权也通过，是它的服务列表里没有这个条目：它不会被发布，也不会重复消耗\
+             探测额度。请以对方控制台的在线推理服务列表为准，改用其中在册的模型。"
+        )
+    })
 }
 
 /// 判定并改写上文的「提供方已下线该模型」。命中返回可直接展示的新文案，否则 `None`。
@@ -639,6 +660,53 @@ mod tests {
         assert_eq!(rewritten.code, original.code, "错误码不得被改写");
         assert_eq!(rewritten.status, original.status, "状态码不得被改写");
         assert!(!should_retry(&rewritten.code), "不得因为改写而重复烧探测额度");
+    }
+
+    /// 同一句式里的第二种事实：条目在对方清单中、只是这把 Key 没被开通（ModelScope 对
+    /// `PaddlePaddle/ERNIE-4.5-*` 给 HTTP 401 + `or you do not have access to it`）。
+    /// 不得说成「服务列表里没有这个条目」——那会把用户指向「换模型」，而正确下一步是「去开通」。
+    #[test]
+    fn a_model_without_access_is_reported_as_missing_access_not_as_an_unknown_service_id() {
+        let original = BridgeError::with(
+            "The model does not exist or you do not have access to it.",
+            401,
+            "model_error",
+        );
+        let rewritten = probe_failure(original.clone(), false);
+        assert!(
+            rewritten.message.contains("没有该模型的访问权限"),
+            "{}",
+            rewritten.message
+        );
+        assert!(
+            !rewritten.message.contains("服务列表里没有这个条目"),
+            "无访问权不得被说成条目不存在：{}",
+            rewritten.message
+        );
+        assert!(
+            rewritten.message.contains(original.message.as_str()),
+            "上游原文必须留着，否则无法对账"
+        );
+        assert_eq!(rewritten.code, original.code, "错误码不得被改写");
+        assert_eq!(rewritten.status, original.status, "状态码不得被改写");
+        assert!(!should_retry(&rewritten.code), "不得因为改写而重复烧探测额度");
+
+        // 判定本身的措辞变体都要命中（且不依赖 401 这个状态码）。
+        for message in [
+            "The model does not exist or you do not have access to it.",
+            "The model doesn't have access, and it does not exist for this account.",
+            "Access denied: this model does not exist in your workspace.",
+        ] {
+            assert!(
+                unknown_service_id_message(message).is_some(),
+                "应判为「条目不在册 / 无访问权」这一类：{message}"
+            );
+        }
+        // 「服务不可用」不是「条目不存在」，也不是「没权限」，不得被这两个判定吸收。
+        assert!(
+            unknown_service_id_message("The endpoint is unavailable, please retry later.").is_none(),
+            "不可用（可能是临时故障）不得被说成访问权限问题"
+        );
     }
 
     /// 其余「不存在」类与全部别的失败形态都不得被说成「服务 id 不在册」；尤其 ModelScope 那句

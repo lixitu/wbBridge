@@ -31,10 +31,12 @@ WB Bridge 是一个**跨平台托盘应用**（Tauri 2 桌面壳 + 同进程内�
 
 | 项 | 状态 |
 |---|---|
-| 核心测试（`cargo test`，222 通过 / 0 失败） | 已执行并通过 |
-| 核心独立进程冒烟（真实下载运行时 → 隔离启动 → 发现 8 个免费模型 → 探测 → 干净关停） | 已在一次性数据目录实测通过 |
+| 核心测试（`cargo test`，**278 通过 / 0 失败** = lib 256 + `js_parity` 11 + `red_lines` 11） | 已执行并通过（2026-10-10 实测） |
+| 面板与脚本测试（**四组** `node --test`，合计 **41 通过 / 0 失败** = prefs 8 + ops 11 + manifest 9 + updater-key 13） | 已执行并通过；`npx eslint .` 退出 0、`npm run vite:build` 通过 |
+| 核心独立进程冒烟（真实下载运行时 → 隔离启动 → 刷新官方 OpenCode 免费目录（当日 8 个）→ 探测 → 干净关停） | 已在一次性数据目录实测通过。⚠ 该数字是**接入多平台之前**单日实测值；现在的发现口径是「官方 OpenCode 免费目录 + 已配 Key 的平台聚合发现」，条数随上游目录与平台清单变化，**这一形态没有重跑过独立进程冒烟** |
 | `cargo clippy`（核心 `--all-targets` / 壳 `--no-deps`） | 0 warning |
-| 产品版本 | **1.1.2**（唯一来源：根 `package.json`；`npm run version:check` 5 处落点一致；2026-10-09 由误推进的 1.3.4 回退而来，1.2.x~1.3.x 从未构建发布） |
+| 产品版本 | **1.1.10**（唯一来源：根 `package.json`；`npm run version:check` **7 处落点**一致——`package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`src-tauri/core/Cargo.toml`、`AGENTS.md` 三行；2026-10-09 由误推进的 1.3.4 回退而来，1.2.x~1.3.x 从未构建发布） |
+| 发布通道现状 | 远端只有 `v1.0.0 / v1.0.1 / v1.0.2 / v1.0.3 / v1.0.5 / v1.1.0` 六个标签（**没有 v1.0.4 标签**，也没有任何 ≥1.1.1 的标签），故**最新已发布版本是 v1.1.0**，1.1.1~1.1.10 的全部改动**尚未发布**（未构建、未打标签）；本机 `gh` CLI 未安装，该结论取自既有记录而非本轮联网查证 |
 | 实际启动 GUI 并操作托盘与面板 | **未实测**（仅编译、独立核心冒烟、面板在浏览器引擎内经 CDP 实测） |
 | 迁移后产出安装包 | 本机只有 **macOS aarch64** 产出过，其余五平台**已由 CI 产出并随 Release `v1.0.2` 发布**（2026-10-03）。本机上按 `npm run build` 的三环节跑通：updater 包 `WB Bridge.app.tar.gz`（3,596,811 B）+ 配对 `.sig`（428 B，签名者 key ID = 配置 pubkey 那条 `2B11F78BEA8A43F`），`.dmg` 由 `npm run make:dmg`（hdiutil）产出 `WB Bridge_1.0.2_aarch64.dmg`（约 3.9 MB，只读挂载核对 + `codesign --verify --deep --strict` 通过，**未运行 `.app`、未公证**）；六平台产物名与签名形态见[版本与发布](版本与发布) |
 | `.github/workflows/release.yml` 在 CI 跑通 | ✅ **2026-10-03 已跑通完整一轮**：tag `v1.0.2`（head `0e4a535`）触发的 run `37092915120` **8/8 作业全绿**，Release `v1.0.2` 已 Publish、**23 个资产**（六平台安装包 + 各自 `.sig` + `latest.json`）；同日更早的一轮止步于 updater 签名步骤（私钥变量取到空值），随后签名变量改走仓库级 **Variables**，构建改走 `npm run tauri:build`（签名注入包装器）+ `npm run make:dmg`，**不再用 `tauri-apps/tauri-action`**，Release 由 `softprops/action-gh-release` 以现读配置的 `tag_name: v<版本>` 创建（CI 不设私钥前置校验步骤）。🔴 该轮 `latest.json` 的六条 `url` 因 GitHub 把资产名空格规范化成 `.` 而**全部 404**，脚本与 CI 已修，**线上那份仍是坏的**（重传属共享状态、由维护者操作）；**一次真实升级闭环仍未验证** |

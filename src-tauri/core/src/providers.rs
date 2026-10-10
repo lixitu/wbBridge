@@ -92,31 +92,19 @@ pub const PROVIDERS: [Provider; 4] = [
         // CompassJudger 评审、AntAngelMed 医疗）、无分类的 early-access/EA-29B-A4B 全部排除。
         // 同族的 DeepSeek-V4-Pro-0813 未收录：与 V4-Pro 是同一能力的两个快照，多收一个就多烧一份
         // 探测额度（每模型 60s 预算），面板也不需要两个入口。
+        //
+        // 🔴 同日**真实 Key 实测**后再削掉 4 条「在册但打不通」的（面板上它们只是常驻的红色行，
+        // 除了烧额度没有任何用处，所以直接从清单里去掉，而不是留着让用户看）：
+        // `PaddlePaddle/ERNIE-4.5-{0.3B,21B-A3B,300B-A47B}-PT` → HTTP 401
+        // `The model does not exist or you do not have access to it.`（条目在 `/v1/models` 里，
+        // 但这把 Key 没被开通授权，需要先在对方控制台申请）；
+        // `meituan-longcat/LongCat-Flash-Lite` → HTTP 400 `Unsupported model (model=LongCat-Flash-Chat)`
+        // （网关把它映射到一个自己也不承接的 Chat 变体）。
+        // 若日后对方给这些条目开了免费额度，把它们加回这张表即可（随版本发布，不做远程拉取）。
         models: &[
             DeclaredModel {
                 id: "MiniMax/MiniMax-M1-80k",
                 name: "MiniMax M1 80k",
-                context: 65_536,
-                output: 8_192,
-                tool_call: true,
-            },
-            DeclaredModel {
-                id: "PaddlePaddle/ERNIE-4.5-0.3B-PT",
-                name: "ERNIE 4.5 0.3B",
-                context: 65_536,
-                output: 8_192,
-                tool_call: true,
-            },
-            DeclaredModel {
-                id: "PaddlePaddle/ERNIE-4.5-21B-A3B-PT",
-                name: "ERNIE 4.5 21B A3B",
-                context: 65_536,
-                output: 8_192,
-                tool_call: true,
-            },
-            DeclaredModel {
-                id: "PaddlePaddle/ERNIE-4.5-300B-A47B-PT",
-                name: "ERNIE 4.5 300B A47B",
                 context: 65_536,
                 output: 8_192,
                 tool_call: true,
@@ -145,13 +133,6 @@ pub const PROVIDERS: [Provider; 4] = [
             DeclaredModel {
                 id: "deepseek-ai/DeepSeek-V4-Pro",
                 name: "DeepSeek V4 Pro",
-                context: 131_072,
-                output: 16_384,
-                tool_call: true,
-            },
-            DeclaredModel {
-                id: "meituan-longcat/LongCat-Flash-Lite",
-                name: "LongCat Flash Lite",
                 context: 131_072,
                 output: 16_384,
                 tool_call: true,

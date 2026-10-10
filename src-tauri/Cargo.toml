@@ -1,6 +1,6 @@
 [package]
 name = "wbbridge"
-version = "1.1.9"
+version = "1.1.10"
 description = "WB Bridge — 让 WorkBuddy 使用 OpenCode 免费模型"
 authors = ["WB Bridge"]
 edition = "2021"
