@@ -1,10 +1,11 @@
 [package]
 name = "wbbridge"
-version = "1.1.2"
+version = "1.1.9"
 description = "WB Bridge — 让 WorkBuddy 使用 OpenCode 免费模型"
 authors = ["WB Bridge"]
 edition = "2021"
-rust-version = "1.77"
+# 下限由锁定依赖图决定：tauri 2.12 / tray-icon / 各官方插件都声明 1.90（与核心 crate 保持一致）
+rust-version = "1.90"
 
 [lib]
 name = "wbbridge_lib"
@@ -28,6 +29,15 @@ ureq = { version = "2", features = ["json"] }
 wbbridge-core = { path = "core" }
 # 核心需要独立的专用运行时（不能嵌进 Tauri 自己的异步上下文里 block_on）。
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+# 磁盘占用：开发树的绝大多数是第三方依赖的 split-debuginfo（`*.rcgu.o`，本机实测占 deps 的
+# 39%~89%）。依赖内部不需要断点，自己的代码保留完整调试信息。
+[profile.dev.package."*"]
+debug = false
+# 核心是 path 依赖、不是本 workspace 成员，会被上面的 `*` 命中；显式保留，否则 `tauri:dev`
+# 里调试编排/探测链路时只剩无变量的帧。它自己的 workspace 不受这条影响。
+[profile.dev.package.wbbridge-core]
+debug = true
 
 [profile.release]
 codegen-units = 1

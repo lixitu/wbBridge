@@ -1175,7 +1175,7 @@ async fn run_probe_batch(
                     record(
                         &model_id,
                         true,
-                        Some(&format!("工具转换不兼容：{}", error.message)),
+                        Some("模型不支持函数调用，已按仅对话发布"),
                         None,
                         Some("chat_only"),
                         duration_ms,
@@ -1186,7 +1186,24 @@ async fn run_probe_batch(
                     .await;
                 }
                 Err(chat_error) => {
-                    if !app.stopping.load(Ordering::Relaxed) {
+                    // 兜底 chat-only 请求也被网关以「不支持函数调用」拒绝：主探测与兜底指向同一结论，
+                    // 说明该模型本就只服务于对话通道。仍按仅对话发布，而不是当成失败。
+                    if probe::chat_only_fallback_confirms_chat_only(&chat_error) {
+                        if !app.stopping.load(Ordering::Relaxed) {
+                            record(
+                                &model_id,
+                                true,
+                                Some("模型不支持函数调用，已按仅对话发布（chat-only 兜底同样被网关拒绝）"),
+                                None,
+                                Some("chat_only"),
+                                duration_ms,
+                                "probe",
+                                Some(true),
+                                &meta.snapshot(),
+                            )
+                            .await;
+                        }
+                    } else if !app.stopping.load(Ordering::Relaxed) {
                         record(
                             &model_id,
                             false,
@@ -1290,7 +1307,7 @@ async fn run_single_probe(model: Value) {
                 record(
                     &model_id,
                     true,
-                    Some(&format!("工具转换不兼容：{}", error.message)),
+                    Some("模型不支持函数调用，已按仅对话发布"),
                     None,
                     Some("chat_only"),
                     duration_ms,
@@ -1302,7 +1319,27 @@ async fn run_single_probe(model: Value) {
                 sync_published(None, false);
             }
             Err(chat_error) => {
-                if !app.stopping.load(Ordering::Relaxed) {
+                // 与批量探测同一个判定：兜底那次纯对话请求也被网关以「不支持函数调用」拒绝时，
+                // 主探测与兜底指向同一结论（该模型本就只服务对话通道），仍按仅对话发布。
+                // 少了这一支的话，面板点「重新检测」会把一个能对话的模型判成失败——批量探测
+                // 里同一个模型却是「已按仅对话发布」，两条入口归宿不一致（2026-10-10 实测到）。
+                if probe::chat_only_fallback_confirms_chat_only(&chat_error) {
+                    if !app.stopping.load(Ordering::Relaxed) {
+                        record(
+                            &model_id,
+                            true,
+                            Some("模型不支持函数调用，已按仅对话发布（chat-only 兜底同样被网关拒绝）"),
+                            None,
+                            Some("chat_only"),
+                            duration_ms,
+                            "probe",
+                            Some(true),
+                            &meta.snapshot(),
+                        )
+                        .await;
+                        sync_published(None, false);
+                    }
+                } else if !app.stopping.load(Ordering::Relaxed) {
                     record(
                         &model_id,
                         false,
@@ -1796,10 +1833,16 @@ async fn shutdown(code: u8) -> u8 {
     if let Some(sender) = lock(&app.server_stop).as_ref() {
         let _ = sender.send(true);
     }
-    // 关停**不再清空**插件配置（2026-10-09 用户裁定）：本工具名下的条目原样留着，下次启动直接
-    // 沿用，省掉「每次开应用都重跑一遍全量探测」。代价如实记录：应用没在跑的这段时间里，
-    // WorkBuddy 侧这些模型指向的是已停掉的端点，请求会失败；一旦应用起来，启动沿用那条路径
-    // 会用**当前**端点与 Key 重发一遍配置，不需要用户再动。
+    // 🔴 关停必须清空插件配置（2026-10-10 用户裁定，覆盖上一轮「不清空、下次启动沿用」的取舍）：
+    // 应用不在跑的这段时间里，本工具名下的模型指向的是已经停掉的端点，留在 WorkBuddy/CodeBuddy
+    // 的配置里只会让用户「选中了却必然请求失败」。清空后这段真空期不存在，下次启动按 status.json
+    // 的沿用路径（`reusable_previous`）直接用上次的结果，并在那一刻按**当前**端点与 Key 重新发布。
+    // 数据红线不变：`merge_models` 只摘掉 `OWNER` 名下的条目，用户手动配置与其他元数据原样保留。
+    // 用户意图的清空：显式允许空集。
+    // 排空写链必须紧跟着做完：后面的运行时收摊（SIGTERM ≤4s）才是关停的耗时大头，而壳的停止预算
+    // 只有 `STOP_BUDGET`，把这次写盘放到最后有可能被进程退出截断。
+    sync_published(Some(Vec::new()), true);
+    drain_sync().await;
     let runtime = lock(&app.runtime).clone();
     if let Some(runtime) = runtime {
         runtime.stop().await;
@@ -2683,6 +2726,31 @@ mod tests {
         );
     }
 
+    /// 两条探测入口必须对「chat-only 兜底也被同理由拒绝」给出同一个归宿。
+    ///
+    /// 这条守卫的存在理由就是这个 bug 真实发生过：判定逻辑只加在批量入口上，单模型「重新检测」
+    /// 没跟上，于是同一个模型批量探测判「已按仅对话发布」、单独重检判「失败」，面板因此自相矛盾。
+    /// 两个入口都要真实调用核心实例（`global_app`），没有注入点可喂假后端，所以只能钉住调用位点本身；
+    /// 判定函数自己的行为由 `probe.rs` 的 `chat_only_fallback_rejection_confirms_chat_only` 钉。
+    #[test]
+    fn both_probe_entry_points_honour_a_chat_only_fallback_rejection() {
+        let source = include_str!("orchestration.rs");
+        let batch = source
+            .split_once("async fn run_probe_batch(")
+            .and_then(|rest| rest.1.split_once("async fn run_single_probe("))
+            .expect("批量探测入口必须排在单模型入口之前");
+        let single = source
+            .split_once("async fn run_single_probe(")
+            .and_then(|rest| rest.1.split_once("enum ProbeOutcome"))
+            .expect("单模型探测入口必须排在 ProbeOutcome 定义之前");
+        for (name, body) in [("run_probe_batch", batch.0), ("run_single_probe", single.0)] {
+            assert!(
+                body.contains("chat_only_fallback_confirms_chat_only"),
+                "{name} 必须引用兜底确认判定，否则两条入口对同一个模型会给出相反的结论"
+            );
+        }
+    }
+
     /// 上一份 `status.json` 的 `modelResults` 形状不对时必须回落空对象：`record` 对整份 map 做
     /// 键索引，而 serde_json 对非对象（数组/字符串/数字）索引是 panic，壳 release 又是 abort。
     #[test]
@@ -3107,17 +3175,23 @@ mod tests {
     /// 面板的分组展示依赖这个稳定顺序。
     #[test]
     fn aggregated_discovery_keeps_opencode_first_then_registry_order() {
+        // modelscope 用的是权威清单在册的 id（`providers::served_models`）；catalog 里那些
+        // 对方网关不承接的过期 id 会被 `free_models_in` 直接丢掉，那条行为由
+        // `backend.rs::free_models_in_keeps_only_the_authoritative_served_models` 钉住。
         let providers = json!({ "all": [
             { "id": "zhipuai", "models": { "glm-4.5-flash": { "name": "GLM-4.5 Flash", "cost": { "input": 0, "output": 0 } } } },
             { "id": "opencode", "models": { "free": { "name": "Free", "cost": { "input": 0, "output": 0 } } } },
-            { "id": "modelscope", "models": { "Qwen/Qwen3-8B": { "name": "Qwen3 8B", "cost": { "input": 0, "output": 0 } } } },
+            { "id": "modelscope", "models": { "ZhipuAI/GLM-5.2": { "name": "GLM 5.2", "cost": { "input": 0, "output": 0 } } } },
         ] });
         let mut models = free_models(&providers).unwrap();
         for namespace in ["zhipuai", "modelscope"] {
             models.extend(free_models_in(&providers, namespace).unwrap());
         }
         let ids: Vec<&str> = models.iter().map(|m| m["id"].as_str().unwrap()).collect();
-        assert_eq!(ids, vec!["opencode/free", "zhipuai/glm-4.5-flash", "modelscope/Qwen/Qwen3-8B"]);
+        assert_eq!(
+            ids,
+            vec!["opencode/free", "zhipuai/glm-4.5-flash", "modelscope/ZhipuAI/GLM-5.2"]
+        );
     }
 
     /// 单平台失败不丢其他平台：free_models_in 对缺失平台的 Err 由调用方记日志并继续。

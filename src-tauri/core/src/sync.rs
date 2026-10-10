@@ -1005,6 +1005,78 @@ mod tests {
         assert!(!dir.join("models.json.buddy-bridge.lock").exists());
     }
 
+    /// 关停清理（以及启动清旧、换配置文件）走的是同一条通道：**空发布集 + allow_empty**。
+    /// 数据红线在这里钉死——只摘掉 `OWNER` 名下的条目与 `availableModels` 里对应的 id，
+    /// 用户手动配置的条目、其他键与键顺序一概不动。
+    #[test]
+    fn an_empty_sync_at_exit_removes_only_this_tools_entries() {
+        let dir = sandbox("sync-exit-cleanup");
+        let file = dir.join("models.json");
+        fs::write(
+            &file,
+            format!(
+                "{{\"models\":[{{\"id\":\"mine\",\"name\":\"手动条目\"}},\
+                 {{\"id\":\"OC · old\",\"name\":\"OC · old\",\"buddyBridgeOwner\":\"{OWNER}\",\
+                 \"url\":\"http://127.0.0.1:1/chat/completions\"}}],\
+                 \"availableModels\":[\"mine\",\"OC · old\"],\"other\":1}}"
+            ),
+        )
+        .expect("预置");
+        let options = SyncOptions {
+            allow_empty: true,
+            require_existing: true,
+        };
+        let outcome = sync_models_with(&file, &[], "http://e", "k", &options, &test_io())
+            .expect("退出清理");
+        assert_eq!(
+            outcome,
+            SyncOutcome {
+                changed: true,
+                count: 0
+            }
+        );
+        let text = fs::read_to_string(&file).expect("读取");
+        let document = json::parse_json(&text).expect("清理后仍是合法 JSON");
+        assert_eq!(
+            document["models"],
+            json!([{ "id": "mine", "name": "手动条目" }]),
+            "非本工具名下的条目必须原样保留（含其全部字段）"
+        );
+        assert_eq!(document["availableModels"], json!(["mine"]));
+        assert_eq!(document["other"], json!(1));
+        let keys: Vec<&String> = document.as_object().expect("对象").keys().collect();
+        assert_eq!(
+            keys,
+            vec!["models", "availableModels", "other"],
+            "键顺序是合并语义的一部分，清理不得重排"
+        );
+        assert_eq!(file_names(&dir), ["models.json".to_string()], "清理不留备份");
+    }
+
+    /// 同一份「归属标记不是本工具」的条目即使在退出清理里也必须留下：`buddyBridgeOwner` 的值
+    /// 不同就不是我们的条目（用户手动配置或另一版本写入的形态）。
+    #[test]
+    fn an_empty_sync_at_exit_keeps_foreign_owner_entries() {
+        let dir = sandbox("sync-exit-foreign");
+        let file = dir.join("models.json");
+        fs::write(
+            &file,
+            "[{\"id\":\"OC · other\",\"buddyBridgeOwner\":\"someone-else\"}]",
+        )
+        .expect("预置");
+        let options = SyncOptions {
+            allow_empty: true,
+            require_existing: true,
+        };
+        let outcome = sync_models_with(&file, &[], "http://e", "k", &options, &test_io())
+            .expect("清理");
+        assert!(!outcome.changed, "没有本工具名下的条目时，文件内容逐字节不变");
+        assert_eq!(
+            fs::read_to_string(&file).expect("读取"),
+            "[{\"id\":\"OC · other\",\"buddyBridgeOwner\":\"someone-else\"}]"
+        );
+    }
+
     #[test]
     fn sync_propagates_replace_failure_and_releases_lock() {
         let dir = sandbox("sync-replace-fail");

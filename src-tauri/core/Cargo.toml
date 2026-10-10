@@ -1,8 +1,9 @@
 [package]
 name = "wbbridge-core"
-version = "0.1.0"
+version = "1.1.9"
 edition = "2021"
-rust-version = "1.75"
+# 自己依赖图的下限是 1.88（icu_* ← idna ← url ← reqwest），取与壳一致的 1.90
+rust-version = "1.90"
 description = "WB Bridge 核心代理的 Rust 实现（纯逻辑模块 + sync/system-proxy + axum HTTP 层 + runtime/backend + 编排；可独立运行，或作为 path 依赖静态嵌入 Tauri 壳）"
 publish = false
 
@@ -90,3 +91,8 @@ windows-sys = { version = "0.59", features = [
 [dev-dependencies]
 # 契约测试里直接用 oneshot 调用 Router，无需真实网络往返。
 tower = { version = "0.5", features = ["util"] }
+
+# 磁盘占用：开发树的绝大多数是第三方依赖的 split-debuginfo（`*.rcgu.o`，本机实测占 deps 的
+# 89%）。依赖内部不需要断点，本 crate（wbbridge-core，含全部单元测试）保留完整调试信息。
+[profile.dev.package."*"]
+debug = false

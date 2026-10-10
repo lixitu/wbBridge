@@ -18,6 +18,7 @@
 use crate::handoff::{build_handoff, handoff_input, reject_feedback, validate_action};
 use crate::json::{display, js_stringify, js_trim, truthy};
 use crate::model_status::{join_namespace, split_namespace, OPENCODE_NAMESPACE};
+use crate::probe::tool_call_unsupported;
 use crate::protocol::{completion, decode, random_uuid, BridgeError, PreparedRequest};
 use crate::repair::{raw_material, repair, resend_prompt, RepairDeps};
 use crate::server::{
@@ -103,12 +104,20 @@ pub fn free_models_in(providers: &Value, namespace: &str) -> Result<Vec<Value>, 
     let Some(provider) = provider else {
         return Err(BridgeError::new("OpenCode provider missing"));
     };
+    // 有权威清单的平台只放行清单里的 id（见 `providers::Provider::models`）。OpenCode 是把注入段
+    // 与 models.dev 的 catalog **合并**而不是替换，因此只声明不够：不过滤的话探测队列里依旧是
+    // 对方实际不承接的那批过期 id，全部以 `has no provider supported` 失败。
+    // 空清单（其余三家、`opencode`、以及合成命名空间）一律放行，行为与之前逐字节一致。
+    let served = crate::providers::served_models(namespace);
     let mut models: Vec<Value> = Vec::new();
     if let Some(entries) = provider.get("models").and_then(Value::as_object) {
         for (key, model) in entries {
             // 声明段的锚点条目（见 runtime::ANCHOR_MODEL_KEY）：OpenCode 会为它合成一条
             // cost 全 0 的幽灵模型，这里按保留名过滤——它只是让声明段生效的占位，不是真模型。
             if key == crate::runtime::ANCHOR_MODEL_KEY {
+                continue;
+            }
+            if !served.is_empty() && !served.iter().any(|item| item.id == key) {
                 continue;
             }
             let cost = model.get("cost");
@@ -1445,11 +1454,8 @@ impl Backend {
 
                 let info = response.get("info");
                 if let Some(error) = info.and_then(|info| info.get("error")) {
-                    if !error.is_null()
-                        && (request.chat_only()
-                            || error.get("name") != Some(&json!("StructuredOutputError")))
-                    {
-                        let message = error
+                    if !error.is_null() {
+                        let message_value = error
                             .get("data")
                             .and_then(|data| data.get("message"))
                             .filter(|value| truthy(Some(*value)))
@@ -1467,17 +1473,23 @@ impl Backend {
                                     .cloned()
                             })
                             .unwrap_or_else(|| json!("Model request failed"));
-                        let status = error
-                            .get("data")
-                            .and_then(|data| data.get("statusCode"))
-                            .and_then(Value::as_u64)
-                            .map(|status| status as u16)
-                            .unwrap_or(502);
-                        return Err(BackendError::with(
-                            display_value(&message),
-                            status,
-                            "model_error",
-                        ));
+                        let message = display_value(&message_value);
+                        // `StructuredOutputError` 通常是「模型返回的信封不合法」，应交给下游
+                        // decode/repair 流程。但若其实质是「模型不支持函数调用」，必须放行给编排层的
+                        // chatOnly 降级——否则会被吞成泛化的「未返回信封」，既丢掉关键文案，又让
+                        // `tool_call_unsupported` 永远拿不到原文、降级分支触发不了。
+                        let is_structured_output =
+                            error.get("name") == Some(&json!("StructuredOutputError"));
+                        let function_call_gap = tool_call_unsupported(&message);
+                        if request.chat_only() || !is_structured_output || function_call_gap {
+                            let status = error
+                                .get("data")
+                                .and_then(|data| data.get("statusCode"))
+                                .and_then(Value::as_u64)
+                                .map(|status| status as u16)
+                                .unwrap_or(502);
+                            return Err(BackendError::with(message, status, "model_error"));
+                        }
                     }
                 }
                 let parts: Vec<&Value> = match response.get("parts") {
@@ -1845,10 +1857,11 @@ mod tests {
 
     /// 声明段的锚点条目（OpenCode 会为它合成 cost 全 0 的幽灵模型）绝不能进入免费列表：
     /// 幽灵的 cost 形态与免费模型完全一致，唯一判别依据就是保留名。
+    /// 用没有权威清单的平台来测，才只钉住锚点这一件事（modelscope 会被清单过滤，见下条）。
     #[test]
     fn free_models_in_filters_the_injection_anchor_entry() {
         let providers = json!({ "all": [
-            { "id": "modelscope", "models": {
+            { "id": "siliconflow-cn", "models": {
                 crate::runtime::ANCHOR_MODEL_KEY: {
                     "name": crate::runtime::ANCHOR_MODEL_KEY,
                     "cost": { "input": 0, "output": 0, "cache": { "read": 0, "write": 0 } },
@@ -1856,9 +1869,55 @@ mod tests {
                 "Qwen/Qwen3-8B": { "name": "Qwen3 8B", "cost": { "input": 0, "output": 0 } },
             } },
         ] });
+        let models = free_models_in(&providers, "siliconflow-cn").unwrap();
+        let ids: Vec<&str> = models.iter().map(|m| m["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["siliconflow-cn/Qwen/Qwen3-8B"], "锚点幽灵必须被过滤，真实模型保留");
+    }
+
+    /// 有权威清单的平台：catalog 合并进来的过期声明必须被丢掉，只留清单在册的那几个。
+    /// 钉的是 2026-10-10 的实测事实——ModelScope 免费网关 `v1/models` 与 models.dev 声明的
+    /// 免费模型交集为空，放行 catalog 等于让整批模型注定报 `has no provider supported`。
+    #[test]
+    fn free_models_in_keeps_only_the_authoritative_served_models() {
+        let served = crate::providers::served_models("modelscope");
+        let first = served[0].id;
+        let second = served[1].id;
+        let providers = json!({ "all": [
+            { "id": "modelscope", "models": {
+                first: { "name": served[0].name, "cost": { "input": 0, "output": 0 } },
+                second: { "name": served[1].name, "cost": { "input": 0, "output": 0 } },
+                // catalog 里仍在册、但对方网关不承接的声明：不得进探测队列。
+                "Qwen/Qwen3-235B-A22B-Thinking-2507": { "cost": { "input": 0, "output": 0 } },
+            } },
+        ] });
         let models = free_models_in(&providers, "modelscope").unwrap();
         let ids: Vec<&str> = models.iter().map(|m| m["id"].as_str().unwrap()).collect();
-        assert_eq!(ids, vec!["modelscope/Qwen/Qwen3-8B"], "锚点幽灵必须被过滤，真实模型保留");
+        assert_eq!(
+            ids,
+            vec![
+                format!("modelscope/{first}").as_str(),
+                format!("modelscope/{second}").as_str(),
+            ],
+            "清单外的 catalog id 必须被过滤"
+        );
+
+        // 无清单的平台与 `opencode` 命名空间不受影响：一个都不许丢。
+        let opencode = json!({ "all": [
+            { "id": "opencode", "models": { "big-pickle": { "cost": { "input": 0, "output": 0 } } } },
+            { "id": "zhipuai", "models": { "glm-4.5-air": { "cost": { "input": 0, "output": 0 } } } },
+        ] });
+        assert_eq!(
+            free_models(&opencode).unwrap().iter().map(|m| m["id"].clone()).collect::<Vec<_>>(),
+            vec![json!("opencode/big-pickle")]
+        );
+        assert_eq!(
+            free_models_in(&opencode, "zhipuai")
+                .unwrap()
+                .iter()
+                .map(|m| m["id"].clone())
+                .collect::<Vec<_>>(),
+            vec![json!("zhipuai/glm-4.5-air")]
+        );
     }
 
     #[test]

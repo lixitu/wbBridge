@@ -41,7 +41,7 @@ xattr -dr com.apple.quarantine "/Applications/WB Bridge.app"
 
 ## 从源码构建
 
-依赖：Rust stable（壳 `rust-version = 1.77`、核心 `1.75`）、Node.js **24+**（`engines.node >= 24`，**只**用于 Vite 构建面板与仓库根的 `scripts/*.mjs` 脚本，核心运行不依赖它）、各平台 Tauri 系统依赖（Linux 需 webkit2gtk 等）。
+依赖：Rust stable（壳与核心均 `rust-version = 1.90`，下限由锁定的依赖图决定）、Node.js **24+**（`engines.node >= 24`，**只**用于 Vite 构建面板与仓库根的 `scripts/*.mjs` 脚本，核心运行不依赖它）、各平台 Tauri 系统依赖（Linux 需 webkit2gtk 等）。
 
 ```sh
 npm install

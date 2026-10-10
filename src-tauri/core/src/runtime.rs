@@ -236,9 +236,72 @@ fn default_probe() -> Arc<ProbeFn> {
     Arc::new(move |file: String| {
         let allowed = allowed.clone();
         Box::pin(async move {
-            run_command(&file, &["--version"], None, Some(&allowed), Duration::from_secs(15)).await
+            probe_version(&file, || {
+                run_command(
+                    &file,
+                    &["--version"],
+                    None,
+                    Some(&allowed),
+                    VERSION_PROBE_TIMEOUT,
+                )
+            })
+            .await
         })
     })
+}
+
+/// `version(file)` 的单次预算（沿用迁移前 JS 的 15s，本次不放宽）。
+const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
+/// 超时最多试几次。
+const VERSION_PROBE_ATTEMPTS: u32 = 2;
+
+/// 是否值得再跑一次：**只有超时**重试。
+///
+/// 退出码非 0、文件不可执行这类失败说明二进制本身有问题，重试只会把启动耗时整整翻倍，
+/// 而且候选二进制随后会被 find_runtime 正常判为不可用、继续走下一个来源。
+fn should_retry_version_probe(error: &str, attempt: u32) -> bool {
+    attempt < VERSION_PROBE_ATTEMPTS && error.ends_with(" timed out")
+}
+
+/// 用满尝试次数后仍未返回时的文案。
+///
+/// `{program} timed out` 逐字保留在最前（它是迁移前 JS 的形态，也是任何按这句匹配的下游的锚），
+/// 后面补一句「这现象怎么来的、能点什么」。主路径是**直接重试**：本机跑一句 `--version` 卡住，
+/// 绝大多数是那一刻 CPU/磁盘被占满（编译、下载、杀毒扫描），不是配置问题，本工具也不需要任何代理
+/// 就能正常工作。代理开关只在「用户环境本来就必须走代理才能出网」时才有意义，所以作为可选项而非
+/// 唯一入口提出来；顺带说明终端里 `export https_proxy` 不会透传给子进程（`ENV_ALLOW` 不含代理变量），
+/// 免得有人去试那条死路。
+fn version_probe_timeout_message(program: &str) -> String {
+    format!(
+        "{program} timed out（已重试一次，{} 秒内仍未返回）：这是本机执行 `opencode --version` 卡住，\
+         不是密钥或配置的问题。最常见的原因是此刻 CPU 与磁盘被占满（正在编译、装东西、安全软件扫描），\
+         等它结束后点面板状态条上的「重试」通常就好。本工具正常情况不需要代理；只有你的网络本来就必须\
+         走代理才能出网时，才用侧栏「运行设置 → 使用系统代理」（终端里 export 的代理变量不会传给子进程）。",
+        VERSION_PROBE_TIMEOUT.as_secs()
+    )
+}
+
+/// 跑 `run` 直到成功或用满 [`VERSION_PROBE_ATTEMPTS`]；两次都超时才换成可读文案。
+///
+/// 只包 `--version` 这一类一次性调用，不碰 `serve` 的启动轮询与健康检查。
+async fn probe_version<T>(program: &str, mut run: impl FnMut() -> T) -> Result<String, String>
+where
+    T: std::future::Future<Output = Result<String, String>>,
+{
+    let mut attempt = 1;
+    loop {
+        match run().await {
+            Ok(version) => return Ok(version),
+            Err(error) if should_retry_version_probe(&error, attempt) => attempt += 1,
+            Err(error) => {
+                return Err(if error.ends_with(" timed out") {
+                    version_probe_timeout_message(program)
+                } else {
+                    error
+                })
+            }
+        }
+    }
 }
 
 /// JS 默认的 `globalThis.fetch`：reqwest + 每请求超时 + 可选代理。
@@ -780,6 +843,39 @@ pub fn providers_section_for(data_dir: &str) -> (Value, Vec<String>) {
         let Some(key) = keys.get(provider.id).and_then(Value::as_str) else {
             continue;
         };
+        // 🔴 非空 models 段是调用链生效的前提（2026-10-09 六组沙箱对照实验收敛的结论）：
+        // 对 models.dev 在册的 provider，经 OPENCODE_CONFIG_CONTENT 注入的声明段
+        // **不带 models 键**时，该平台全部模型的调用都会在 ai-sdk 层报
+        //   AI_APICallError: Model id : <id> , has no provider supported
+        // 带任意非空 models 段后，声明的 baseURL/apiKey 即对该 provider 的全部
+        // catalog 模型生效（对照实验：请求打到真实 API、返回上游鉴权错误 = 链路正确）。
+        // 空对象 `{}` 会把 catalog 合并清空（发现 0 模型），因此没有权威清单时必须放一个
+        // **锚点条目**：key 是本工具的保留名，OpenCode 会为它合成一条 cost 全 0 的幽灵模型——
+        // `free_models_in` 按保留名把它过滤掉，绝不进入模型列表与探测队列。
+        //
+        // 有权威清单（ModelScope，见 `providers::Provider::models` 的由来）时改为逐条声明：
+        // 2026-10-10 实测该网关在册的 35 个 id 与 catalog 声明的免费模型**交集为空**，
+        // 只放锚点等于让 catalog 里那 7 个过期 id 继续进探测队列、全部报未承接。
+        // `cost` 全 0 是这里的**主动声明**（免费判定依赖它），依据是对方的公开推广口径
+        // 「每日提供 2000 次免费 API 调用额度」，不是接口回读到的值。
+        // `limit` 必须 context 与 output 同时给，少给一个键会让整份配置被判 ConfigInvalidError
+        // （沙箱实测，细节见 `providers::DeclaredModel::output`）。
+        let mut models = serde_json::Map::new();
+        if provider.models.is_empty() {
+            models.insert(ANCHOR_MODEL_KEY.to_string(), json!({}));
+        } else {
+            for model in provider.models {
+                models.insert(
+                    model.id.to_string(),
+                    json!({
+                        "name": model.name,
+                        "limit": { "context": model.context, "output": model.output },
+                        "cost": { "input": 0, "output": 0 },
+                        "tool_call": model.tool_call,
+                    }),
+                );
+            }
+        }
         section.insert(
             provider.id.to_string(),
             json!({
@@ -788,18 +884,7 @@ pub fn providers_section_for(data_dir: &str) -> (Value, Vec<String>) {
                     "baseURL": provider.base_url,
                     "apiKey": key,
                 },
-                // 🔴 非空 models 段是调用链生效的前提（2026-10-09 六组沙箱对照实验收敛的结论）：
-                // 对 models.dev 在册的 provider，经 OPENCODE_CONFIG_CONTENT 注入的声明段
-                // **不带 models 键**时，该平台全部模型的调用都会在 ai-sdk 层报
-                //   AI_APICallError: Model id : <id> , has no provider supported
-                // 带任意非空 models 段后，声明的 baseURL/apiKey 即对该 provider 的全部
-                // catalog 模型生效（对照实验：请求打到真实 API、返回上游鉴权错误 = 链路正确）。
-                // 空对象 `{}` 会把 catalog 合并清空（发现 0 模型），因此必须放一个**锚点条目**：
-                // key 是本工具的保留名，OpenCode 会为它合成一条 cost 全 0 的幽灵模型——
-                // `free_models_in` 按保留名把它过滤掉，绝不进入模型列表与探测队列。
-                "models": {
-                    ANCHOR_MODEL_KEY: {},
-                },
+                "models": Value::Object(models),
             }),
         );
         configured.push(provider.id.to_string());
@@ -988,7 +1073,16 @@ pub async fn start_backend(
     // 版本回读同样只带白名单环境：这一步跑的是刚下载/刚发现的二进制。
     let host_env = std::env::vars().collect::<Env>();
     let probe_env = allowed_environment(&host_env);
-    let actual_version = run_command(binary, &["--version"], None, Some(&probe_env), Duration::from_secs(15)).await?;
+    let actual_version = probe_version(binary, || {
+        run_command(
+            binary,
+            &["--version"],
+            None,
+            Some(&probe_env),
+            VERSION_PROBE_TIMEOUT,
+        )
+    })
+    .await?;
     let root = join_host(&[data_dir, "opencode"]);
     for name in ["config", "data", "cache", "state", "project"] {
         let dir = join_host(&[&root, name]);
@@ -1207,6 +1301,67 @@ mod tests {
         assert_eq!(compare_versions("1.25.7-beta", "1.25.7"), 0);
     }
 
+    #[tokio::test]
+    async fn a_stalled_version_probe_is_retried_once_and_can_succeed() {
+        let mut calls = 0;
+        let version = probe_version("/managed/opencode", || {
+            calls += 1;
+            let first = calls == 1;
+            async move {
+                if first {
+                    Err("/managed/opencode timed out".to_string())
+                } else {
+                    Ok("1.18.35".to_string())
+                }
+            }
+        })
+        .await
+        .expect("第二次返回就必须成功");
+        assert_eq!(version, "1.18.35");
+        assert_eq!(calls, 2);
+    }
+
+    #[tokio::test]
+    async fn a_failing_version_probe_is_not_retried_and_keeps_its_error() {
+        let mut calls = 0;
+        let error = probe_version("/managed/opencode", || {
+            calls += 1;
+            async move { Err("/managed/opencode exited with code 1".to_string()) }
+        })
+        .await
+        .expect_err("退出码非 0 是二进制本身的问题");
+        assert_eq!(calls, 1, "非超时失败重试只会把启动耗时整整翻倍");
+        assert_eq!(error, "/managed/opencode exited with code 1");
+    }
+
+    #[tokio::test]
+    async fn two_stalled_attempts_explain_the_stall_without_a_timeout_only_budget() {
+        let mut calls = 0;
+        let error = probe_version("/managed/opencode", || {
+            calls += 1;
+            async move { Err("/managed/opencode timed out".to_string()) }
+        })
+        .await
+        .expect_err("两次都超时才报错");
+        assert_eq!(calls, VERSION_PROBE_ATTEMPTS);
+        // 迁移前 JS 的那句逐字保留在最前，下游按它匹配。
+        assert!(error.starts_with("/managed/opencode timed out"), "{error}");
+        assert!(error.contains("不是密钥或配置的问题"), "{error}");
+        // 主路径是「等一等再点重试」：本工具正常出网不需要代理，代理只是用户环境确实要代理时的选项。
+        let retry_at = error
+            .find("状态条上的「重试」")
+            .expect("必须给出重试入口");
+        let proxy_at = error.find("使用系统代理").expect("必须提到代理开关");
+        assert!(
+            retry_at < proxy_at && error.contains("本工具正常情况不需要代理"),
+            "代理不能被说成唯一入口：{error}"
+        );
+        assert!(
+            !error.contains("只有侧栏") && !error.contains("唯一"),
+            "不得把系统代理说成唯一可操作入口：{error}"
+        );
+    }
+
     #[test]
     fn launcher_script_pattern_matches_js() {
         for name in ["opencode.cmd", "OpenCode.BAT", "run.ps1"] {
@@ -1310,9 +1465,34 @@ mod tests {
         assert_eq!(section["modelscope"]["npm"], json!("@ai-sdk/openai-compatible"));
         assert_eq!(section["modelscope"]["options"]["baseURL"], json!("https://api-inference.modelscope.cn/v1"));
         assert_eq!(section["modelscope"]["options"]["apiKey"], json!("ms-key"), "必须复用 check_key 的裁剪结果");
-        // models 段必须非空且只含锚点条目（缺 models 键 → ai-sdk 报 has no provider supported；
+        // 有权威清单的平台：models 段逐条声明清单里的模型（锚点不出现，因为非空段本身就
+        // 满足「声明段生效」的前提）。
+        let served = crate::providers::served_models("modelscope");
+        assert!(
+            !served.is_empty(),
+            "ModelScope 必须有权威清单，否则注入段退回锚点、catalog 的过期 id 又会进探测队列"
+        );
+        let declared = section["modelscope"]["models"].as_object().expect("models 段是对象");
+        assert_eq!(declared.len(), served.len(), "注入条目数必须与清单一致：{declared:?}");
+        for model in served {
+            assert_eq!(
+                declared.get(model.id),
+                Some(&json!({
+                    "name": model.name,
+                    "limit": { "context": model.context, "output": model.output },
+                    "cost": { "input": 0, "output": 0 },
+                    "tool_call": model.tool_call,
+                })),
+                "每条声明必须逐项等于清单内容：{}",
+                model.id
+            );
+        }
+        assert!(
+            !declared.contains_key(ANCHOR_MODEL_KEY),
+            "有权威清单时不需要锚点占位"
+        );
+        // 无权威清单的平台：非空且只含锚点条目（缺 models 键 → ai-sdk 报 has no provider supported；
         // 空对象 → catalog 合并被清空、发现 0 模型；锚点幽灵由 free_models_in 过滤）。
-        assert_eq!(section["modelscope"]["models"], json!({ ANCHOR_MODEL_KEY: {} }));
         assert_eq!(section["zhipuai"]["options"]["apiKey"], json!("glm-key"));
         assert_eq!(section["zhipuai"]["models"], json!({ ANCHOR_MODEL_KEY: {} }));
         assert!(section.get("siliconflow-cn").is_none(), "未配置平台整段不出现");

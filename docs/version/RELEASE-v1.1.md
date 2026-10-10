@@ -28,7 +28,7 @@
 | `AGENTS.md`「当前基准版本」两行 | **1.1.2** | 文档侧同步落点 |
 | 面板 `__APP_VERSION__` | `v1.1.2` | `vite.config.js` 构建期注入（自带 `v` 前缀），非独立落点 |
 
-### 二、本版内容（v1.1.0 之后并入的七项改动）
+### 二、本版内容（v1.1.0 之后并入的八项改动）
 
 1. **modelscope 锚点修复**：注入声明段补 `models: { "wbbridge-provider-anchor": {} }`，消除 `has no provider supported`（原记 1.1.2）。
 2. **重新检测全程「检测中」+ 面板反馈/节流补齐**：核心 `singleProbes` 顶层状态与在飞集合；`ModelRow` 行内忙态、`pendingText` 区分、FeedbackBar 全视图可见（原记 1.2.0）。
@@ -37,10 +37,11 @@
 5. **「不支持函数调用」改走 chatOnly 降级**（原记 1.3.2）：`probe.rs::tool_call_unsupported`。
 6. **提供方撤架模型的上游失败改中文说明**（原记 1.3.3）+ **旧版攒下的插件配置备份在「无变化同步」里也收敛**（原记 1.3.4）。
 7. **插件目录已在、但 `models.json` 缺失时主动补建**（2026-10-10）：`~/.workbuddy` 或 `~/.codebuddy` 目录存在而没有 `models.json` 时，按空数组配置补建一个（此前这种情况一律判「未检测到」，装了插件却永远等不到发布）。补建只走**默认发现位置**、只新建不改写、目录不存在时不替插件建目录、显式指定的位置失效仍照旧报未检测到。新增 4 项单测。
+8. **OpenCode 的「不支持函数调用」模型确认仅对话而非判失败**（2026-10-10）：用户实测 OpenCode 部分模型检测也报 `Bad Request: Function call is not supported for this model.`。除既有 `tool_call_unsupported` → `chat_only_attempt` 降级外，补两处差集：① 兜底那次纯对话请求若也被网关以**同一理由**拒绝，说明 OpenCode 的 chat-only 通道对该模型仍走工具路由，主探测与兜底指向同一结论，仍按 `chat_only` 发布（不再把能对话的模型整个丢弃）；② `backend.rs` 的 `info.error` 处理曾对 `name == "StructuredOutputError"` 整段跳过（交给下游 decode/repair），OpenCode 把该错包成 `StructuredOutputError` 时会被吞成泛化「未返回信封」、`tool_call_unsupported` 永远拿不到原文，现已在「实质是不支持函数调用」时放行给降级逻辑。降级成功提示改为干净的「模型不支持函数调用，已按仅对话发布」，不再回显吓人的上游原文。新增 1 项单测（`chat_only_fallback_rejection_confirms_chat_only`）。
 
 ### 三、验证
 
-沿用各轮已实测结论（详见 `AGENTS.md`「当前状态与验证边界」各轮条目与 `docs/validation.md`）：核心 `cargo test`、两侧 `clippy` 0 warning、壳 `cargo test --lib` 9 通过、JS 四组套件、`npx eslint .`、`vite:build`、`version:check` **5 处一致（1.1.2）**。本轮回退本身**只改版本号与文档**，未触碰代码；随后并入的第 7 条（空插件目录补建 `models.json`）是代码改动，已实测：核心 `cargo test` **263 通过 / 0 失败**（lib 241 + `js_parity` 11 + `red_lines` 11，新增 4 项）、核心 `cargo clippy --all-targets` **0 warning**、壳 `cargo test --lib` **9 通过**、JS 四组套件 **8 / 11 / 9 / 13**、`npx eslint .` **0 problem**、`npm run vite:build` 通过、`version:check` **5 处一致（1.1.2）**。
+沿用各轮已实测结论（详见 `AGENTS.md`「当前状态与验证边界」各轮条目与 `docs/validation.md`）：核心 `cargo test`、两侧 `clippy` 0 warning、壳 `cargo test --lib` 9 通过、JS 四组套件、`npx eslint .`、`vite:build`、`version:check` **5 处一致（1.1.2）**。本轮回退本身**只改版本号与文档**，未触碰代码；随后并入的第 7 条（空插件目录补建 `models.json`）是代码改动，已实测：核心 `cargo test` **263 通过 / 0 失败**（lib 241 + `js_parity` 11 + `red_lines` 11，新增 4 项）、核心 `cargo clippy --all-targets` **0 warning**、壳 `cargo test --lib` **9 通过**、JS 四组套件 **8 / 11 / 9 / 13**、`npx eslint .` **0 problem**、`npm run vite:build` 通过、`version:check` **5 处一致（1.1.2）**。第 8 条（OpenCode 仅对话确认）在 7 条基础上再新增 1 项单测，实测：核心 `cargo test` **264 通过 / 0 失败**（lib 242 + `js_parity` 11 + `red_lines` 11）、核心 `cargo clippy --all-targets` **0 warning**、`version:check` 5 处一致（1.1.2）。
 
 ### 四、未验证（不得伪装）
 

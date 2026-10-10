@@ -5,12 +5,13 @@
    用法：
      node scripts/bump-version.mjs 1.0.1        # 更新全部版本号
      node scripts/bump-version.mjs 1.0.1 --dry-run  # 只预览不写入
-   覆盖位置：
+   覆盖位置（7 处）：
      package.json（根级，版本单一来源）/
      src-tauri/tauri.conf.json / src-tauri/Cargo.toml /
-     AGENTS.md（当前基准版本表）
-   注意：src-tauri/core/Cargo.toml 的 version 是 crate 内部版本（核心 `--version` 输出），
-   与产品版本解耦，本脚本刻意不改它；status.json 的 0.2.0 为历史沿革值，同样不改。
+     src-tauri/core/Cargo.toml（核心 crate 版本，自 2026-10-10 起随产品版本同步——用户指令） /
+     AGENTS.md（当前基准版本表三行）
+   注意：status.json 的 0.2.0 为历史沿革值，刻意不改；版本落点变更后两份 Cargo.lock
+   （src-tauri/ 与 src-tauri/core/ 各自独立 workspace）由 cargo 自动同步，须一并提交。
    ═══════════════════════════════════════════════════════════════════ */
 
 import fs from 'node:fs';
@@ -69,6 +70,10 @@ patchJson('src-tauri/tauri.conf.json', (d) => { d.version = V; }, `version -> ${
 /* ── 文本类 ─────────────────────────────────────────────────────── */
 patchText('src-tauri/Cargo.toml', /^version = "\d+\.\d+\.\d+"$/m, `version = "${V}"`, `version -> ${V}`);
 
+// 核心 crate 版本随产品版本同步（2026-10-10 用户指令）。行首锚定只命中 [package] 的
+// version 行：依赖的 version 都有缩进，不会误伤。
+patchText('src-tauri/core/Cargo.toml', /^version = "\d+\.\d+\.\d+"$/m, `version = "${V}"`, `version -> ${V}（核心 crate，随产品版本同步）`);
+
 patchText('AGENTS.md',
   /\| 版本单一来源 \| \*\*\d+\.\d+\.\d+\*\*/g,
   `| 版本单一来源 | **${V}**`,
@@ -78,6 +83,11 @@ patchText('AGENTS.md',
   /\| 壳工程同步落点 \| \*\*\d+\.\d+\.\d+\*\*/g,
   `| 壳工程同步落点 | **${V}**`,
   `壳工程同步落点 -> ${V}`);
+
+patchText('AGENTS.md',
+  /\| 核心 crate 版本 \| \*\*\d+\.\d+\.\d+\*\*/g,
+  `| 核心 crate 版本 | **${V}**`,
+  `核心 crate 版本 -> ${V}`);
 
 console.log(results.join('\n'));
 console.log(dryRun
