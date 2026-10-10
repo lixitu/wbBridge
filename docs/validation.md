@@ -1,8 +1,53 @@
-# WB Bridge v1.0.2 验证记录
+# WB Bridge 验证记录（当前基准版本 **1.1.10**）
 
 > 阅读顺序：最新记录在前。自 **2026-10-01** 起核心已从 Node.js sidecar 迁移为 Rust 库（静态链接进壳），
 > 该日期之后的条目描述 Rust 形态；下方的 2026-09-30 条目属于**迁移前的 Node/sidecar 时代**，作为历史
 > 保留原样（其 97 项测试、`src/core/`、`src-tauri/binaries/` 等结论已不再对应当前仓库）。
+
+日期：2026-10-10（本机 macOS，Apple Silicon；Rust 核心 + Vue 壳 + Vue 面板）
+
+## 全量文档同步至 v1.1.10 ＋ 壳侧一条真实 clippy warning 的等价改写（2026-10-10，按规则**不推进版本号**）
+
+用户指令：「更新所有文档，并生成 github 的 RELEASE-NOTES 文档」。本轮把 `AGENTS.md`、`README.md`、`docs/version/*`、`docs/wiki/*`、本文件全部对齐到**实测**现状，并出稿 v1.1.10 的 GitHub Release 正文。
+
+### 为什么「文档全量同步」是一轮真实核对而不是改写措辞
+
+盘点时发现文档与代码已经分叉到会**误导下一个 Agent** 的程度，逐条以实读纠正：
+
+1. **测试基线**：`AGENTS.md` 三处写 271（lib 249），`README.md` 写 222（201 + 11 + 10），`docs/wiki/架构设计.md` 写 222 —— 当前 HEAD 实测 **278 = lib 256 + js_parity 11 + red_lines 11**。JS 侧也从「三组 30 用例」变成**四组 41**（`test:ops` 随 v1.1.2 入库，`README.md` 的命令清单里漏了它）。
+2. **`sync.rs` 的模块清单**：`AGENTS.md` 仍在列 `prune_old_backups` / `prune_to_latest_backup`，`sync_models` 返回值里的 `backup` 键 —— 这三个符号与「写备份」行为**早已随 v1.1.2 那轮整体删除**，现存的是私有的 `sweep_old_backups` / `backup_prefix` / `backup_of`（只清扫旧版存量）。目录树那一行也还写着「增量合并（OWNER 标记、锁、.bak）」。
+3. **`providers.rs`**：注册表守卫行只有 `Provider{id,label,npm,base_url}`，缺 `models: &'static [DeclaredModel]` 这条**决定发现与注入两处行为**的字段（非空即替代 models.dev 的 catalog；目前只有 `modelscope` 带清单，实测 **9** 条，其余三家为空切片走锚点占位）。
+4. **`probe.rs`**：文案漏斗行只写了「地区拒绝 + 模型已下线」两种，实际已有五种（再加 `unserved_model_message`、`unknown_service_id_message`，且后者按措辞分「不在在线清单里」与「这把 Key 没有访问权限」两支）。
+5. **版本落点**：多处仍写「5 处一致」与 1.1.2 / 1.1.6 的旧值；`version:check` 现为 **7 处**（新增 `src-tauri/core/Cargo.toml` 与 `AGENTS.md` 第三行），本轮实测输出「全部 7 处版本号一致（1.1.10）」。
+6. **`docs/version/README.md` 的索引全是死链**：它逐版本列了 `RELEASE-NOTES-v1.0.1 ~ v1.1.2.md` 八份正文，而 `git ls-files docs/version` 实读只有 `README.md`、`RELEASE-NOTES-v1.1.10.md`、`RELEASE-v1.0.md`、`RELEASE-v1.1.md` —— 未发布的草稿已随各轮整理删除。索引改为只指向实际存在的文件，并写明「正文底本只保留当前待发布那一份，已发布版本的正文以 GitHub Release 页面为准」。
+7. **`README.md` 面向使用者侧的三处失真**：「写入前备份」（已不写任何备份）、「5 个入口」（现为 6 个：模型与服务 / 平台 / 运行日志 / 用量与额度 / 插件集成 / 关于与更新）、「先安装并登录 WorkBuddy，保存一个自定义模型生成 `models.json`」（现在插件目录已在而文件缺失时会补建空配置，CodeBuddy 同样支持）。下载表停在 1.0.2 且未说明 GitHub 把资产名空格规范化成 `.`。
+8. **两条不得保留的旧结论**：`rust-version`（两侧统一为 **1.90**，本轮同步说明「这只是逐包声明、cargo 从不拿它比对依赖、本机只有 1.98.1、CI 用 stable，因此 1.88/1.90 两个下限从未被任何构建实证过」）；`docs/version/README.md` 里「v1.0.3 尚未推标签、CI 未跑过该版本」（远端标签实测存在 `v1.0.3` / `v1.0.5` / `v1.1.0`，但**那些轮的 CI 是否全绿本轮无法复核**——本机 `api.github.com` 不可达）。
+
+### 代码侧唯一改动（等价改写，不是重构）
+
+`src-tauri/src/lib.rs:308` 的 `ticks % 8 == 0` → `ticks.is_multiple_of(8)`。这是 **HEAD 上真实存在的一条 clippy warning**（`manual implementation of .is_multiple_of()`），此前文档里反复出现的「两侧 clippy 0 warning」在**壳侧并不成立**，本轮如实更正。行为逐字等价：故障期间 `core-failed` 每 ~4s 重播的节律不变（轮询步长 500ms ⇒ 每 8 tick 重播一次）。改后 `cargo clippy --no-deps --all-targets` 在 `touch src/lib.rs` 强制重检下 **0 warning**。
+
+### 验证（本轮真实执行，全部来自当前工作树）
+
+- 核心 `cargo test`：**278 通过 / 0 失败**（lib 256 + js_parity 11 + red_lines 11；另有 bin/doc-test 0 用例）
+- 核心 `cargo clippy --all-targets`：**0 warning**（`touch src-tauri/core/src/lib.rs` 后重跑，避免复用上轮缓存）
+- 壳 `cargo clippy --no-deps --all-targets`：**0 warning**（同样 `touch src/lib.rs` 强制重检；本轮那条改写就是这么定位的）
+- 壳 `cargo test --lib`：**9 通过 / 0 失败**
+- JS 四组：`test:prefs` **8** / `test:ops` **11** / `test:manifest` **9** / `test:updater-key` **13**，全部 **0 失败**；`npx eslint .` 退出 **0**；`npm run vite:build` 通过（125ms）
+- `npm run version:check`：**全部 7 处版本号一致（1.1.10）**
+- `git diff --stat src-tauri/core/tests/fixtures`：**为空**（对拍仍逐字节等价；`sync.json` 那处有意的行为分叉随 v1.1.2 落库，不在本轮）
+- 事实核对：`awk` 逐条数出 modelscope 注册表清单 **9** 个 `DeclaredModel`（被削掉的 ERNIE/LongCat 只出现在注释里）；`git ls-remote --tags origin` 列出 `v1.0.0` `v1.0.1` `v1.0.2` `v1.0.3` `v1.0.5` `v1.1.0`
+
+### 未验证（不得伪装）
+
+- 🔴 **远端发布状态**：本轮**没有**任何 GitHub API 可达性（`api.github.com` 被本机网络策略拦截/重定向，且该查询不属用户请求范围）。因此「v1.0.3 / v1.0.5 / v1.1.0 各带 23 个资产」这类结论一律沿用先前记录并标注未复核；`v1.0.2` 那份 `latest.json` 的六条 url 是否已重传**未知**。
+- 🔴 **GUI 与真实 Key 端到端**：本轮未启动过应用，也未输入过任何平台 Key。文档里凡是「逻辑已测」的条目都仍带各自的「必须实机点一遍」边界，同步时**没有**把任何一条升格为已验证。
+- 🔴 **v1.1.10 尚未构建、尚未打标签**；Release 正文（`docs/version/RELEASE-NOTES-v1.1.10.md`）因此是**底本**，不是已发布内容。
+- ⚠ **并发改动**：本轮期间同一工作树有并行轮次在提交（`441e4c3` 已含 `probe.rs` 的「无访问权限」分支、modelscope 清单 13→9、壳侧那处 `is_multiple_of` 改写，以及 `RELEASE-NOTES-v1.1.10.md` 与 `RELEASE-v1.1.md` 的 v1.1.10 分节）。上述数字全部是**在这些改动落库之后**重跑的，不是继承来的。
+
+### 版本裁定
+
+按 `AGENTS.md`「版本号规则」：纯文档改动不递增；`is_multiple_of` 是**行为逐字等价**的 lint 改写（不引入新逻辑分支），同属不递增情形。落点保持 **1.1.10**，`version:check` 实测 7 处一致。
 
 日期：2026-10-09（本机 macOS，Apple Silicon；Rust 核心 + Vue 壳 + Vue 面板）
 

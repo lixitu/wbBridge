@@ -111,13 +111,33 @@ impl From<SyncError> for BridgeError {
     }
 }
 
-/// `syncModels(file, models, endpoint, key, options)` 的选项。
+/// `models.json` 的外层形态（按写入目标区分，见 `targets.rs::Target::document_shape`）。
+///
+/// 两个插件的真实文件**不一样**（2026-10-10 用用户机器上的真实文件核对）：
+/// - WorkBuddy：顶层是**裸数组** `[…]`；
+/// - CodeBuddy：顶层是对象 `{ "models": […] }`。
+///
+/// 写成对方那一种是「发布成功、插件里一个模型都看不到」的成因（Windows 上实测到）：
+/// 补建与合并都按目标自己的形态落盘，而不是「照文档原样」。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DocumentShape {
+    /// 原样保留文档既有外层形态（数组进→数组出，对象进→对象出）。迁移前 JS 的唯一行为。
+    #[default]
+    Preserve,
+    /// 一律写成 `{ "models": […] }`。已是裸数组的文档（旧版补建出来的 Windows 文件即如此）
+    /// 会在下一次同步时被就地收敛，条目一条不丢。
+    ModelsObject,
+}
+
+/// [`sync_models`] 的选项。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SyncOptions {
     /// 允许空模型列表（`mergeModels` 的 `allowEmpty`）。
     pub allow_empty: bool,
     /// 目标文件必须已存在，缺失时报 `ENOENT` 而不是当成空配置。
     pub require_existing: bool,
+    /// 外层形态；默认 [`DocumentShape::Preserve`]，与迁移前 JS 逐字节一致。
+    pub shape: DocumentShape,
 }
 
 /// `syncModels` 的结果（JS 原形态是 `{ changed, count, backup? }`）。
@@ -288,14 +308,16 @@ pub fn atomic_write_with(file: &Path, text: &str, io: &SyncIo) -> Result<(), Syn
 
 /// `mergeModels(document, models, endpoint, key, { allowEmpty })`。
 ///
-/// 保留 `document` 里非本服务写入的条目，冲突（同 `id` 或同 `OC · <name>`）的新条目整体丢弃，
-/// 数组形态的 `document` 直接返回合并后的数组。
+/// 保留 `document` 里非本服务写入的条目，冲突（同 `id` 或同 `OC · <name>`）的新条目整体丢弃。
+/// 外层形态由 `shape` 决定：[`DocumentShape::Preserve`] 下数组形态的文档直接返回合并后的数组
+/// （迁移前 JS 的行为），[`DocumentShape::ModelsObject`] 下一律产出 `{ "models": […] }`。
 pub fn merge_models(
     document: &Value,
     models: &[Value],
     endpoint: &str,
     key: &str,
     allow_empty: bool,
+    shape: DocumentShape,
 ) -> Result<Value, SyncError> {
     if models.is_empty() && !allow_empty {
         return Err(SyncError::other(
@@ -332,14 +354,19 @@ pub fn merge_models(
     let mut combined: Vec<Value> = kept.into_iter().cloned().collect();
     combined.extend(entries.iter().cloned());
 
-    let document_map = match document {
+    let mut updated = match document {
+        Value::Object(object) => object.clone(),
+        // 裸数组文档 + 目标只认对象形态：条目原样搬进 `models`，不新增任何键。
+        Value::Array(_) if shape == DocumentShape::ModelsObject => Map::new(),
         Value::Array(_) => return Ok(Value::Array(combined)),
-        Value::Object(object) => object,
         _ => unreachable!("非对象/数组的 document 已在上面报错"),
     };
-
-    let mut updated = document_map.clone();
-    if let Some(Value::Array(available)) = document_map.get("availableModels") {
+    // 先取一份再改写：`updated` 接下来要被 insert，不能同时持有它的借用。
+    let available = match updated.get("availableModels") {
+        Some(Value::Array(items)) => Some(items.clone()),
+        _ => None,
+    };
+    if let Some(available) = available {
         // 旧条目里属于本服务、且这一次不再保留的 id（等价于 JS 的
         // `new Set(list.filter(m => m.buddyBridgeOwner === OWNER && !kept.includes(m)).map(m => m.id))`：
         // `kept` 恰好是「非本服务」的元素，引用比较对 owner 条目恒为 false）。
@@ -349,7 +376,7 @@ pub fn merge_models(
             .map(|model| model.get("id"))
             .collect();
         let mut next: Vec<Value> = Vec::new();
-        for id in available {
+        for id in &available {
             if dropped
                 .iter()
                 .any(|old| json::strict_eq(*old, Some(id)))
@@ -489,7 +516,7 @@ pub fn sync_models_with(
             SyncError::invalid_json(format!("Invalid JSON in WorkBuddy models.json: {error}"))
         })?,
     };
-    let merged = merge_models(&document, models, endpoint, key, options.allow_empty)?;
+    let merged = merge_models(&document, models, endpoint, key, options.allow_empty, options.shape)?;
     let count = owned_count(&merged);
 
     if json::js_stringify(&merged) == json::js_stringify(&document) {
@@ -652,8 +679,15 @@ mod tests {
     #[test]
     fn merge_into_array_document_keeps_foreign_entries() {
         let document = json!([{ "id": "mine" }, { "id": "other", "buddyBridgeOwner": OWNER }]);
-        let merged = merge_models(&document, &[model("gpt")], "http://127.0.0.1:1", "k", false)
-            .expect("合并成功");
+        let merged = merge_models(
+            &document,
+            &[model("gpt")],
+            "http://127.0.0.1:1",
+            "k",
+            false,
+            DocumentShape::Preserve,
+        )
+        .expect("合并成功");
         let items = merged.as_array().expect("数组");
         assert_eq!(items.len(), 2);
         assert_eq!(items[0]["id"], json!("mine"));
@@ -674,7 +708,15 @@ mod tests {
             "availableModels": ["keep", "OC · old", "keep"],
             "other": 1
         });
-        let merged = merge_models(&document, &[model("new")], "http://e", "k", false).expect("合并");
+        let merged = merge_models(
+            &document,
+            &[model("new")],
+            "http://e",
+            "k",
+            false,
+            DocumentShape::Preserve,
+        )
+        .expect("合并");
         assert_eq!(merged["other"], json!(1));
         assert_eq!(merged["availableModels"], json!(["keep", "OC · new"]));
         assert_eq!(merged["models"].as_array().expect("数组").len(), 2);
@@ -685,19 +727,35 @@ mod tests {
 
     #[test]
     fn merge_rejects_empty_discovery_and_unknown_shape() {
-        let empty = merge_models(&json!([]), &[], "http://e", "k", false).expect_err("空列表报错");
+        let empty = merge_models(&json!([]), &[], "http://e", "k", false, DocumentShape::Preserve)
+            .expect_err("空列表报错");
         assert_eq!(
             empty.message,
             "Empty model discovery; existing configuration preserved"
         );
-        let allowed = merge_models(&json!([]), &[], "http://e", "k", true).expect("allowEmpty");
+        let allowed = merge_models(&json!([]), &[], "http://e", "k", true, DocumentShape::Preserve)
+            .expect("allowEmpty");
         assert_eq!(allowed, json!([]));
 
-        let bad = merge_models(&json!({ "nope": 1 }), &[model("a")], "http://e", "k", false)
-            .expect_err("结构不识别");
+        let bad = merge_models(
+            &json!({ "nope": 1 }),
+            &[model("a")],
+            "http://e",
+            "k",
+            false,
+            DocumentShape::Preserve,
+        )
+        .expect_err("结构不识别");
         assert_eq!(bad.message, "Unrecognized WorkBuddy models.json; left unchanged");
-        let scalar = merge_models(&json!("text"), &[model("a")], "http://e", "k", false)
-            .expect_err("标量不识别");
+        let scalar = merge_models(
+            &json!("text"),
+            &[model("a")],
+            "http://e",
+            "k",
+            false,
+            DocumentShape::Preserve,
+        )
+        .expect_err("标量不识别");
         assert_eq!(scalar.kind, SyncErrorKind::Other);
     }
 
@@ -710,6 +768,7 @@ mod tests {
             "http://e",
             "k",
             false,
+            DocumentShape::Preserve,
         )
         .expect("合并");
         let ids: Vec<&Value> = merged
@@ -729,7 +788,9 @@ mod tests {
             "images": true, "chatOnly": true, "reasoning": true,
             "variants": { "low": { "reasoningEffort": "low" }, "off": { "disabled": true } }
         });
-        let merged = merge_models(&document, &[rich], "http://e", "k", false).expect("合并");
+        let merged =
+            merge_models(&document, &[rich], "http://e", "k", false, DocumentShape::Preserve)
+                .expect("合并");
         let entry = &merged.as_array().expect("数组")[0];
         assert_eq!(entry["maxInputTokens"], json!(32000));
         assert_eq!(entry["maxOutputTokens"], json!(4096));
@@ -738,6 +799,56 @@ mod tests {
         assert_eq!(entry["supportsReasoning"], json!(true));
         assert_eq!(entry["onlyReasoning"], json!(true));
         assert_eq!(entry["reasoning"]["supportedEfforts"], json!(["low"]));
+    }
+
+    #[test]
+    fn a_codebuddy_shaped_merge_moves_an_array_document_into_the_models_key() {
+        let document = json!([{ "id": "mine" }, { "id": "OC · old", "buddyBridgeOwner": OWNER }]);
+        let merged = merge_models(
+            &document,
+            &[model("gpt")],
+            "http://e",
+            "k",
+            false,
+            DocumentShape::ModelsObject,
+        )
+        .expect("合并");
+        let object = merged.as_object().expect("对象");
+        assert_eq!(object.keys().collect::<Vec<_>>(), vec!["models"], "不新增任何键");
+        let items = object["models"].as_array().expect("数组");
+        assert_eq!(
+            items.iter().map(|item| &item["id"]).collect::<Vec<_>>(),
+            vec![&json!("mine"), &json!("OC · gpt")],
+            "外来条目原样搬进去，本工具的旧条目照常摘掉"
+        );
+    }
+
+    /// Windows 上真实发生过的形态：旧版把 CodeBuddy 的 `models.json` 补建、并一路写成裸数组，
+    /// 插件读不出任何模型。收敛到对象形态必须**就地自愈**，用户不必手动删文件。
+    #[test]
+    fn a_codebuddy_sync_rewrites_a_bare_array_file_in_place() {
+        let dir = sandbox("sync-codebuddy-shape");
+        let file = dir.join("models.json");
+        fs::write(&file, r#"[{"id":"own-1"}]"#).expect("预置裸数组文件");
+        let options = SyncOptions {
+            allow_empty: true,
+            require_existing: true,
+            shape: DocumentShape::ModelsObject,
+        };
+
+        let outcome =
+            sync_models_with(&file, &[model("a")], "http://e", "k", &options, &test_io()).expect("写入");
+        assert!(outcome.changed, "形态被收敛必须算一次真实写入");
+        let text = fs::read_to_string(&file).expect("读取");
+        assert!(text.starts_with("{\n  \"models\": [\n"), "{text}");
+        assert!(text.contains("\"id\": \"own-1\""), "用户自己的条目不得丢");
+        assert!(text.contains("\"id\": \"OC · a\""), "{text}");
+
+        // 幂等：第二次不再改动盘。
+        let second =
+            sync_models_with(&file, &[model("a")], "http://e", "k", &options, &test_io()).expect("二次");
+        assert!(!second.changed, "收敛一次之后就稳定");
+        assert_eq!(fs::read_to_string(&file).expect("读取"), text);
     }
 
     #[test]
@@ -997,6 +1108,7 @@ mod tests {
         let options = SyncOptions {
             allow_empty: false,
             require_existing: true,
+            shape: DocumentShape::Preserve,
         };
         let error = sync_models_with(&file, &[model("a")], "http://e", "k", &options, &test_io())
             .expect_err("缺失文件");
@@ -1025,6 +1137,7 @@ mod tests {
         let options = SyncOptions {
             allow_empty: true,
             require_existing: true,
+            shape: DocumentShape::Preserve,
         };
         let outcome = sync_models_with(&file, &[], "http://e", "k", &options, &test_io())
             .expect("退出清理");
@@ -1067,6 +1180,7 @@ mod tests {
         let options = SyncOptions {
             allow_empty: true,
             require_existing: true,
+            shape: DocumentShape::Preserve,
         };
         let outcome = sync_models_with(&file, &[], "http://e", "k", &options, &test_io())
             .expect("清理");

@@ -907,6 +907,7 @@ fn rust_output(op: &str, input: &Value) -> Result<Value, String> {
                 &endpoint,
                 &key,
                 options.allow_empty,
+                options.shape,
             ) {
                 Ok(value) => json!({ "ok": true, "value": value }),
                 Err(error) => sync_failure(&error),
@@ -999,6 +1000,9 @@ fn reset_case_files(case: &Value, sandbox: &Path, base: &str) {
     write_case_files(case, sandbox, base);
 }
 
+/// 对拍只跑迁移前 JS 的那一档形态：`Preserve`（数组进→数组出，对象进→对象出）。
+/// 夹具因此不需要任何新字段，快照仍逐字节等价；按目标区分形态是 Rust 侧的新行为，
+/// 由 `sync.rs` 的单元测试钉住。
 fn sync_options(input: &Value) -> sync::SyncOptions {
     sync::SyncOptions {
         allow_empty: input
@@ -1009,6 +1013,7 @@ fn sync_options(input: &Value) -> sync::SyncOptions {
             .get("requireExisting")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        shape: sync::DocumentShape::default(),
     }
 }
 

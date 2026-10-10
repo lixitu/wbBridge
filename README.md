@@ -7,10 +7,13 @@
 - 启动时按需下载官方 OpenCode 运行时（失败自动尝试 npmmirror 镜像，下载后校验版本），以隔离配置启动，不使用用户已有的 OpenCode 数据。
 - 自动发现 OpenCode 免费模型，向每个模型发送简短真实请求检测可用性与工具调用能力（会消耗少量免费额度）。
 - 在本地 `127.0.0.1` 提供 OpenAI 兼容接口（Chat Completions + SSE），只发布检测通过的模型。
-- 将可用模型写入 WorkBuddy 的 `models.json`（只修改本应用拥有的条目，写入前备份；退出时清理，保留用户手动配置）。
+- 将可用模型写入 WorkBuddy 与 CodeBuddy 的 `models.json`（只修改本应用拥有的条目，原子替换；**不再产生 `.bak` 备份**，并顺手清扫旧版攒下的同族存量备份；退出时清理自己名下的条目，保留用户手动配置）。
+- **可选：接入你自己的平台 Key**。侧栏「平台」视图里填入 ModelScope（魔搭）/ SiliconFlow / 腾讯混元 TokenHub / 智谱 任一家 Key，该家的免费模型会和 OpenCode 自带的免费模型一起被发现、检测并发布。Key 只落盘到数据目录 `providers.json`（`0600`），面板保存后立即清空、只显示「已配置 / 未配置」，绝不进日志、`status.json`、面板偏好或子进程环境变量。
 - **关闭窗口即退出应用**（macOS / Windows / Linux 行为一致）：壳在窗口关闭请求里走与托盘「退出」完全相同的优雅关停链路（停核心 → 清理 WorkBuddy 配置 → 结束进程），不再驻留托盘、无需用户二次退出。托盘仍在（运行期间可左键唤回面板、切代理、重选配置、退出）。核心是静态链接进壳的 Rust 库（不再是独立进程），生命周期完全由壳掌握：壳可重启核心，核心任何退出路径都只能触发回调而绝不能终止壳进程。单独运行核心可执行文件时，`BUDDY_PARENT_PID` 父进程看门狗会在父进程消失后自行优雅退出，不留占端口的孤儿进程。
 
 ## 下载与安装
+
+> 当前版本 **1.1.10**（尚未发布）。按远端标签实测（`git ls-remote --tags origin`），GitHub 上已有的 Release 是 `v1.0.0` / `v1.0.1` / `v1.0.2` / `v1.0.3` / `v1.0.5` / `v1.1.0`——**最新已发布的是 `v1.1.0`**，`v1.0.4` 与 `1.1.1` ~ `1.1.10` 从未打标签。下表是 `v1.0.2` 那一轮实测到的产物形态（资产名以磁盘上的形式书写；GitHub 会把名字里的空格规范化成 `.`，页面上形如 `WB.Bridge_1.0.2_aarch64.dmg`）。
 
 | 系统 | 状态 | 安装包 |
 |---|---|---|
@@ -32,12 +35,12 @@ xattr -dr com.apple.quarantine "/Applications/WB Bridge.app"
 
 ## 使用
 
-1. 先安装并登录 WorkBuddy，在 WorkBuddy 中保存一个自定义模型（生成 `models.json`）。
+1. 先安装并登录 WorkBuddy（CodeBuddy 同样支持，两个插件可以都装）。在插件里保存过一个自定义模型最稳妥——它会生成 `models.json`；插件目录已存在但还没有这个文件时，本应用会补建一个空配置再照常发布（已存在的文件绝不改写，插件目录不存在也不会替插件建目录）。
 2. 启动 WB Bridge：自动准备运行时、扫描并检测免费模型，找到有效配置后自动导入。
 3. 找不到配置时点「导入 WorkBuddy」选择 `models.json`；Windows 托盘菜单「选择 WorkBuddy 配置…」可更换位置。
 4. 「使用系统代理」开关控制运行时下载与模型请求是否走系统 HTTP/HTTPS 代理。
 
-界面说明：左侧栏为分组导航（模型 / 运行 / 集成 / 其他，底部为运行设置），5 个入口均可点击并在侧栏高亮当前视图——模型与服务、运行日志、用量与额度、WorkBuddy 集成、关于与更新；点击模型行后详情在**右侧常驻分栏**显示，按 `Esc`、点详情头部「收起详情」或窗口失焦即可收起。
+界面说明：左侧栏为分组导航（模型 / 运行 / 集成 / 其他，底部为运行设置），6 个入口均可点击并在侧栏高亮当前视图——模型与服务、平台、运行日志、用量与额度、插件集成、关于与更新；点击模型行后详情在**右侧常驻分栏**显示，按 `Esc`、点详情头部「收起详情」或窗口失焦即可收起。
 
 ## 从源码构建
 
@@ -45,8 +48,9 @@ xattr -dr com.apple.quarantine "/Applications/WB Bridge.app"
 
 ```sh
 npm install
-npm test             # 核心测试：cargo test --manifest-path src-tauri/core/Cargo.toml（222 项 = 201 单测 + 11 JS 对拍 + 10 红线）
+npm test             # 核心测试：cargo test --manifest-path src-tauri/core/Cargo.toml（278 项 = 256 单测 + 11 JS 对拍 + 11 红线）
 npm run test:prefs   # 面板偏好单测（node --test，8 项，不联网）
+npm run test:ops     # 操作守卫单测（node --test，11 项，纯函数）
 npm run test:manifest# 更新清单生成单测（node --test，9 项，用临时产物目录跑真脚本）
 npm run test:updater-key # 签名注入单测（node --test，13 项，不碰 ~/.tauri）
 npm run rust:check   # cargo check 核心
@@ -55,7 +59,7 @@ cargo clippy --all-targets --manifest-path src-tauri/core/Cargo.toml   # 核心�
 cargo clippy --no-deps --manifest-path src-tauri/Cargo.toml     # 壳门禁：0 warning
 npm run dev          # 开发运行（tauri dev，构建期由 beforeDevCommand 拉起 vite:dev）
 npm run build        # 桌面应用构建（vite:build && tauri:build && make:dmg；tauri:build = node scripts/with-updater-key.mjs tauri build 的签名注入包装器，产物在 src-tauri/target/*/release/bundle/）
-npm run version:check # 校验 5 处版本号落点一致
+npm run version:check # 校验 7 处版本号落点一致（package.json、tauri.conf.json、两侧 Cargo.toml、AGENTS.md 三行）
 ```
 
 > ⚠ 自己从源码构建时需要 updater 签名私钥：`tauri.conf.json` 打开了 `bundle.createUpdaterArtifacts`，构建入口 `npm run build` = `vite:build && tauri:build && make:dmg`，其中 `npm run tauri:build` = `node scripts/with-updater-key.mjs tauri build`（2026-10-03 完全对齐参考项目后的写法）。该包装器**只做签名注入、不做前置校验**：按「进程环境 > 仓库 `.env.local` > `.env` > `~/.tauri/wbBridge.env`、`~/.tauri/wbBridge-updater.env` > 兜底 `~/.tauri/wbBridge-updater.key`」汇齐私钥与口令（逐项打印来源文件名、`~/` 由脚本展开、显式空口令压过文件），把 `.key` 路径读成内联全文注入 `tauri build` 只认的 `TAURI_SIGNING_PRIVATE_KEY`（并删掉与之互斥的 `_PATH`），然后 exec 目标命令。它**不判形态、不试签、公私钥配对不符也只告警不阻断**，全程只输出来源与公开的 key ID、绝不回显密钥与口令；拿不到私钥时，要等整套 Rust 编译跑完才在打包那一步失败。自己签就生成一把（`npm run tauri -- signer generate -p '' -w ~/.tauri/my.key`）并把 `plugins.updater.pubkey` 换成自己的公钥——**配置里只有一条公钥、`verify_signature` 也只认第一条**（此前「拼两条＝轮换白名单」的说法已被源码推翻），换钥必须同步换 pubkey，否则产物的 `.sig` 与配置公钥不配对、客户端验签必失败；只是想出安装包不要更新链，可临时关掉 `createUpdaterArtifacts`。细节见[版本与发布](docs/wiki/版本与发布.md)。

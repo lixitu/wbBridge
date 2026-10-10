@@ -13,7 +13,7 @@
 > **状态**:。五处落点已一致为 `1.0.5`（手动改写 `package.json` / `tauri.conf.json` / `Cargo.toml` / `package-lock.json` + `AGENTS.md` 两行），但**尚未构建任何安装包、尚未打标签**，且版本落点提交仍未执行——按铁律先提交、再在那一个提交上打 `v1.0.5`。
 > **日期**: 2026-10-09
 > **上一版本**: v1.0.4（五处落点已一致、尚未打标签）
-> **GitHub Release 正文**: [`RELEASE-NOTES-v1.0.5.md`](RELEASE-NOTES-v1.0.5.md)
+> **GitHub Release 正文**: 底本 `RELEASE-NOTES-v1.0.5.md` 已随 `d8984a0`（2026-10-09，下一轮整理）删除，正文以线上 Release 为准 → [Release v1.0.5](https://github.com/trexwb/wbBridge/releases/tag/v1.0.5)（2026-10-10 `api.github.com` 实测 `draft = false`、`published_at = 2026-10-09T06:19:17Z`、**23 个资产**）。⚠ 本行原先的「尚未打标签」与 `docs/version/README.md` 索引里「`v1.0.4` 从未打标签」都需按那次实测重读：**`v1.0.4` 确实从未打标签**，但 **`v1.0.5` 已完整发布**，下一节 v1.0.4（模型发布多插件写入）的代码正是随这个标签一起进入发布物的
 > **本版主题**: 探测回归修复 + 单模型重新检测——升级后全部模型不可用的根因修复，并新增面板单模型重新检测功能
 > **版本推进理由**: 与 v1.0.4 **不同类、不同根因**——v1.0.3 引入的 `probe_meta()` 让 `chat_only_attempt` 带上 `probe: true`，关闭了 `backend.rs` 两处转写闸门，导致升级后全部模型探测不可用；本版回退该标记恢复转写兜底。同时修复 `start_probes_admin` 二次解包 bug，并新增面板单模型重新检测按钮。**维护者明确要求推进版本号**，末位 +1。
 
@@ -32,12 +32,12 @@
 #### 1. 回退 `chat_only_attempt` 转写闸门（根因修复）
 
 - **根因**：v1.0.3 全量代码复审时，将 `chat_only_attempt` 的 meta 从 `json!({})` 改为 `probe_meta()`（`{ probe: true }`）。这关闭了 `backend.rs:1575`（第二次重试时的 `translate` 转写）和 `backend.rs:1619`（无 tool_calls 且 handoff miss 时的 `rescue` 转写）两处闸门。主探测失败后降级到 chat-only 路径，升级前靠辅助模型转写兜底通过，升级后转写被禁用 → 全部模型不可用。
-- **修复**：[orchestration.rs:1197](file:///Users/wbtrex/website/localServer/node/trexwb/git/wbBridge/src-tauri/core/src/orchestration.rs#L1197) 的 meta 回退为 `json!({})`，恢复转写闸门开放。主探测路径 `probe_single_model` 仍带 `probe: true` 不变。
+- **修复**：`src-tauri/core/src/orchestration.rs` 的 `chat_only_attempt`（现 `:1467`，本分节原先写的 `:1197` 已随后续改动漂移） 的 meta 回退为 `json!({})`，恢复转写闸门开放。主探测路径 `probe_single_model` 仍带 `probe: true` 不变。
 
 #### 2. 修复 `start_probes_admin` 二次解包 bug
 
 - **根因**：`POST /admin/probe` 服务端从请求体提取 `body.get("model")` 后传给 `start_probes_admin(model)`，但该函数又对字符串值调 `value.get("model")`，返回 `None` → 单模型探测请求退化为全量探测。
-- **修复**：[orchestration.rs:1939](file:///Users/wbtrex/website/localServer/node/trexwb/git/wbBridge/src-tauri/core/src/orchestration.rs#L1939) 直接透传 `start_probes(model, false, false)`。
+- **修复**：`src-tauri/core/src/orchestration.rs` 的 `start_probes_admin`（现 `:2468`，本分节原先写的 `:1939` 已随后续改动漂移）直接透传 `start_probes(model, false, false)`。
 
 #### 3. 面板单模型重新检测按钮
 
@@ -57,8 +57,8 @@
 
 > **状态**:。五处落点已一致为 `1.0.4`（`npm run version:check` 实测「全部 5 处版本号一致（1.0.4）」），但**尚未构建任何安装包、尚未打标签**，且版本落点提交仍未执行——按铁律先提交、再在那一个提交上打 `v1.0.4`。
 > **日期**: 2026-10-08
-> **上一版本**: v1.0.3（五处落点已一致、尚未打标签；v1.0.2 为最近一个已 Publish 的 Release，23 个资产）
-> **GitHub Release 正文**: [`RELEASE-NOTES-v1.0.4.md`](RELEASE-NOTES-v1.0.4.md)
+> **上一版本**: v1.0.3（五处落点已一致。⚠ 本行原先写「尚未打标签」，2026-10-10 `api.github.com` 实测**不成立**：标签 `v1.0.3` 存在、Release 已 Publish、`published_at = 2026-10-03T10:37:36Z`、**23 个资产**）
+> **GitHub Release 正文**: 底本 `RELEASE-NOTES-v1.0.4.md` 已随 `4186b34`（2026-10-09 整理）删除。**`v1.0.4` 从未打标签、从未发布**（2026-10-10 `api.github.com` 逐标签实测：远端只有 `v1.0.0 / v1.0.1 / v1.0.2 / v1.0.3 / v1.0.5 / v1.1.0 / v1.1.10`，无 `v1.0.4`），本版内容随下一个标签 `v1.0.5` 发布，正文见 [Release v1.0.5](https://github.com/trexwb/wbBridge/releases/tag/v1.0.5)
 > **本版主题**: 模型发布多插件写入——自动检测 WorkBuddy 与 CodeBuddy，向所有检测到的目标分发写入；单目标失败不影响其他目标，未安装目标跳过并说明原因
 > **版本推进理由**: 与 v1.0.3 **不同类、不同根因**——新增第二个写入目标（检测、定位、分发、聚合均为此前不存在的功能），且**维护者明确要求推进版本号**（`npm run version:set -- 1.0.4`），末位 +1。
 
@@ -98,7 +98,7 @@
 > **状态**:。五处落点已一致为 `1.0.3`（`npm run version:check` 实测「全部 5 处版本号一致（1.0.3）」），但**尚未构建任何安装包、尚未打标签**，且版本落点提交仍未执行——按铁律先提交、再在那一个提交上打 `v1.0.3`。
 > **日期**: 2026-10-03
 > **上一版本**: v1.0.2（标签 `0e4a535`，Release 已 Publish、23 个资产）
-> **GitHub Release 正文**: [`RELEASE-NOTES-v1.0.3.md`](RELEASE-NOTES-v1.0.3.md)
+> **GitHub Release 正文**: 底本 `RELEASE-NOTES-v1.0.3.md` 已随 `768fcd6`（2026-10-08 整理）删除，正文以线上 Release 为准 → [Release v1.0.3](https://github.com/trexwb/wbBridge/releases/tag/v1.0.3)（2026-10-10 `api.github.com` 实测 `draft = false`、`published_at = 2026-10-03T10:37:36Z`、**23 个资产**）。⚠ 本分节与 `docs/version/README.md` 索引里「v1.0.3 从未构建、从未打标签」的表述**已被该实测推翻**，读到时以本行为准
 > **本版主题**: 多平台接入 Stage 1（平台注册表 + 用户自持 Key 通道）＋ Stage 2（模型命名空间参数化）＋ 四项安全 / 数据红线修复 ＋ `latest.json` 下载 url 缺陷修复与 CI 资产对账闸门
 > **版本推进理由**: 与 v1.0.2 **不同类、不同根因**——新增三条管理动作与凭据落盘通道；修复的四个根因（一次性子进程携带宿主环境、探测路径的转写开关、`status.json` 非对象形状在 `panic = "abort"` 下整进程退出、并发 `modelResults` 互相吞写）此前都不存在；且**维护者明确要求推进版本号**（`npm run version:set -- 1.0.3`），末位 +1。
 
@@ -137,7 +137,7 @@
 > **状态**:（📝→✅ 的定夺属维护者；事实部分已翻篇：标签 `v1.0.2` 已打在 `0e4a535`，GitHub Release `v1.0.2` **已 Publish、23 个资产**（六平台安装包 + 各自 `.sig` + `latest.json`）。`release.yml` 2026-10-03 首跑止步于 updater 签名步骤（私钥变量取到空值，已修接线），**同日末轮已跑通完整一轮**（run `37092915120`、作业 8/8 全绿，六平台产物与产物名、`.sig` 全部实测到）；🔴 但那一份 `latest.json` 的六条 `url` 全部 404——GitHub 上传时把**资产名里的空格规范化成 `.`**，而按空格名（含 `%20`）拼出的下载路径不存在，`gen-latest-json.mjs` 与 CI 对账闸门已修，线上那份待重传。仍**未验证**：GUI 实机启动、一次真实升级闭环、六平台的实机安装。本工作区内的后续更正尚未提交）
 > **日期**: 2026-10-02
 > **上一版本**: v1.0.1（远端标签 `v1.0.1` → `679a2cb`，含版本推进提交 `46c7c56`；**本地标签仍指 `f046208`**，同步动作属维护者）
-> **GitHub Release 正文**: [`RELEASE-NOTES-v1.0.2.md`](RELEASE-NOTES-v1.0.2.md)
+> **GitHub Release 正文**: 底本 `RELEASE-NOTES-v1.0.2.md` 已随 `39895c1`（2026-10-03 整理）删除，正文以线上 Release 为准 → [Release v1.0.2](https://github.com/trexwb/wbBridge/releases/tag/v1.0.2)（run `37092915120`、23 个资产）
 > **本版主题**: 自动更新链路接入（updater + process 插件、签名产物、`latest.json` 单一写者）+ 发布链路自证（标签↔版本闸门、产物名自检）+ 面板偏好持久化；2026-10-03 追加一轮渲染与轮询降耗（不推进版本号）。
 > **版本推进理由**: 本版新增内容与 v1.0.1 **不同类、不同根因**——把「升级只能靠手动重装」变成「应用内检查 → 下载 → 重启生效」，并给发布链路加上防标签指错的门禁与偏好持久化。**推进动作由维护者本人执行**（工作区 5 处落点已改为 `1.0.2`，`npm run version:check` 通过），Agent 未擅自推进。
 
@@ -198,7 +198,7 @@
 - 🟡 **修 5（依赖注释的事实修正）**：`base64` 注释的「依赖树里的两份」口径**只对核心 workspace 成立**（实读 `src-tauri/core/Cargo.lock`：0.22.1 ← reqwest、0.23.1 ← hyper-util；壳 workspace 是**三份**，另有一份 0.21.7 ← `swift-rs`），注释已限定范围。「npm registry 回 gzip」本轮**独立复测**（`curl -H 'Accept-Encoding: gzip, br'`）：两白名单源的元数据均 `content-encoding: gzip`，而 tarball（npmjs 直连、npmmirror 的 CDN 目标）均为 `application/octet-stream` 且**不带 content-encoding**——即 brotli 在真实链路上从不被用到，去掉它不影响 sha512 校验语义。另补口径边界：这是**核心 crate 自身**依赖树的收益，壳产物里 brotli 仍会经 `tauri-codegen` 引入，安装包总体积不会因此等量减少。
 - ✅ **复审确认无恙的项**（不再重复怀疑）：`service_down` 分支 emit `core-failed` 后直接 `continue`，故障期间不发 `core-status`，故 FIFO 折叠不会出现「status 洗掉 error」；`EMPTY_RESULT` 共享单例安全（`ModelRow.vue`、`ModelDetails.vue` 对 `props.result` 全为只读取值）；`props.activity || []` **不是冗余**（壳在缺键时会发 `activity: null`，prop 默认值拦不住 null）；两份 Cargo.lock 无多删漏删（核心恰好移除 brotli/brotli-decompressor/alloc-stdlib/alloc-no-stdlib，壳只删 async-compression 的一行引用）；未新增 IPC 命令或事件名、未写 localStorage、未引入外部请求、未推进版本号。
 - ⚠️ **仍无单测的项**：新补的 `status_read_needed_only_skips_when_mtime_is_known` 只覆盖快路径**判定**；`watch_status` 整条循环仍需真实 `AppHandle`，面板帧合并也没有 JS 单测（JS 侧本轮仍只有 `test:prefs` 8 + `test:manifest` 9 两套；同日稍后的签名接线轮另加 `test:updater-key` 9，见下方第六节）。
-- **验证（2026-10-03 复审后复跑）**：核心 `cargo test` **207 通过 / 0 失败**、壳 `cargo test --lib` **9 通过 / 0 失败**（8 → 9，新增上述快路径判定）、核心与壳 `cargo clippy` **0 warning**、`npm run test:prefs` **8 通过**、`npm run test:manifest` **9 通过**、`npx eslint .` **0 problem**、`npm run vite:build` ✓ built（`dist/assets/index-*.js` 100.87 kB / gzip 37.95 kB）、`npm run version:check` **5 处一致（1.0.2）**。细节见 `docs/validation.md` 2026-10-03 条目与 [`RELEASE-NOTES-v1.0.2.md`](RELEASE-NOTES-v1.0.2.md)。
+- **验证（2026-10-03 复审后复跑）**：核心 `cargo test` **207 通过 / 0 失败**、壳 `cargo test --lib` **9 通过 / 0 失败**（8 → 9，新增上述快路径判定）、核心与壳 `cargo clippy` **0 warning**、`npm run test:prefs` **8 通过**、`npm run test:manifest` **9 通过**、`npx eslint .` **0 problem**、`npm run vite:build` ✓ built（`dist/assets/index-*.js` 100.87 kB / gzip 37.95 kB）、`npm run version:check` **5 处一致（1.0.2）**。细节见 `docs/validation.md` 2026-10-03 条目（底本 `RELEASE-NOTES-v1.0.2.md` 已随 `39895c1` 删除，线上正文见 [Release v1.0.2](https://github.com/trexwb/wbBridge/releases/tag/v1.0.2)）。
 - ⚠️ 渲染 / 轮询收益仍需实机确认：GUI 从未启动，rAF 在 WKWebView 中最小化 / `hide()` 下的真实停摆行为未实测。
 
 ### 六、2026-10-03 追加（不推进版本号）：updater 签名接线与 CI 首轮失败定位
@@ -231,8 +231,8 @@
 
 > **状态**:（改动已在工作区，**尚未提交、尚未打标签**；GUI 未实机启动、`release.yml` 未在 CI 跑过、无安装包产出）
 > **日期**: 2026-10-01（同日第八轮）
-> **上一版本**: v1.0.0（该分节从未发布，无安装包；本次推进即代表 v1.0.0 基线快照的全部内容并入 1.0.1）
-> **GitHub Release 正文**: [`RELEASE-NOTES-v1.0.1.md`](RELEASE-NOTES-v1.0.1.md)
+> **上一版本**: v1.0.0（⚠ 本行原先写「该分节从未发布，无安装包」，2026-10-10 `api.github.com` 实测**不成立**：标签 `v1.0.0`（`f046208`）与 Release `v1.0.0` 都在远端、`draft = false`、`published_at = 2026-10-01T07:28:15Z`、**14 个资产**，CI run `36830507370` completed / success）；本次推进即代表 v1.0.0 基线快照的全部内容并入 1.0.1
+> **GitHub Release 正文**: 底本 `RELEASE-NOTES-v1.0.1.md` 已随 `1305362`（2026-10-03，滚动单份底本，见 [`docs/version/README.md`](README.md) 索引下注）删除，正文以线上 Release 为准 → [Release v1.0.1](https://github.com/trexwb/wbBridge/releases/tag/v1.0.1)（2026-10-10 `api.github.com` 实测 `draft = false`、`published_at = 2026-10-01T12:44:37Z`、**14 个资产**、无 `.sig`/`latest.json`，那一版还没接 updater）
 > **版本推进理由**: 本版包含与 v1.0.0 **不同类、不同根因**的新内容——供应链来源校验、鉴权兜底、壳生命周期、并发/panic 修复、面板 4 个只读视图与 `usage` 统计；且**用户在本次明确要求推进版本号**（"更新版本到 v1.0.1"）。两条同时满足 `AGENTS.md` 的版本号规则，故末位 +1：`1.0.0 → 1.0.1`。
 
 ### 一、版本号落点（`npm run version:set -- 1.0.1` + `npm run version:check` 实测）

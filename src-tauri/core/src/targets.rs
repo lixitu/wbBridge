@@ -7,10 +7,12 @@
 //! [`crate::codebuddy_config`]（与其逐行对照的实现）。
 //!
 //! 合并写入共用 [`crate::sync`]：同一套 OWNER 归属标记、冲突不覆盖、文件锁、二次读取与
-//! 原子替换——CodeBuddy 不是第二套写入实现，只是第二个写入目标。
+//! 原子替换——CodeBuddy 不是第二套写入实现，只是第二个写入目标。唯一的按目标差异是
+//! **外层形态**（[`Target::document_shape`]）：WorkBuddy 的 `models.json` 顶层是裸数组，
+//! CodeBuddy 的那份是 `{ "models": […] }` 对象；写错形态会让插件读不出任何模型。
 
 use crate::codebuddy_config;
-use crate::sync::SyncOutcome;
+use crate::sync::{DocumentShape, SyncOutcome};
 use crate::workbuddy_config;
 use crate::Env;
 use serde_json::Value;
@@ -50,6 +52,18 @@ impl Target {
         }
     }
 
+    /// 该目标 `models.json` 的外层形态。
+    ///
+    /// 以两边真实文件为凭（2026-10-10）：WorkBuddy 顶层是**裸数组**，CodeBuddy 顶层是
+    /// `{ "models": […] }` 对象。给 CodeBuddy 写裸数组时它一个模型都读不出（Windows 上实测到），
+    /// 所以这里按目标固定，而不是「文档原来什么形态就写回什么形态」。
+    pub fn document_shape(self) -> DocumentShape {
+        match self {
+            Target::WorkBuddy => DocumentShape::Preserve,
+            Target::CodeBuddy => DocumentShape::ModelsObject,
+        }
+    }
+
     /// 目标自己的环境变量覆盖键（用于状态里提示用户如何显式指定）。
     pub fn models_file_env(self) -> &'static str {
         match self {
@@ -75,8 +89,9 @@ pub fn resolve_target_models_file(
 
 /// 导入链的对称入口：校验用户手动选择的 `models.json`（面板「导入」动作）。
 ///
-/// 两个目标的配置**同名同形**，共用同一校验器；包装层存在的意义是让 `orchestration.rs`
-/// 对两个目标都只经本模块引用（发现链 `resolve_target_models_file` 与导入链同构），
+/// 两个目标的配置文件**同名**，且读取侧都接受「裸数组」与 `{ "models": […] }` 两种外层形态，
+/// 因此共用同一校验器；**写出**时各自按 `Target::document_shape` 固定形态。包装层存在的意义是让
+/// `orchestration.rs` 对两个目标都只经本模块引用（发现链 `resolve_target_models_file` 与导入链同构），
 /// 并在 CodeBuddy 将来获得自己的导入动作时无需再动调用方。与发现链不同，这里
 /// **保留原始错误**（路径 / 格式提示是面板可见的契约文案），绝不做 `.ok()` 吞错。
 pub fn validate_selected_models_file(
@@ -320,9 +335,11 @@ mod tests {
             fs::read_to_string(&wb).expect("可读"),
             crate::workbuddy_config::EMPTY_MODELS_FILE_TEXT
         );
+        // 🔴 两边补建的形态不同：WorkBuddy 是裸数组，CodeBuddy 是 `{ "models": [] }` 对象。
+        // 给 CodeBuddy 补建裸数组会让插件一个模型都读不出来。
         assert_eq!(
             fs::read_to_string(&cb).expect("可读"),
-            crate::workbuddy_config::EMPTY_MODELS_FILE_TEXT
+            crate::codebuddy_config::EMPTY_MODELS_FILE_TEXT
         );
     }
 
@@ -401,5 +418,17 @@ mod tests {
         assert_eq!(Target::WorkBuddy.models_file_env(), "BUDDY_MODELS_FILE");
         assert_eq!(Target::CodeBuddy.models_file_env(), "BUDDY_CODEBUDDY_MODELS_FILE");
         assert_eq!(Target::ALL, [Target::WorkBuddy, Target::CodeBuddy]);
+        // 写出形态按目标固定：WorkBuddy 保留文档原形态（裸数组），CodeBuddy 必须写对象形态。
+        // 断言用字面量而非互相比较，避免两个枚举值被顺手改成同一档时自检失效。
+        assert_eq!(Target::WorkBuddy.document_shape(), DocumentShape::Preserve);
+        assert_eq!(Target::CodeBuddy.document_shape(), DocumentShape::ModelsObject);
+        // 补建的初始内容必须与该目标的写出形态一致，否则「检测到时补建」与「首次发布」会给出
+        // 两种不同的文件结构，插件读到空配置的那次仍然是不可用形态。
+        let wb_seed: serde_json::Value =
+            serde_json::from_str(crate::workbuddy_config::EMPTY_MODELS_FILE_TEXT).expect("可解析");
+        let cb_seed: serde_json::Value =
+            serde_json::from_str(crate::codebuddy_config::EMPTY_MODELS_FILE_TEXT).expect("可解析");
+        assert!(wb_seed.is_array());
+        assert!(cb_seed.get("models").map(|v| v.is_array()) == Some(true));
     }
 }

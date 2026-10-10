@@ -1,10 +1,8 @@
 # WB Bridge v1.1.10 — 平台免费模型真正可用 ＋ 探测失败看得懂 ＋ 启动/重检/备份行为改造
 
-> **状态**: 📝 待发布（**尚未构建安装包、尚未打标签**；7 处版本落点已实测一致为 `1.1.10`）
+> **状态**: ✅ **已发布**（2026-10-10 由 GitHub API 与线上清单实测，非取自既有记录）：远端存在标签 `v1.1.10`（= `befe96e7`，Merge PR #9），Release `v1.1.10` 已 Publish（`draft = false`、`published_at = 2026-10-10T04:10:03Z`）、**23 个资产**（六平台安装包 + 各自 `.sig` + mac 两个 `WB.Bridge_<arch>.app.tar.gz(+.sig)` + `latest.json`）；线上 `releases/latest/download/latest.json` 的 `version` = **1.1.10**，六条 `url` 逐条实测**全部可取回**（只取首字节，返回 206）。⚠ 仍然成立的前提：这**不等于交付已验证**——六个包**没有一个在实机装过**，一次真实的应用内升级闭环（客户端拉到包 → 装完 `relaunch()` 带新核心起来）**从未走过**。7 处版本落点实测一致为 `1.1.10`。
 > **日期**: 2026-10-10
-> **上一版本**: **v1.1.0**（GitHub 上实际 Publish 的最后一个 Release，2026-10-09，23 个资产）。其后的 `v1.1.2` ~ `v1.1.9` 只推进了版本号，**从未构建、从未打标签**，本版一次性带上它们的全部改动。
-> **取代**：草稿 [`RELEASE-NOTES-v1.1.2.md`](RELEASE-NOTES-v1.1.2.md)（未发布，本文件为其超集）。
-> ⚠ 该草稿把「上一版本」写成 v1.0.2，**不实**：按 GitHub API 实测 `v1.0.3` / `v1.0.5` / `v1.1.0` 三个 Release 都已 Publish、各带 23 个资产。
+> **上一版本**: **v1.1.0**（上一个实际 Publish 且带 23 个资产的 Release，2026-10-09）。其间的 `v1.1.2` ~ `v1.1.9` 只推进了版本号，**从未构建、从未打标签**，本版一次性带上它们的全部改动。
 
 ## 本版主题
 
@@ -91,6 +89,8 @@ ModelScope 的免费推理网关与 models.dev 的目录声明**完全不一致*
 - ✅ 核心 `cargo clippy --all-targets` **0 warning**（本目录源码 touch 后重跑确认）
 - ✅ JS 四组套件 **8 / 11 / 9 / 13 通过、0 失败**（合计 41：面板偏好、操作守卫、更新清单、签名注入），`npx eslint .` **0 problem**，`npm run vite:build` 通过
 - ✅ `npm run version:check` **7 处版本号一致（1.1.10）**
+- ✅ 壳侧门禁：`cargo clippy --no-deps --all-targets` **0 warning**（touch `src-tauri/src/lib.rs` 后重跑，非缓存复用）、`cargo test --lib`（`src-tauri/`）**9 通过 / 0 失败**
+- ✅ 发布状态实测（2026-10-10）：`git ls-remote` 确认远端标签 `v1.1.10` 指向 `befe96e7`（Merge PR #9，本地 `dev` 的 `441e4c3` 是其父提交，版本落点因此确实进入发布物）；GitHub API 确认 Release 已 Publish（`draft = false`）、**23 个资产**；线上 `latest.json`（3,681 B）的 `version` = `1.1.10`，六条 `url` 用只取首字节的 ranged 请求逐条探测，**六条全部 `206`**（即 v1.0.2 那轮「空格被规范化成 `.` 导致六条 404」的缺陷，在这份清单上已不复现）
 - ✅ 对拍夹具：`git diff --stat src-tauri/core/tests/fixtures` 相对当前 HEAD 为空。⚠ 历史上 `sync.json` 含**有意的行为分叉**（Rust 侧不再留 `.bak`，JS 归档实现仍留），已随该轮行为更新并在夹具 `doc` 里写明，不是为了让测试通过
 - ✅ 沙箱实测（2026-10-09，真实 OpenCode 1.18.35、与核心同款隔离方式，四轮对照）：`/provider` 无条件返回全部 226 家 catalog（注入不是平台出现的前提，声明段只负责鉴权）；各家 cost 字段随目录合并保留，CostZero 判定可直接复用；`OPENCODE_CONFIG_CONTENT` 通道下两个自定义 agent 可见
 - ✅ 用户以**真实 Key** 实测得出的上游事实（本机型无法独立复现，本机出网被拦截 / 重定向）：ModelScope 目录声明的 7 个免费 id 全部未承接；网关实际在册清单与目录交集为空；`ERNIE-4.5-*-PT` 三条 401 无访问权、`LongCat-Flash-Lite` 400 映射不承接——本版据此收紧清单与文案
@@ -100,20 +100,22 @@ ModelScope 的免费推理网关与 models.dev 的目录声明**完全不一致*
 - 🔴 **完整端到端闭环**：ModelScope 当前 9 条是否逐一能探测通过、发布后在 WorkBuddy / CodeBuddy 里的真实对话表现（含工具调用能力判定），都未系统验证
 - 🔴 **GUI 实机**：平台视图保存 Key 后的定向热生效链路、重新检测的行内忙态、重启后沿用上次列表、空插件目录补建后的首次真实写盘、`open_external` 打开系统浏览器——都属必须实机点一遍的类别
 - 🔴 **补建出来的 `models.json` 能否被插件自身正确读入**：按既有语义写成空数组 `[]`，插件若只认 `{"models":[]}` 对象形态则可能读不出（文件原本不存在，无从得知插件偏好）
-- 🔴 **本版安装包尚未构建**（本机与 CI 都没有）；一次真实的应用内升级闭环（客户端拉包 → 装完 `relaunch()` 带新核心起来）从未走过
-- 🔴 **壳侧门禁本轮未跑**：`cargo clippy --no-deps --all-targets` 与 `cargo test --lib`（`src-tauri/`）本次跳过——本轮没有改壳的行为（只有 `is_multiple_of` 一处等价改写），而跑它们会把此前为省磁盘删掉的 ~3G debug 树重新编出来。上次实测基线为 9 通过 / 0 失败
+- 🔴 **发布物已上传、但没有任何一包被实机装过**：Release `v1.1.10` 带 23 个资产（2026-10-10 实测），本机没有构建过 1.1.10 的包；线上清单六条 url 都能取回，这只证明**清单与资产对得上**，不证明客户端下载后能装、也不证明装完 `relaunch()` 能带新核心起来——一次真实的应用内升级闭环从未走过
 - 🔴 探测对各平台额度的消耗（清单变大后候选模型更多，每模型 60s 预算）需使用后观察
 - 🔴 macOS 为 ad-hoc 签名、**未做 Apple 公证**；其余五平台的包由 CI 产出但从未在实机装过
 
 ## 下载与校验
 
-CI 会产出六平台安装包与各自的 `.sig`（Ed25519，签名者 key ID = 配置里唯一生效的那条公钥 `2B11F78BEA8A43F`）。GitHub 会把资产名里的空格规范化成 `.`，页面上看到的名字形如：
+本 Release 实际上传的 23 个资产（2026-10-10 由 GitHub API 逐条实测，大小与名字都取自 API）。签名 Ed25519，签名者 key ID = 配置里唯一生效的那条公钥 `2B11F78BEA8A43F`。GitHub 会把资产名里的空格规范化成 `.`，下列就是页面上看到的真实名字：
 
-- macOS：`WB.Bridge_1.1.10_aarch64.dmg`（Apple Silicon）/ `WB.Bridge_1.1.10_x86_64.dmg`（Intel）
-- Windows：`WB.Bridge_1.1.10_x64-setup.exe`、`WB.Bridge_1.1.10_x64.msi`（及 arm64 同名形态）
-- Linux：`WB.Bridge_1.1.10_amd64.AppImage`、`WB.Bridge_1.1.10_amd64.deb`（及 arm64 同名形态）
+- **macOS**：`WB.Bridge_1.1.10_aarch64.dmg`（4,136,481 B，Apple Silicon）/ `WB.Bridge_1.1.10_x86_64.dmg`（4,389,179 B，Intel）——`.dmg` 由 `npm run make:dmg`（hdiutil）产出，**不参与自动更新、也没有 `.sig`**
+  - 自动更新用的包**名字不带版本号**：`WB.Bridge_aarch64.app.tar.gz`（3,666,579 B）+ `.sig`（428 B）、`WB.Bridge_x86_64.app.tar.gz`（3,968,132 B）+ `.sig`（428 B）——这是 macOS bundler 的真实形态（产物就叫 `WB Bridge.app.tar.gz`），CI 的「补架构后缀」步骤只补架构、补不了版本
+- **Windows**：`WB.Bridge_1.1.10_x64-setup.exe`（2,686,520 B）、`WB.Bridge_1.1.10_arm64-setup.exe`（2,430,518 B），各自带 `.sig`；另有 `WB.Bridge_1.1.10_x64_en-US.msi`（4,071,424 B）、`WB.Bridge_1.1.10_arm64_en-US.msi`（3,903,488 B）与各自 `.sig`（MSI 不参与更新）
+- **Linux**：`WB.Bridge_1.1.10_amd64.AppImage`（82,577,912 B）、`WB.Bridge_1.1.10_aarch64.AppImage`（80,615,944 B）——**更新包就是裸 `.AppImage`**，外层没有再包一层 tar.gz；另有 `WB.Bridge_1.1.10_amd64.deb`（4,105,480 B）、`WB.Bridge_1.1.10_arm64.deb`（3,929,872 B）与各自 `.sig`（`.deb` 不参与更新）
+- `latest.json`（3,681 B）——更新清单的唯一写者是 CI 的 `update-manifest` 作业，平台键由 artifact 目录名里的 target triple 推导
 
 > 已安装 **v1.0.2 及以后**版本的用户可直接用应用内「关于与更新 → 检查更新」（更新器自 v1.0.2 起接线）；更早版本只能重新下载安装包升级一次。
+> ✅ 一条此前挂账的前置条件本轮已实测解除：客户端读的 `releases/latest/download/latest.json` 现在就是 **v1.1.10 那份**（`version` = 1.1.10，六条 `url` 逐条只取首字节探测**全部 206**），v1.0.2 那轮「六条 url 全 404」的坏清单不再被 `latest` 下发，**无需重传**。⚠ 但这只证明「清单与资产对得上」——客户端真正拉包、装完 `relaunch()` 带新核心起来的闭环**仍未实测**；若在下载或安装那一步报错，请如实抄下原文，并把该模型/该平台记为未验证，不要改用「大概是网络问题」的说法替代错误原文。
 
 ## macOS 首次打开（ad-hoc 签名放行）
 

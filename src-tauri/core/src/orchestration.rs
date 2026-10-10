@@ -744,7 +744,12 @@ fn sync_published(published: Option<Vec<Value>>, allow_empty: bool) {
             let endpoint = endpoint.clone();
             let key = key.clone();
             let result = tokio::task::spawn_blocking(move || {
-                let options = SyncOptions { allow_empty: true, require_existing: true };
+                // 形态按目标固定：WorkBuddy 保留文档原形态，CodeBuddy 一律写 `{ "models": […] }`。
+                let options = SyncOptions {
+                    allow_empty: true,
+                    require_existing: true,
+                    shape: target.document_shape(),
+                };
                 sync_models(Path::new(&path), &models, &endpoint, &key, &options)
             })
             .await

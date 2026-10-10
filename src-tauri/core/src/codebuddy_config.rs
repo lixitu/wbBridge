@@ -1,8 +1,11 @@
 //! `workbuddy_config.rs` 的 CodeBuddy 对照实现：`models.json` 的发现与定位。
 //!
-//! CodeBuddy 的自定义模型配置与 WorkBuddy **同名同形**（`models.json`，顶层是数组或
-//! `models` 是数组），因此路径校验与错误提示直接复用 [`crate::workbuddy_config`]，
-//! 本模块只补齐 CodeBuddy 自己的定位优先级——与 WorkBuddy 版逐行对照：
+//! CodeBuddy 的自定义模型配置与 WorkBuddy **同名**（`models.json`），读取侧也接受同样的两种
+//! 外层形态（顶层数组，或顶层对象的 `models` 是数组），因此路径校验与错误提示直接复用
+//! [`crate::workbuddy_config`]。🔴 **但写出侧的形态不一样**：它真实落盘的文件顶层是
+//! `{ "models": […] }` 对象，本模块补建空配置时也必须按这个形态写
+//! （[`EMPTY_MODELS_FILE_TEXT`]），合并时的形态由 `targets.rs::Target::document_shape` 固定。
+//! 本模块另补齐 CodeBuddy 自己的定位优先级——与 WorkBuddy 版逐行对照：
 //!
 //! | 优先级 | WorkBuddy（`workbuddy_config.rs`） | CodeBuddy（本模块） |
 //! |---|---|---|
@@ -23,6 +26,17 @@ use crate::Env;
 /// 未配置 `CODEBUDDY_DATA_FOLDER_NAME` 时的默认数据目录名。
 pub const DEFAULT_DATA_FOLDER: &str = ".codebuddy";
 
+/// 补建 `models.json` 时写入的初始内容：顶层是 `{ "models": […] }` **对象**。
+///
+/// 形态以用户机器上真实的 `~/.codebuddy/models.json` 为凭（2026-10-10）——它顶层就是
+/// `models` 数组的对象，而 WorkBuddy 那份是裸数组。给 CodeBuddy 写裸数组时插件读不出任何
+/// 自定义模型（Windows 上实测到的现象），所以补建与合并都必须按对象形态落盘
+/// （合并侧见 `sync::DocumentShape::ModelsObject`）。
+///
+/// 缩进与换行取 `sync` 写盘的同一套格式（2 空格 + 结尾换行），补建出来的文件与之后
+/// 第一次真实发布产出的文件形态一致。
+pub const EMPTY_MODELS_FILE_TEXT: &str = "{\n  \"models\": []\n}\n";
+
 /// CodeBuddy 目标未被检测到时的状态说明（`sync.targets.codeBuddy.reason`）。
 pub const MISSING_MESSAGE: &str =
     "未检测到 CodeBuddy 的 models.json（默认位置 ~/.codebuddy/models.json；可用 BUDDY_CODEBUDDY_MODELS_FILE 指定）";
@@ -33,7 +47,8 @@ pub const MISSING_MESSAGE: &str =
 /// 候选文件必须通过 [`validate_models_file`] 才返回，否则 `None`。
 ///
 /// 默认位置同样先过 [`ensure_models_file`]（目录在、`models.json` 不在则补建空配置），
-/// 与 WorkBuddy 版逐行对照；显式指定的位置不补建。
+/// 补建写的是 CodeBuddy 自己的**对象**形态（[`EMPTY_MODELS_FILE_TEXT`]）而不是 WorkBuddy
+/// 的裸数组；与 WorkBuddy 版逐行对照，显式指定的位置不补建。
 pub fn resolve_models_file(saved: Option<&str>, env: &Env, home: &str) -> Option<String> {
     let explicit = env
         .get("BUDDY_CODEBUDDY_MODELS_FILE")
@@ -57,7 +72,8 @@ pub fn resolve_models_file(saved: Option<&str>, env: &Env, home: &str) -> Option
                 });
             let file = join_host(&[&directory, MODELS_FILE_NAME]);
             // 与 WorkBuddy 版同款：目录已在、models.json 缺失就补建空配置；目录不在则不动。
-            ensure_models_file(&file);
+            // 形态按本模块的常量走（对象形态），不复用 WorkBuddy 的裸数组。
+            ensure_models_file(&file, EMPTY_MODELS_FILE_TEXT);
             file
         });
 
@@ -211,10 +227,12 @@ mod tests {
             resolve_models_file(None, &env_of(&[]), &home).as_deref(),
             Some(expected.as_str())
         );
+        // 🔴 形态按 CodeBuddy 自己的对象写法，不是 WorkBuddy 的裸数组（两者必须不同）。
         assert_eq!(
             fs::read_to_string(&expected).expect("补建的文件可读"),
-            crate::workbuddy_config::EMPTY_MODELS_FILE_TEXT
+            EMPTY_MODELS_FILE_TEXT
         );
+        assert_ne!(EMPTY_MODELS_FILE_TEXT, crate::workbuddy_config::EMPTY_MODELS_FILE_TEXT);
 
         // 目录不存在时什么都不做：那属于「未安装」，不是「没配置文件」。
         let scratch = Scratch::new("ensure-none");
