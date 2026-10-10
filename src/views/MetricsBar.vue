@@ -42,5 +42,5 @@ const pending = computed(() => props.models.filter((m) => {
 .metrics b { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.15; }
 .metrics b.ok { color: var(--green); }
 .metrics b.idle { color: var(--muted); }
-.metrics span { font-size: 12px; color: var(--muted); }
+.metrics span { font-size: 12px; color: var(--muted-strong); }
 </style>

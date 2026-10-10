@@ -13,7 +13,7 @@
 
 ## 下载与安装
 
-> 当前版本 **1.1.10**（尚未发布）。按远端标签实测（`git ls-remote --tags origin`），GitHub 上已有的 Release 是 `v1.0.0` / `v1.0.1` / `v1.0.2` / `v1.0.3` / `v1.0.5` / `v1.1.0`——**最新已发布的是 `v1.1.0`**，`v1.0.4` 与 `1.1.1` ~ `1.1.10` 从未打标签。下表是 `v1.0.2` 那一轮实测到的产物形态（资产名以磁盘上的形式书写；GitHub 会把名字里的空格规范化成 `.`，页面上形如 `WB.Bridge_1.0.2_aarch64.dmg`）。
+> **源码版本 1.1.12**（📝 待发布：尚未构建安装包、尚未打标签）。**当前最新已发布的是 `v1.1.10`**——本轮 `git ls-remote --tags origin` 实测远端标签为 `v1.0.0` / `v1.0.1` / `v1.0.2` / `v1.0.3` / `v1.0.5` / `v1.1.0` / `v1.1.10`（`v1.1.10` = `befe96e7`），**没有 `v1.0.4`**，`1.1.1` ~ `1.1.9` 与 `1.1.11` / `1.1.12` 只推进过落点、从未打标签。⚠ 本段此前写「最新已发布的是 `v1.1.0`、`1.1.1` ~ `1.1.10` 从未打标签」，与同仓库 `docs/wiki/版本与发布.md` 的 API 实测（`v1.1.10` 已 Publish、23 个资产）自相矛盾，已按上面的实际输出更正；`v1.1.10` 那个 Release 本身的内容本轮无法复核（本机 `api.github.com` 不可达）。下表是 `v1.0.2` 那一轮实测到的产物形态（资产名以磁盘上的形式书写；GitHub 会把名字里的空格规范化成 `.`，页面上形如 `WB.Bridge_1.0.2_aarch64.dmg`）。
 
 | 系统 | 状态 | 安装包 |
 |---|---|---|
@@ -48,7 +48,7 @@ xattr -dr com.apple.quarantine "/Applications/WB Bridge.app"
 
 ```sh
 npm install
-npm test             # 核心测试：cargo test --manifest-path src-tauri/core/Cargo.toml（278 项 = 256 单测 + 11 JS 对拍 + 11 红线）
+npm test             # 核心测试：cargo test --manifest-path src-tauri/core/Cargo.toml（283 项 = 261 单测 + 11 JS 对拍 + 11 红线）
 npm run test:prefs   # 面板偏好单测（node --test，8 项，不联网）
 npm run test:ops     # 操作守卫单测（node --test，11 项，纯函数）
 npm run test:manifest# 更新清单生成单测（node --test，9 项，用临时产物目录跑真脚本）

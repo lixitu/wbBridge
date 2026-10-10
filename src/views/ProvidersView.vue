@@ -2,7 +2,7 @@
 // 平台视图：多平台免费模型的 Key 管理入口（保存 / 清除 / 状态刷新）。
 // 凭据纪律：Key 只经 set-provider-key 的请求体进入核心，面板**不保存、不回显、不做掩码**；
 // provider-status 也只回「是否已配置」。Key 保存后需重启核心（隔离配置在启动时注入）才会生效。
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { action, openExternal } from '../core/bridge.js'
 import { successMessage } from '../core/ops.js'
 
@@ -91,8 +91,8 @@ const applyingBusy = computed(() => Object.values(applying.value).some(Boolean))
 // 「重新应用」的成功反馈：成功 5 秒后自动消隐，失败走上方 error 展示。
 const applyFeedback = ref(null)
 let applyFeedbackTimer = 0
-function noteSuccess(action, result) {
-  const text = successMessage(action, result)
+function noteSuccess(name, result) {
+  const text = successMessage(name, result)
   if (!text) return
   applyFeedback.value = { error: false, text }
   if (applyFeedbackTimer) clearTimeout(applyFeedbackTimer)
@@ -114,9 +114,9 @@ async function applyAll() {
   const response = await action('refresh')
   applying.value.__all = false
   if (response.ok) {
-    // 成功反馈：文案与「模型与服务」页同源（ops.js），不各自造句子。
+    // 成功反馈：文案与「模型与服务」页同源（ops.js），不各自造句子；5 秒后自动消隐。
     error.value = null
-    applyFeedback.value = { error: false, text: successMessage('refresh', response.result) }
+    noteSuccess('refresh', response.result)
   } else {
     error.value = response.error
   }
@@ -238,6 +238,11 @@ onMounted(() => {
   // 首次进入页面用静默探测：核心未运行时（最典型 = 全新安装还没配过 Key）不弹连接失败。
   // 之后任何显式动作（刷新按钮 / 保存 / 清除后的自动应用失败）都走非静默路径，照常报错。
   load({ silent: true })
+})
+
+onUnmounted(() => {
+  // 切走视图时这个组件就没了：残留定时器会在 5 秒后往已卸载的 ref 上写状态。
+  if (applyFeedbackTimer) clearTimeout(applyFeedbackTimer)
 })
 </script>
 
@@ -389,7 +394,7 @@ header { display: flex; justify-content: space-between; gap: var(--sp-3); align-
 .provider-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .provider-label { font-size: 15px; font-weight: 600; }
 /* 标题内的注册表 id：弱化为括注，不再单独占一行 */
-.provider-id { font-size: 11px; font-weight: 400; color: var(--muted); font-family: ui-monospace, monospace; }
+.provider-id { font-size: 11px; font-weight: 400; color: var(--muted-strong); font-family: ui-monospace, monospace; }
 .badge {
   font-size: 11px; font-weight: 500; white-space: nowrap;
   padding: 4px 9px; border-radius: 999px;
@@ -423,7 +428,7 @@ header { display: flex; justify-content: space-between; gap: var(--sp-3); align-
 /* 网址与按钮同行：占满剩余宽度、溢出省略；user-select: all 让单击即全选全文（复制兜底） */
 .guide-url {
   margin: 0; flex: 1; min-width: 0;
-  font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace;
+  font-size: 11px; color: var(--muted-strong); font-family: ui-monospace, monospace;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   user-select: all; cursor: text;
 }
@@ -457,7 +462,7 @@ header { display: flex; justify-content: space-between; gap: var(--sp-3); align-
   display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
 }
 .apply-note p { margin: 0; font-size: 12px; line-height: 1.7; color: var(--muted-strong); }
-.note { margin: 0; font-size: 11px; color: var(--muted); line-height: 1.7; }
+.note { margin: 0; font-size: 11px; color: var(--muted-strong); line-height: 1.7; }
 .notice { display: flex; align-items: center; gap: 8px; }
 .notice-icon { width: 16px; height: 16px; flex-shrink: 0; }
 .notice-text { font-size: 13px; }

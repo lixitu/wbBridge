@@ -1,10 +1,78 @@
-# WB Bridge 验证记录（当前基准版本 **1.1.10**）
+# WB Bridge 验证记录（当前基准版本 **1.1.12**）
 
 > 阅读顺序：最新记录在前。自 **2026-10-01** 起核心已从 Node.js sidecar 迁移为 Rust 库（静态链接进壳），
 > 该日期之后的条目描述 Rust 形态；下方的 2026-09-30 条目属于**迁移前的 Node/sidecar 时代**，作为历史
 > 保留原样（其 97 项测试、`src/core/`、`src-tauri/binaries/` 等结论已不再对应当前仓库）。
 
 日期：2026-10-10（本机 macOS，Apple Silicon；Rust 核心 + Vue 壳 + Vue 面板）
+
+## 全量代码审查（核心 / 壳 / 面板）＋ 落地被源码证实的十项缺陷修复（2026-10-10，v1.1.11 → **v1.1.12**，同一轮）
+
+用户指令（三轮）：「代码全面审查；服务端业务逻辑优化；用户体验优化改善，UI/UX体验优化」→「推进版本号递进，并更新相关文档及 RELEASE-NOTES 文档」→「不对，版本号不要推进到那么高，应该还是要保留在 v1.1.x」。
+
+### 审查方式与筛选口径
+
+三路并行审查（`src-tauri/core/`、`src-tauri/src/`、`src/`）汇总出**一份合并清单**，然后逐条以实读源码判定：只落地**能复述出触发条件、且改动是针对性最小**的缺陷；不做重构、不新增功能、不引入依赖。判定不了的、属于「已知边界但需产品决策」的，全部**列成待决策项**（下节 A~I）而不是修，也不是删。
+
+### 核心 3 项（`src-tauri/core/src/`）
+
+1. **`backend.rs`：客户端断连不再泄漏在途会话**（新增 `CompleteGuard`，:371 结构体 / :381 `impl Drop` / :1378 构造点）。原先 `complete()` 的清理写在最后一个 `.await` 之后，而 hyper 在连接断开时**直接丢弃 handler future**，那段清理永远不会执行 ⇒ 每断开一次就泄漏一个 250ms 权限轮询任务与该会话的 `pending_permissions` 状态。`Drop` 里用 `Handle::try_current()` 取到运行时句柄后补发停止与清态。选 `Drop` 而不是在调用点包 `select!`，是因为放弃路径不止一条（客户端取消、上游断、请求体超时），守卫是唯一收敛点。
+2. **`server.rs`：`/admin/*` 补上请求体预算**。`read_body`（:1203）拆出 `read_body_bounded(body, budget)`（:1210），管理路由此前**完全没有** `REQUEST_BODY_TIMEOUT`（:57，20s）覆盖——非管理路由早就有。既有行为逐字不变，只是把同一条预算补到漏掉的那半边。
+3. **`backend.rs`：会话 id 的「缺失」与「空串」分开**（:1295-1301）。空串过去被当作合法 id 拼进后续 `/session/{id}/message`，现在当场拒绝（`OpenCode session response has no session id`）。
+
+### 面板 7 项（`src/`）
+
+- `variables.css`：`--orange` 浅色 `#bc752c`→`#a4581a`（暗色 `#e9ad70` 已达标、未动）、`--switch-off` `#aab2ae`→`#7f8a86`（AA 4.5:1 的达标值是按 token 实色**算**出来的，不是目测）。
+- 十处小字号 `--muted`→`--muted-strong`：`App.vue`（`.subtitle`、`footer`）、`ModelRow.vue`（`.duration`）、`ModelList.vue`（`.empty`）、`MetricsBar.vue`（`.metrics span`）、`ModelDetails.vue`、`ProvidersView.vue`（`.provider-id`、`.guide-url`、`.note`）、`AboutView.vue`（`.notes`）。
+- `App.vue`：Esc 收起详情加了输入框守卫（`INPUT` / `TEXTAREA` / `isContentEditable`），此前在平台 Key 输入框里按 Esc 会把「收起详情」一起触发。
+- `ServiceStatus.vue` 新增 `retrying`、`IntegrationView.vue` 新增 `importing`，`App.vue` 按 `busyAction` 精确判定——原先任一动作在跑都会点亮「导入」的 spinner。
+- `ProvidersView.vue`：`applyFeedbackTimer` 在 `onUnmounted` 里 `clearTimeout`（切走视图后定时器仍在写已卸载组件的反馈位）；同一文件另把 `noteSuccess(name, result)` 接到 `refresh` 返回上。
+- `App.vue` 的 `#import` 补 `aria-busy`；`ModelList.vue` 空列表时不再挂 `role="listbox"`（该角色的直接子元素只允许 `option`）。
+- 🔴 **刻意未改**：`ModelRow.vue` 外层 `<div role="option">` 的可点区（改动会碰到 1.0.5 刚定下的单模型重新检测交互）、`--details-w: clamp(300px, 45%, 360px)`。
+
+### 新增单测 3 项
+
+`backend.rs` 2（断连后权限轮询停止且会话状态清空；无会话 id 的响应当场失败）+ `server.rs` 1（预算内可读完、超预算失败，另断言 `REQUEST_BODY_TIMEOUT == 20s`）。⚠ 三条如实记录：① `server.rs` 那条**原计划**用 `#[tokio::test(start_paused = true)]`，实测 **E0599**——tokio 未开 `test-util` feature；按「不为此引依赖」改为**注入预算参数**（真实 50ms）+ 常量断言；② **两项核心修复的变异验证都没做成**——本轮多次尝试临时撤掉守卫（`std::mem::forget`）与撤掉会话 id 检查，全部**被工具的安全分类器拦下**（不得在无用户确认时临时回退一处修复）。因此文档**只声明测试实际钉住的内容**，不声称「撤掉修复就会失败」；该项若确实需要，请用户授权后单独执行；③ 断连那项的测试是**直接构造被弃事件**（把 `complete()` 的 future 驱动到「已建会话、监视 task 已在轮询」之后 `drop(future)`，与 hyper 断开时的行为等价），再断言轮询计数不再增长、abort 与 DELETE 各恰好一次、`usage_by_session` / `active` 无残留。
+
+### 版本号：`1.2.0` 被再次占用并已回退（用户裁定）
+
+缺陷修复 = patch 位：`1.1.10 → 1.1.11 → 1.1.12` **属同一轮**（`1.1.11` 是中途首次推进，从未构建、从未打标签，内容与 `1.1.12` 同批）。本轮期间一个并行轮次（WB.auto 智能路由）把 7 处落点推到 **`1.2.0`**，实读证明它**只有设计稿、无任何代码**（`src-tauri/core/src/auto.rs` 不存在，全仓 grep `WB.auto` / `auto_select` 无命中）；用户裁定「版本号不要推进到那么高，应该还是要保留在 v1.1.x」，已 `npm run version:set -- 1.1.12` + 两侧 `cargo metadata` 同步 `Cargo.lock`，并把判据写进 `docs/version/README.md`：**minor 位只在功能代码落地后占用**。`1.2.x~1.3.x` 仍是「不得再占用」。
+
+### 测试基线更正（文档失真，非本轮造成）
+
+`AGENTS.md` / `README.md` / `docs/wiki/*` 此前写 **278 = lib 256**，HEAD 实测属性数是 **258**（差的那 2 项在本轮之前就漏记了）；本轮 +3 → **283 = lib 261 + js_parity 11 + red_lines 11**。已逐处改写。
+
+### 验证（本轮真实执行，`touch` 后强制重检，不复用缓存）
+
+- 核心 `cargo test`：**283 通过 / 0 失败**（lib 261 用时 1.11s + js_parity 11 + red_lines 11；bin/doc-test 0 用例）
+- 核心 `cargo clippy --all-targets`：**0 warning**
+- 壳 `cargo clippy --no-deps --all-targets`：**0 warning**（`grep -cE "^warning"` 计数为 0）
+- 壳 `cargo test --lib`：**9 通过 / 0 失败**
+- JS 四组：`test:prefs` **8/0**、`test:ops` **11/0**、`test:manifest` **9/0**、`test:updater-key` **13/0**
+- `npx eslint .` 退出 **0**；`npm run vite:build` **✓ 129ms**
+- `git diff --stat src-tauri/core/tests/fixtures`：**为空**（对拍仍逐字节等价）
+- `npm run version:check`：**全部 7 处版本号一致（1.1.12）**；两侧 `Cargo.lock` = 1.1.12
+
+### 本轮核实但**刻意未修**的九项（属产品决策或超出「缺陷修复」范围，不得写成已解决）
+
+- **A（安全面，待用户裁定）**：`src-tauri/core/src/runtime.rs:968` 向隔离子进程注入 `NODE_TLS_REJECT_UNAUTHORIZED = "0"`。这是**早于本轮的既有代码**（其上一行注释给出的理由是 Bun 运行时 + TLS 拦截代理下出网），本轮**一字未动**、也没有把它升格成「已修复」。代价是该子进程对上游（含 npm registry 之外的出网）不再校验证书，属 MITM 暴露面；若要收敛，正确做法是只信任用户自配的 CA（`SSL_CERT_FILE` 已在 `ENV_ALLOW` 白名单里）而不是全局关校验。**任何改动都要用户点头。**
+- **B**：`runtime.rs` 在 async 路径上做阻塞文件 IO——`fs::write` 下载临时文件（:189）、写归档（:527）、解包 gzip/tar（:595）、写二进制（:609）。都在启动/安装期执行且已在 `spawn_blocking` 之外的上下文里；影响是占用核心运行时线程，非正确性问题。
+- **C**：`Backend::complete` 只有一个由调用侧给的 `AbortSignal`，**没有绝对 deadline**——上游长时间不产出且连接不断开时，那一侧的预算完全依赖外层。
+- **D**：`orchestration.rs:1467` 的 chatOnly 兜底用 `Duration::from_secs(30)`，与探测路径共用的 `PROBE_TIMEOUT_MS = 60_000` 不是同一份预算。
+- **E**：`lib.rs:140` / `:186` / `:702` 的退出钩子与 `core_stopped` 标志存在代次竞态（重启核心时旧钩子可能被新钩子覆盖后仍触发一次）。
+- **F**：`lib.rs:215` / `:227` / `:232` / `:753`——`quit_app` 走 `rx.recv_timeout(STOP_BUDGET)`，是在 Tauri **事件循环线程**上阻塞等待，退出时窗口最长冻 8s（这正是 `RunEvent::ExitRequested` 改走 `stop_core_bounded` 那行既有的已知边界）。
+- **G**：`src-tauri/capabilities/default.json:9-12` 声明了四条面板**从未调用**的窗口权限（`core:window:allow-start-dragging` / `allow-close` / `allow-hide` / `allow-show`）；对照之下 `dialog:allow-open` 确实被 `src/core/bridge.js:97` 使用。最小权限口径下属待收敛项，撤权限要确认壳侧没有隐式依赖。
+- **H**：CI 的 test 作业（`release.yml:142`）只跑核心 `cargo test`，不跑壳 `cargo test --lib` 与 clippy；`scripts/gen-latest-json.mjs:118` 只按**文件名**配对 `.sig`，不校验签名内容与被签资产的关系。
+- **I**：两侧 `Cargo.lock` **不在** `version:check` 的 7 处落点内，靠 cargo 自己同步；本轮实测一致（1.1.12），但推标签前必须人工确认，否则 CI 会在校验通过后仍带着旧 lock 构建。
+
+### 未验证（不得伪装）
+
+- 🔴 **GUI 一次都没启动过**：本轮没有运行 `npm run tauri:dev`、没有构建任何安装包、没有点过面板上任何一个按钮。面板 7 项的证据只有 eslint / `vite:build` / 四组 JS 单测，**真实排版、对比度在 WebView 下的实际观感、Esc 与输入框的交互手感全部待实机**。
+- 🔴 核心 3 项的单测跑在**注入的假 OpenCode 服务**上（`start_mock_session`），不是真实 OpenCode 1.18.35；「客户端真实断开」这一事件从未发生过一次，`/admin/*` 的 20s 预算也没遇过真实慢客户端。
+- 🔴 **`v1.1.11` / `v1.1.12` 从未构建、从未打标签** ⇒ 本轮所有修复在用户侧**还不存在**，必须构建并发版才生效。
+- 🔴 **远端发布状态本轮无法复核**：本机 `api.github.com` 不可达（拦截/重定向），远端只以 `git ls-remote --tags origin` 为凭（实有 `v1.1.10` = `befe96e7`，无 `v1.1.12`）。
+- ⚠ **并发改动如实记录**：同一工作树里有并行轮次在写。两处直接影响本轮文档：① 本轮出稿 v1.1.12 时**没有删**上一版底本 `RELEASE-NOTES-v1.1.10.md`（理由：删文件属破坏性且不在指令字面范围，且该轮发布状态无法复核，它是唯一可与线上正文对账的那份），**随后它被并行轮次删除**（`git status` 实读 ` D`，未提交）——本轮不代做恢复，取舍留给维护者；② 并行轮次还删除了 `docs/plans/2026-10-03-*.md`（2）、`docs/qa/smoke-checklist.md`、`docs/research/upstream-architecture.md`、`docs/superpowers/specs/*`（3），并新增未跟踪的 `docs/plans/2026-10-10-wb-auto-smart-router.md`；⚠ `AGENTS.md` 的「上游调研基线」一行仍指向**已不在工作区**的 `docs/research/upstream-architecture.md`（本轮未改该行，属并行轮次的整理范围）。
+- 🔴 本轮**未提交、未推送**（`提交由用户决定`）。
 
 ## 全量文档同步至 v1.1.10 ＋ 壳侧一条真实 clippy warning 的等价改写（2026-10-10，按规则**不推进版本号**）
 

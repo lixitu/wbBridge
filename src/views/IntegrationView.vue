@@ -6,6 +6,9 @@ import { computed } from 'vue'
 const props = defineProps({
   state: { type: Object, default: () => ({}) },
   busy: { type: Boolean, default: false },
+  // 与「模型与服务」页的导入按钮同口径：spinner 只跟 import 绑，busy（任何动作在飞）
+  // 继续负责禁用，否则探测中的转圈会被读成「正在导入」。
+  importing: { type: Boolean, default: false },
 })
 defineEmits(['import'])
 
@@ -38,11 +41,11 @@ const targetRows = computed(() => {
         id="integration-import"
         class="primary"
         :disabled="!canImport"
-        :aria-busy="String(busy)"
+        :aria-busy="String(importing)"
         :title="canImport ? '把本服务的可用模型写入所有已检测到的插件配置（WorkBuddy / CodeBuddy）' : '核心未就绪或正在检测，暂时无法导入'"
         @click="$emit('import')"
       >
-        <span v-if="busy" class="spinner" />导入 WorkBuddy / CodeBuddy
+        <span v-if="importing" class="spinner" />导入 WorkBuddy / CodeBuddy
       </button>
     </header>
 

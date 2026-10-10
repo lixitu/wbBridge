@@ -904,14 +904,10 @@ async fn chat(
         )));
     }
 
-    let body = match tokio::time::timeout(REQUEST_BODY_TIMEOUT, read_body(body)).await {
-        Ok(Ok(body)) => body,
-        Ok(Err(error)) => return error_response(&error),
-        Err(_) => return error_response(&BackendError::bridge(&BridgeError::with(
-            "Request body read timed out",
-            408,
-            "timeout",
-        ))),
+    // 超时与错误形态都在 read_body 内部（原先这里的 20s 包装对 /admin/* 是缺的）。
+    let body = match read_body(body).await {
+        Ok(body) => body,
+        Err(error) => return error_response(&error),
     };
 
     let mut model = body.get("model").cloned().filter(|value| truthy(Some(value)));
@@ -1205,6 +1201,24 @@ fn has_origin(headers: &axum::http::HeaderMap) -> bool {
 
 /// `readBody(req)`：8 MB 上限 → 413；非法 JSON → 400 `Invalid JSON`。
 async fn read_body(body: Body) -> Result<Value, BackendError> {
+    read_body_bounded(body, REQUEST_BODY_TIMEOUT).await
+}
+
+/// 20s 读取预算原先只挂在 chat 路径外面那一层，`/admin/*` 五处调用点没有它：管理路由不受
+/// ≤4 并发约束，慢速滴 body 就能无限占住在途表条目与 socket。收进本函数让两类路由共用同
+/// 一条边界，错误形态（408 / `timeout`）与原先 chat 侧逐字一致。
+async fn read_body_bounded(body: Body, budget: Duration) -> Result<Value, BackendError> {
+    match tokio::time::timeout(budget, read_body_within(body)).await {
+        Ok(result) => result,
+        Err(_) => Err(BackendError::bridge(&BridgeError::with(
+            "Request body read timed out",
+            408,
+            "timeout",
+        ))),
+    }
+}
+
+async fn read_body_within(body: Body) -> Result<Value, BackendError> {
     let mut stream = body.into_data_stream();
     let mut buffer: Vec<u8> = Vec::new();
     while let Some(chunk) = stream.next().await {
@@ -1473,6 +1487,24 @@ mod tests {
         assert_eq!(exact.len(), MAX_BODY_BYTES);
         let value = read_body(Body::from(exact)).await.expect("恰好 8 MB 应通过");
         assert_eq!(value.get("pad").and_then(Value::as_str).map(str::len), Some(padding.len()));
+    }
+
+    #[tokio::test]
+    async fn read_body_applies_the_timeout_to_a_body_that_never_finishes() {
+        // 被保护的行为：请求体永不结束时必须被读取预算掐断，且 `chat` 与 `/admin/*` 共用这一条
+        // 边界（管理路由不受 ≤4 并发限制，原先只有 chat 外面包了超时）。
+        // 用一份极短预算驱动同一条掐断逻辑，避免真等 20 秒；`read_body` 只是把
+        // REQUEST_BODY_TIMEOUT 原样传进来。
+        let stalled = Body::from_stream(futures::stream::pending::<
+            Result<axum::body::Bytes, std::io::Error>,
+        >());
+        let error = read_body_bounded(stalled, Duration::from_millis(50))
+            .await
+            .expect_err("永不结束的请求体必须被读取预算掐断");
+        assert_eq!(error.status_code(), StatusCode::REQUEST_TIMEOUT);
+        assert_eq!(error.message(), "Request body read timed out");
+        assert_eq!(error.code.as_deref(), Some("timeout"));
+        assert_eq!(REQUEST_BODY_TIMEOUT, Duration::from_secs(20));
     }
 
     // --- 路由行为 ---

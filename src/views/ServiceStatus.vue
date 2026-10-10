@@ -8,6 +8,9 @@ const props = defineProps({
   message: { type: String, default: '' },
   phase: { type: String, default: 'starting' },
   busy: { type: Boolean, default: false },
+  // 只有 restart 这一种动作该点亮按钮上的 spinner：busy 还包含探测/导入/刷新，
+  // 让它们点亮「重试」的转圈会把「正在检测」读成「正在重启」。busy 继续负责禁用。
+  retrying: { type: Boolean, default: false },
 })
 defineEmits(['restart'])
 
@@ -23,11 +26,11 @@ const isError = computed(() => props.phase === 'error')
     <button
       v-if="isError"
       :disabled="busy"
-      :aria-busy="String(busy)"
+      :aria-busy="String(retrying)"
       aria-label="重试核心服务"
       @click="$emit('restart')"
     >
-      <span v-if="busy" class="spinner" />重试
+      <span v-if="retrying" class="spinner" />重试
     </button>
   </div>
 </template>

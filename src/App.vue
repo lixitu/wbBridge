@@ -243,6 +243,9 @@ function dismiss() {
 
 function onKeydown(event) {
   if (event.key !== 'Escape' || !selected.value) return
+  // 输入框内的 Esc 属于那个控件自己的语义（平台页的 Key 输入框就在用），不该被「收起详情」抢走。
+  const tag = event.target?.tagName
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || event.target?.isContentEditable) return
   event.preventDefault()
   dismiss()
 }
@@ -307,6 +310,7 @@ onUnmounted(() => {
           :message="state.message"
           :phase="state.phase"
           :busy="!!busyAction"
+          :retrying="busyAction === 'restart'"
           @restart="run('restart')"
         />
 
@@ -315,7 +319,7 @@ onUnmounted(() => {
           :available="state.availableModels || []"
           :probe="state.probe"
         >
-          <button id="import" class="primary" :disabled="!!busyAction || !!state.probe?.running || state.phase !== 'ready'" @click="run('import')">
+          <button id="import" class="primary" :disabled="!!busyAction || !!state.probe?.running || state.phase !== 'ready'" :aria-busy="String(busyAction === 'import')" @click="run('import')">
             <!-- spinner 只跟自己的动作绑：任何动作在跑都点亮它，会把「正在检测」误读成「正在导入」 -->
             <span v-if="busyAction === 'import'" class="spinner" />导入 WorkBuddy / CodeBuddy
           </button>
@@ -380,6 +384,7 @@ onUnmounted(() => {
         v-if="view === 'workbuddy'"
         :state="state"
         :busy="!!busyAction"
+        :importing="busyAction === 'import'"
         @import="run('import')"
       />
       <AboutView v-if="view === 'about'" :state="state" />
@@ -426,9 +431,9 @@ main > .view {
 .content.is-split { grid-template-columns: minmax(0, 1fr) var(--details-w); }
 header { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
 h2 { font-size: 27px; letter-spacing: -.8px; margin: 0 0 6px; font-weight: 650; }
-.subtitle { margin: 0; color: var(--muted); font-size: 13px; }
+.subtitle { margin: 0; color: var(--muted-strong); font-size: 13px; }
 .actions { display: flex; gap: 8px; }
-footer { font-size: 11px; color: var(--muted); line-height: 1.7; flex-shrink: 0; }
+footer { font-size: 11px; color: var(--muted-strong); line-height: 1.7; flex-shrink: 0; }
 footer p { margin: 0; }
 .note { margin-top: 6px !important; }
 

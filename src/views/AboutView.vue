@@ -241,7 +241,7 @@ header { display: flex; justify-content: space-between; gap: var(--sp-3); align-
 .is-available .pulse { animation: update-ping var(--dur-3) var(--ease-emphasis) 1; }
 .update-main { flex: 1; min-width: 0; }
 .update-main strong { font-size: var(--fs-sm); font-weight: 600; }
-.notes { margin: 4px 0 0; font-size: var(--fs-xs); color: var(--muted); line-height: var(--lh-loose); }
+.notes { margin: 4px 0 0; font-size: var(--fs-xs); color: var(--muted-strong); line-height: var(--lh-loose); }
 .progress { margin-top: var(--sp-3); }
 .progress-text { margin: 6px 0 0; font-size: var(--fs-xs); color: var(--muted-strong); font-variant-numeric: tabular-nums; }
 .update-actions { display: flex; align-items: center; gap: var(--sp-3); margin-top: var(--sp-3); }

@@ -4,7 +4,78 @@
 > 命名规则：`RELEASE-v{主版本}.md`；次版本迭代追加到文件顶部新分节。
 > 版本纪律以根目录 `AGENTS.md`「当前基准版本」章节为准，本文件不另立规则。
 > 整理规则：同类问题多次修复的条目合并为一条，统一记述于最终修复版本；被合并的早期版本保留编号与合并指向，不再重复正文。
-> 当前最新版本：**v1.1.10**（提交 `441e4c3`；v1.1.2 ~ v1.1.9 从未构建、从未打标签，其内容并入本版）。
+> 当前最新版本：**v1.1.12**（📝 待发布，2026-10-10 本轮全量代码审查的产出；**当前最新已发布**版本是 **v1.1.10**，见下节实测状态）。
+
+---
+
+## v1.1.12
+
+> **状态**: 📝 **待发布**——尚未构建安装包、尚未打标签。七处落点实测一致为 `1.1.12`（`npm run version:check` 输出「全部 7 处版本号一致（1.1.12）」，两侧 `Cargo.lock` 由 cargo 同步）。
+> **日期**: 2026-10-10
+> **上一版本**: **v1.1.10**（已发布，2026-10-10 实测：Release `draft = false`、23 个资产、线上清单六条 url 逐条可取回）。
+> **GitHub Release 正文**: [`RELEASE-NOTES-v1.1.12.md`](RELEASE-NOTES-v1.1.12.md)（本轮出稿，含固定小节「macOS 首次打开（ad-hoc 签名放行）」，该小节自 v1.1.10 逐字沿用）。⚠ 上一版底本 `RELEASE-NOTES-v1.1.10.md` 本轮**未删**（它是已 Publish 线上正文唯一可在仓库里逐字对账的那份），但**随后被同一工作树的并行轮次删除**（`git status` 实读 ` D`，尚未提交；`git show HEAD:docs/version/RELEASE-NOTES-v1.1.10.md` 可取回）。恢复或删除都属维护者决定，本轮不代做。
+> **本版主题**: **一轮全量代码审查（Rust 核心 + 壳 + Vue 面板）的缺陷修复**，不含新功能——断连泄漏在途会话、管理接口缺请求体预算、会话 id 空串退化，加上面板一批对比度 / 键盘 / 忙态 / ARIA 问题。
+> **版本推进理由**: 缺陷修复 = patch 位。`1.1.10 → 1.1.11 → 1.1.12` **属同一轮**（`1.1.11` 是该轮中途的首次推进，从未构建、从未打标签，其内容与 `1.1.12` 是同一批改动，不是两个批次）。⚠ 如实记录：本轮期间一个并行轮次曾把落点推进到 **`1.2.0`**（其 WB.auto 智能路由**只有设计稿、无任何代码落地**——`src-tauri/core/src/auto.rs` 不存在，全仓 grep `WB.auto` / `auto_select` 无命中），已按维护者裁定回退；`1.2.x~1.3.x` 从未构建、从未打标签，**不得再占用**。
+
+### 一、版本号落点（`npm run version:check` 本轮实测：7 处一致 = 1.1.12）
+
+| 位置 | 值 |
+|---|---|
+| 根 `package.json` → `version`（单一来源） | **1.1.12** |
+| `src-tauri/tauri.conf.json` → `version` | **1.1.12** |
+| `src-tauri/Cargo.toml` → `[package] version` | **1.1.12** |
+| `src-tauri/Cargo.lock` → `wbbridge` / `wbbridge-core` | **1.1.12** |
+| `src-tauri/core/Cargo.toml` → `[package] version` | **1.1.12** |
+| `src-tauri/core/Cargo.lock` → `wbbridge-core` | **1.1.12** |
+| `AGENTS.md`「当前基准版本」三行 | **1.1.12** |
+
+> `status.json` 的 `0.2.0` 仍是历史沿革值，未动。
+
+### 二、本版内容
+
+**A. 核心三处缺陷修复**
+
+1. **客户端断开后泄漏在途会话与权限轮询任务**（`backend.rs`）。一次生成期间核心除了转发内容还会**每 250ms 轮询**该会话的原生工具待审批状态；清理原先写在生成函数的正常/错误返回路径上，而 **hyper 在客户端断开时直接丢弃整个 handler future**，那条清理一行都不执行。结果是每次取消（WorkBuddy 点停止、切会话、超时——日常操作）留下一个永不结束的轮询任务 + 一份会话状态（`active` / `usage_by_session` / 待审批条目），活动流也停不掉。修复形态：新增 `CompleteGuard`（`backend.rs:371`，`impl Drop` 在 `:381`）作为**销毁即清理**的守卫，构造点必须在会话已入表、守卫与 watch 都已建立之后（`:1378` 附近）；清理幂等（内联 finally 用 `finished` 标记占位，Drop 见位即返回）；异步收尾经 `Handle::try_current()` 在当前运行时派发，拿不到运行时的理论路径只做同步清理。
+2. **`/admin/*` 补齐 20s 请求体读取预算**（`server.rs`）。`REQUEST_BODY_TIMEOUT` 原先只挂在 chat 路径外面那一层，五个管理调用点没有它；而管理路由**不受 ≤4 并发限制**，一个只发头不发体的连接能无限期占住任务与缓冲。收拢为 `read_body(body)` → `read_body_bounded(body, REQUEST_BODY_TIMEOUT)`（`:1203`/`:1210`），一处生效、五个调用点未动；超时映射 408 + `code = "timeout"`。
+3. **OpenCode 会话响应无 id 时当场失败**（`backend.rs:1295` 附近）。原先 `.unwrap_or("")` 让空串成为一把**共享键**：并发请求在 `active` / `usage_by_session` 里落进同一条目互相干扰，DELETE 退化成 `/session/`。现用 `.filter(|id| !id.is_empty())` + 明确错误。
+
+**B. 面板无障碍与反馈七项**（编号 4~10，数值来源为 `src/styles/variables.css` 的 token 实算，非目测）
+
+4. `--orange` 浅色 `#bc752c` → **`#a4581a`**（兼作 13px 错误正文，原先在 `--orange-bg` 上 3.5:1 < 4.5:1；暗色 `#e9ad70` 已达标未动）。
+5. `--switch-off` `#aab2ae` → **`#7f8a86`**（可交互控件按 WCAG 1.4.11 需 ≥3:1，同时保住白滑块与轨道的分界）。
+6. **十处 11–13px 说明文字** `--muted` → `--muted-strong`：`App.vue` 副标题与页脚、`ModelRow.vue` 耗时、`ModelList.vue` 空态、`MetricsBar.vue` 说明、`ModelDetails.vue` 引导语、`ProvidersView.vue` 的 id / 申请页网址 / 提示、`AboutView.vue` 版本说明。**刻意未改**：`MetricsBar` 的「空闲」（22px 大字号，按 3:1 已过）、`SideBar` 的装饰性色底。
+7. `App.vue::onKeydown` 的 `Esc` 对 `INPUT` / `TEXTAREA` / `isContentEditable` 放行——平台视图 Key 输入框里的 Esc 属于该控件自己的语义，不该被「收起详情」抢走。
+8. `ProvidersView.vue`：`applyAll` 的成功分支原先**只算文案、不接状态**（成功横幅永不出现也永不消隐），现走 `noteSuccess('refresh', …)` 与其它动作对齐；该函数原先还遮蔽了 `bridge.js` 的 `action`，已改名。另补 `onUnmounted` 清掉待触发的消隐定时器（否则 5s 后往已卸载组件的 ref 上写状态）。
+9. `ServiceStatus.vue` 新增 `retrying` prop、`IntegrationView.vue` 新增 `importing` prop：原先任何动作在飞都让这两个按钮显忙态（点「刷新」会把「导入」也转起来），现各自判 `busyAction === 'restart'` / `'import'`，并补 `aria-busy`。
+10. `ModelList.vue` 的 `role="listbox"` 改为**列表非空时才挂**——listbox 的直接子元素必须是 option，而空态那句「进行中」说明是 `role="status"`。
+
+### 三、本轮新增单测（3 项）
+
+| 测试 | 位置 | 钉住的行为 |
+|---|---|---|
+| `abandoned_request_stops_permission_polling_and_clears_session_state` | `backend.rs` | handler future 被丢弃时权限轮询停止、会话状态与用量条目被清除、活动流收尾 |
+| `complete_refuses_a_session_response_without_an_id` | `backend.rs` | 会话响应无 id 即返回错误，且**不**在 `active` / `usage_by_session` 落下空串键 |
+| `read_body_applies_the_timeout_to_a_body_that_never_finishes` | `server.rs` | 永不结束的请求体被读取预算掐成 408 + `timeout`；另断言 `REQUEST_BODY_TIMEOUT == 20s` |
+
+> ⚠ 三项都以「替换实现」跑在注入的假 OpenCode 服务上（`start_mock_session` 新增 `session` 入参正是为第二项服务），**不联网**。
+> 🔴 **更正一条上一版写错的说明**：此前这里写「第一项的必要性由负向对照确立（撤掉守卫则断言失败）」——**该负向对照从未执行过**。本轮两次尝试临时撤掉守卫（`std::mem::forget` / 改动构造行）都**被工具的安全分类器拦下**（不得在无用户确认时临时回退一处修复），因此**没有任何「撤掉修复即失败」的实测证据**。第一项的依据只有两条，如实界定：① 可读源码的事实——手写 `finally` 位于 `complete()` 末尾，future 被丢弃后那一行都跑不到；② 测试本身直接构造了被弃事件（把 `complete()` 的 future 驱动到「已建会话、监视 task 已在轮询」之后 `drop(future)`，与 hyper 断开时的行为等价），随后断言 `GET /permission` 计数不再增长、abort 与 DELETE 各恰好一次、`usage_by_session` / `active` 无残留。第二项同理按解析式论证核实。**若需要真正的变异验证，请用户明确授权临时回退，本轮不擅自做。**
+> ⚠ `tokio` 的 `start_paused` 需要 `test-util` feature（本 workspace 未启），因此第二/三项用**注入预算参数**（50ms）而非自动推进时钟——**不为此改依赖 feature**。
+
+### 四、验证（本轮真实执行）
+
+- 核心 `cargo test` **283 通过 / 0 失败**（lib **261** + `js_parity` 11 + `red_lines` 11）
+- ⚠ **基线更正**：文档多处记作「278 = lib 256」，而按测试属性逐个数，HEAD 实有 **258** 个 lib 测试——本轮**之前**就少记 2 个（先前补测试时没回头改基线行）。本轮真实增量是 3。
+- 核心 `cargo clippy --all-targets` **0 warning**（touch 后重检）、壳 `cargo clippy --no-deps --all-targets` **0 warning**、壳 `cargo test --lib` **9 通过**
+- JS 四组 **8 / 11 / 9 / 13**、`npx eslint .` **0 problem**、`npm run vite:build` 通过
+- `git diff --stat src-tauri/core/tests/fixtures` **为空**
+- `npm run version:check` **7 处一致（1.1.12）**
+
+### 五、未验证（不得伪装）
+
+- 🔴 **GUI 一次都没启动**：4~10 项面板改动全部只有 eslint / vite:build / 单测层证据。
+- 🔴 **断连清理的真实效果**：未与真实 WorkBuddy 取消对拍，修复前后的残留任务数没有实测对比。
+- 🔴 **管理接口 20s 预算**：未实测半开发连接，也没有证据排除「某个合法管理请求会撞上 20 秒」（请求体都很小，判断是不会，但那是判断不是测量）。
+- 🔴 **审查中提出而本轮未落地的 9 项**（A~I：`NODE_TLS_REJECT_UNAUTHORIZED=0`、async 路径上的阻塞 IO、`Backend::complete` 无绝对 deadline、chatOnly 兜底未共用 60s deadline、退出钩子代次竞态、退出链路阻塞事件循环、`capabilities` 里未用的窗口权限、CI 只跑核心测试、`gen-latest-json` 不校验 `.sig` 内容）**逐条列在 `docs/validation.md` 本轮条目里**，属待维护者裁定项，未悄悄丢弃也未顺手改。
 
 ---
 
@@ -13,7 +84,7 @@
 > **状态**: ✅ **已发布**（2026-10-10 由 GitHub API 与线上清单实测，非取自既有记录）：远端存在 `refs/tags/v1.1.10`（= `befe96e7`，Merge PR #9；本地 `dev` 的 `441e4c3` 是其父提交，版本落点确实进入发布物），Release `v1.1.10` 已 Publish（`draft = false`，`published_at = 2026-10-10T04:10:03Z`）、**23 个资产**（六平台安装包 + 各自 `.sig` + mac 两个 `WB.Bridge_<arch>.app.tar.gz(+.sig)` + `latest.json`）；线上清单 `version` = `1.1.10`，六条 `url` 逐条只取首字节探测**全部 206**。七处落点实测一致为 `1.1.10`（`npm run version:check` 输出「全部 7 处版本号一致（1.1.10）」），代码与文档落点已提交（`441e4c3`）。🔴 **不得据此说成「已交付」**：六个包没有一个在实机装过，一次真实的应用内升级闭环从未走过；线上 Release 正文是否已替换成本地这份底本仍属人工核对项。
 > **日期**: 2026-10-10
 > **上一版本**: **v1.1.0**（上一个实际 Publish **且带 23 个资产**的 Release，2026-10-09）。🔴 与本版以下既有分节的表述**不符，以实测为准**：`api.github.com/repos/trexwb/wbBridge/releases` 查到 **v1.0.3（2026-10-03）、v1.0.5（2026-10-09）、v1.1.0（2026-10-09）三个 Release 均已 Publish、各带 23 个资产**，而 `v1.1.0` / `v1.1.2` 两节都写着「从未构建、从未打标签」。**v1.1.2 ~ v1.1.9 确实从未打标签**，本版把它们的内容一次性带上。
-> **GitHub Release 正文**: [`RELEASE-NOTES-v1.1.10.md`](RELEASE-NOTES-v1.1.10.md)（2026-10-10 出稿并随 `441e4c3` 入库；同提交**删除**了未发布的草稿 `RELEASE-NOTES-v1.1.2.md`，正文以本版为准）
+> **GitHub Release 正文**: 底本 `RELEASE-NOTES-v1.1.10.md`（2026-10-10 出稿并随 `441e4c3` 入库；同提交**删除**了未发布的草稿 `RELEASE-NOTES-v1.1.2.md`，正文以本版为准）。⚠ 该文件**现已不在工作区**（被后续并行轮次删除，尚未提交），历史内容取 `git show HEAD:docs/version/RELEASE-NOTES-v1.1.10.md`
 > **本版主题**: 平台免费模型「真正可用」——ModelScope 的模型清单从 models.dev 的目录声明改为对方网关实际在册的清单；探测失败的上游原文再补两类可读中文说明（含「这把 Key 没开通」与「条目不在册」的区分）；外加 v1.1.5 的启动超时重试与构建占用、v1.1.2 并入的八项
 > **版本推进理由**: v1.1.2 之后各轮按「缺陷修复（同一模块的追加修复）= patch」推进至 `1.1.5`（启动链路）、`1.1.6 ~ 1.1.9`（ModelScope 权威清单，属新增能力面但沿用未发布版本内的补丁位）、`1.1.10`（`unknown_service_id_message` 按措辞分两支 + 真实 Key 实测后下架 4 条打不通的条目）。⚠ 如实记录：**逐轮与版本号的对应关系仓库内无落点记录**（`AGENTS.md`「当前状态与验证边界」与 `docs/validation.md` 都没有 1.1.3~1.1.9 的条目，`docs/version/README.md` 索引仍停在 v1.1.2），本节按「相对 v1.1.0 已发布内容的净变化」记述。
 
@@ -78,7 +149,7 @@
 > **状态**: 📝 待发布。**尚未构建任何安装包、尚未打标签**；五处落点已由 `npm run version:set -- 1.1.2` 统一为 `1.1.2`（`npm run version:check` 实测「全部 5 处版本号一致（1.1.2）」）。按铁律先提交、再在那一个提交上打 `v1.1.2`。
 > **日期**: 2026-10-10
 > **上一版本**: v1.1.0（代码提交 `d8984a0`。⚠ 本行原先写「**从未构建、从未打标签**」，2026-10-10 `api.github.com` 实测**不成立**：标签 `v1.1.0` 存在、Release 已 Publish、`published_at = 2026-10-09T10:00:33Z`、**23 个资产**；未打标签的是 `v1.1.2`，其内容并入 `v1.1.10`）
-> **GitHub Release 正文**: 底本 `RELEASE-NOTES-v1.1.2.md` 已随 `441e4c3`（2026-10-10，v1.1.10 那一轮）删除，正文以 v1.1.10 那份为准（[`RELEASE-NOTES-v1.1.10.md`](RELEASE-NOTES-v1.1.10.md)）；出稿时它以 `RELEASE-NOTES-v1.1.0.md` 为底本（标题与资产名改写为 1.1.2 + 追加七项改动清单），那份也已随 `215fa1b`（2026-10-10）删除
+> **GitHub Release 正文**: 底本 `RELEASE-NOTES-v1.1.2.md` 已随 `441e4c3`（2026-10-10，v1.1.10 那一轮）删除，正文以 v1.1.10 那份为准（该文件同样已不在工作区，见上上条说明）；出稿时它以 `RELEASE-NOTES-v1.1.0.md` 为底本（标题与资产名改写为 1.1.2 + 追加七项改动清单），那份也已随 `215fa1b`（2026-10-10）删除
 > **本版主题**: 多平台免费模型接入（v1.1.0 的内容）+ 之后七项改动的合并发布版（六轮补丁打磨 + 空插件目录补建 `models.json`）
 > **版本回退理由**: 维护者裁定「**版本号推进不正确**」——v1.1.0 之后的六轮改动被逐轮推进成 `1.2.0` 与 `1.3.0~1.3.4`，而 v1.1.0 **从未构建、从未打标签**，那些改动都属同一未发布版本内的补丁与打磨，不应当占用 minor 位与连续 patch 位。`1.3.4 → 1.1.1（2026-10-10 随第 7 条优化推进为 1.1.2）` 回退后，`1.2.x~1.3.x` **不得再占用**。
 

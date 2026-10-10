@@ -356,6 +356,91 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     }
 }
 
+/// `complete` 的断连兜底（对应 JS 里 `finally` 天然会跑、Rust 里却会被丢弃的那段清理）。
+///
+/// 客户端断开时 hyper 直接丢弃 handler future，`complete` 函数末尾的手写 finally
+/// **一行都不会执行**：权限监视 task 的 `watch_signal` 是 `AbortSignal::any([守卫, 请求信号])`，
+/// 两个发送端随 future 一起析构后 `cancelled()` 永久挂起（对齐 JS never-settle 语义）、
+/// `is_aborted()` 永远是 false，于是该 task 以 250ms 无限轮询 `GET /permission`；
+/// `state.usage_by_session` / `state.active`（各持一份 meta + activity）与本工具建出来的
+/// OpenCode 会话也一并永久留着。WorkBuddy 取消生成是日常事件，因此每断一次就漏一组。
+///
+/// 析构函数不能 await，所以同步部分就地做完（全部操作幂等，正常走完 finally 再重跑一次也无害），
+/// 异步善后（abort + DELETE 会话）用构造时抓到的 runtime Handle 派发一次性任务；
+/// `finished` 由 finally 置位，置位后跳过异步部分与重复的 request.done。
+struct CompleteGuard {
+    backend: Backend,
+    guard: AbortController,
+    activity: Activity,
+    session_id: String,
+    route: String,
+    runtime: Option<tokio::runtime::Handle>,
+    finished: std::cell::Cell<bool>,
+}
+
+impl Drop for CompleteGuard {
+    fn drop(&mut self) {
+        // 先放行守卫：`AbortSignal::any` 的等待任务据此触发合并信号，监视循环随即退出。
+        self.guard.abort();
+
+        let stop_events = {
+            let mut state = lock(&self.backend.inner.state);
+            state.usage_by_session.remove(&self.session_id);
+            let stale: Vec<String> = state
+                .pending_approvals
+                .iter()
+                .filter(|(_, permission)| {
+                    permission.get("sessionID") == Some(&json!(self.session_id))
+                })
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in stale {
+                state.pending_approvals.remove(&id);
+            }
+            state.usage_by_session.is_empty()
+        };
+        if stop_events {
+            self.backend.stop_events();
+        }
+        let done_model = lock(&self.backend.inner.state)
+            .active
+            .get(&self.session_id)
+            .and_then(|entry| entry.meta.get("model"))
+            .unwrap_or(Value::Null);
+        lock(&self.backend.inner.state)
+            .active
+            .remove(&self.session_id);
+        if self.finished.get() {
+            return;
+        }
+        if !self.activity.is_noop() {
+            self.activity.report(json!({
+                "sessionID": self.session_id,
+                "model": done_model,
+                "type": "request.done",
+            }));
+        }
+        let Some(runtime) = self.runtime.clone() else {
+            // 不在 tokio 运行时上下文中（理论路径）：同步清理已做完，会话留给下一次关停回收。
+            return;
+        };
+        let backend = self.backend.clone();
+        let route = self.route.clone();
+        let log = self.backend.inner.log.clone();
+        runtime.spawn(async move {
+            let _ = backend
+                .request(&format!("{route}/abort"), "POST", None, None, Some(FIVE_SECONDS))
+                .await;
+            if let Err(error) = backend
+                .request(&route, "DELETE", None, None, Some(FIVE_SECONDS))
+                .await
+            {
+                log(&format!("Session cleanup failed: {}", error.message));
+            }
+        });
+    }
+}
+
 impl Backend {
     /// `new Backend(base, password, timeout, log)`：Node 版 timeout 传 `undefined`，
     /// 这里默认不设每请求超时（`request` 显式传 5s 的调用点除外）。
@@ -1206,10 +1291,13 @@ impl Backend {
                 None,
             )
             .await?;
+        // 空 id 不能当成合法键往下走：两个并发请求都会落到 `""` 上，互相覆盖 active /
+        // usage_by_session 条目，先结束那个的清理会删掉仍在途请求的键。
         let session_id = session
             .get("id")
             .and_then(Value::as_str)
-            .unwrap_or_default()
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| BackendError::plain("OpenCode session response has no session id"))?
             .to_string();
         let route = format!("/session/{}", encode_uri_component(&session_id));
         meta.set("sessionID", json!(&session_id));
@@ -1284,6 +1372,17 @@ impl Backend {
         let mut watch = Sticky {
             handle: watch_handle,
             cached: None,
+        };
+        // 断连兜底守卫：从这一行起，future 无论从哪里被丢弃，会话状态与监视 task 都能收口
+        // （见 CompleteGuard）。必须在会话已入表、守卫与 watch 都已建立之后构造。
+        let cleanup = CompleteGuard {
+            backend: self.clone(),
+            guard: guard.clone(),
+            activity: activity.clone(),
+            session_id: session_id.clone(),
+            route: route.clone(),
+            runtime: tokio::runtime::Handle::try_current().ok(),
+            finished: std::cell::Cell::new(false),
         };
 
         let tools = allowed_tools(&request);
@@ -1758,6 +1857,8 @@ impl Backend {
             }));
             lock(&self.inner.state).active.remove(&session_id);
         }
+        // 同步清理已经走完：守卫只需保证「别再重复 request.done 与善后请求」。
+        cleanup.finished.set(true);
         if !successful {
             let _ = self
                 .request(&format!("{route}/abort"), "POST", None, None, Some(FIVE_SECONDS))
@@ -2011,6 +2112,13 @@ mod tests {
         attempts: AtomicUsize,
         replies: Vec<Value>,
         permissions: Vec<Value>,
+        /// `POST /session` 的响应体（建会话失败路径要能造出「没有 id」的形态）。
+        session: Value,
+        /// true 时 `POST /session/:id/message` 永不返回（模拟上游挂起 / 客户端中途断连）。
+        hang: bool,
+        permission_hits: AtomicUsize,
+        abort_hits: AtomicUsize,
+        delete_hits: AtomicUsize,
     }
 
     async fn mock_handler(
@@ -2020,12 +2128,25 @@ mod tests {
         let method = req.method().clone();
         let path = req.uri().path().to_string();
         if method == axum::http::Method::POST && path == "/session" {
-            return axum::Json(json!({ "id": "ses_mock" }));
+            return axum::Json(state.session.clone());
         }
         if method == axum::http::Method::GET && path == "/permission" {
+            state.permission_hits.fetch_add(1, Ordering::SeqCst);
             return axum::Json(Value::Array(state.permissions.clone()));
         }
+        if method == axum::http::Method::POST && path.ends_with("/abort") {
+            state.abort_hits.fetch_add(1, Ordering::SeqCst);
+            return axum::Json(json!({}));
+        }
+        if method == axum::http::Method::DELETE && path.starts_with("/session/") {
+            state.delete_hits.fetch_add(1, Ordering::SeqCst);
+            return axum::Json(json!(true));
+        }
         if method == axum::http::Method::POST && path.ends_with("/message") {
+            if state.hang {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+                return axum::Json(json!({}));
+            }
             let idx = state
                 .attempts
                 .fetch_add(1, Ordering::SeqCst)
@@ -2041,20 +2162,45 @@ mod tests {
 
     /// 起一个只覆盖 Backend 会调用的路由的假服务，返回 base URL 与服务任务。
     async fn start_mock(replies: Vec<Value>, permissions: Vec<Value>) -> (String, tokio::task::JoinHandle<()>) {
+        let (base, handle, _state) = start_mock_session(replies, permissions, false, json!({ "id": "ses_mock" })).await;
+        (base, handle)
+    }
+
+    /// 同上，但可让消息路由挂起，并把计数状态交回调用方（断连兜底测试要读它）。
+    async fn start_mock_with(
+        replies: Vec<Value>,
+        permissions: Vec<Value>,
+        hang: bool,
+    ) -> (String, tokio::task::JoinHandle<()>, Arc<MockState>) {
+        start_mock_session(replies, permissions, hang, json!({ "id": "ses_mock" })).await
+    }
+
+    /// 同上，另可指定 `POST /session` 的响应体。
+    async fn start_mock_session(
+        replies: Vec<Value>,
+        permissions: Vec<Value>,
+        hang: bool,
+        session: Value,
+    ) -> (String, tokio::task::JoinHandle<()>, Arc<MockState>) {
         let state = Arc::new(MockState {
             attempts: AtomicUsize::new(0),
             replies,
             permissions,
+            session,
+            hang,
+            permission_hits: AtomicUsize::new(0),
+            abort_hits: AtomicUsize::new(0),
+            delete_hits: AtomicUsize::new(0),
         });
         let app = axum::Router::new()
             .fallback(axum::routing::any(mock_handler))
-            .with_state(state);
+            .with_state(state.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let handle = tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
         });
-        (format!("http://{addr}"), handle)
+        (format!("http://{addr}"), handle, state)
     }
 
     fn mock_model(chat_only: bool) -> Value {
@@ -2154,5 +2300,87 @@ mod tests {
         let error = result.expect_err("chatOnly 遇到原生审批必须失败");
         assert_eq!(error.code.as_deref(), Some("native_tool_activity"));
         assert_eq!(error.status, Some(502));
+    }
+
+    #[tokio::test]
+    async fn complete_refuses_a_session_response_without_an_id() {
+        // 缺 id 的建会话响应必须当场失败：空串一旦被当作会话键，两个并发请求都会落到
+        // `""` 上互相覆盖 active / usage_by_session，先结束那次的清理会删掉仍在途请求的键。
+        let (base, server, _mock) = start_mock_session(vec![], vec![], false, json!({ "title": "WB Bridge" })).await;
+        let backend = Backend::new(&base, "pw", |_| {});
+        let model = mock_model(false);
+        let prepared = prepare(&mock_body(), std::slice::from_ref(&model)).unwrap();
+        let meta = SharedMeta::new(json!({ "model": model }));
+        let (_controller, signal) = AbortSignal::channel();
+        let result = backend
+            .complete(
+                prepared,
+                RequestContext {
+                    meta: meta.clone(),
+                    signal,
+                    activity: Activity::silent(),
+                },
+            )
+            .await;
+        server.abort();
+
+        assert!(
+            result.is_err(),
+            "没有会话 id 的响应不得继续往下走：{result:?}"
+        );
+        let state = lock(&backend.inner.state);
+        assert!(!state.active.contains_key(""), "空串不得成为 active 键");
+        assert!(!state.usage_by_session.contains_key(""), "空串不得成为 usage_by_session 键");
+    }
+
+    #[tokio::test]
+    async fn abandoned_request_stops_permission_polling_and_clears_session_state() {
+        // 保护的行为：客户端断开时 hyper 直接丢弃 handler future，`complete` 末尾的手写
+        // finally 一行都不会跑。没有 CompleteGuard 时，权限监视 task 会因守卫信号永不触发而
+        // 以 250ms 无限轮询 GET /permission，state 里的会话条目与 OpenCode 会话永久留着。
+        let (base, server, mock) = start_mock_with(vec![good_envelope("never")], vec![], true).await;
+        let backend = Backend::new(&base, "pw", |_| {});
+        let model = mock_model(false);
+        let prepared = prepare(&mock_body(), std::slice::from_ref(&model)).unwrap();
+        let meta = SharedMeta::new(json!({ "model": model }));
+        let (_controller, signal) = AbortSignal::channel();
+        let mut future = Box::pin(backend.complete(
+            prepared,
+            RequestContext {
+                meta: meta.clone(),
+                signal,
+                activity: Activity::silent(),
+            },
+        ));
+        // 消息路由挂起：把 future 驱动到「已建会话、监视 task 已在轮询」之后再把整条链丢掉。
+        let timed_out = tokio::time::timeout(Duration::from_millis(400), &mut future).await;
+        assert!(timed_out.is_err(), "上游挂起时 complete 不应在 400ms 内返回");
+        lock(&backend.inner.state).active.insert(
+            "ses_mock".to_string(),
+            ActiveMeta {
+                meta: meta.clone(),
+                activity: Activity::silent(),
+            },
+        );
+        // 这一步才是被测事件：handler future 被丢弃（等同客户端断开时 hyper 的行为）。
+        drop(future);
+
+        let before = mock.permission_hits.load(Ordering::SeqCst);
+        assert!(before > 0, "断连前监视 task 应已在轮询审批");
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        let after = mock.permission_hits.load(Ordering::SeqCst);
+        assert!(
+            after.saturating_sub(before) <= 1,
+            "断连后仍在轮询 GET /permission：{before} → {after}"
+        );
+        assert_eq!(mock.abort_hits.load(Ordering::SeqCst), 1, "会话必须先被 abort");
+        assert_eq!(mock.delete_hits.load(Ordering::SeqCst), 1, "会话必须被善后删除");
+        let state = lock(&backend.inner.state);
+        assert!(
+            !state.usage_by_session.contains_key("ses_mock"),
+            "断连后 usage_by_session 不得残留"
+        );
+        assert!(!state.active.contains_key("ses_mock"), "断连后 active 不得残留");
+        server.abort();
     }
 }

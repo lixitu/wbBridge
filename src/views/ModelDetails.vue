@@ -95,7 +95,7 @@ const lines = computed(() => {
   font-size: 10px;
   font-weight: 600;
   letter-spacing: .1em;
-  color: var(--muted);
+  color: var(--muted-strong);
 }
 strong {
   font-family: ui-monospace, monospace;

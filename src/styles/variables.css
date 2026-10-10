@@ -11,7 +11,8 @@
   --green: #266e5c;
   --green-bg: #e8f1ed;
   --green-hover: #1b594a;
-  --orange: #bc752c;
+  /* 兼作 13px 错误正文（FeedbackBar / .error-text）：需在 --orange-bg 上也 ≥4.5:1 */
+  --orange: #a4581a;
   --orange-bg: #fbefdf;
   --indigo: #4f46e5;
   --radius-s: 7px;
@@ -52,7 +53,9 @@
   --badge-image-fg: #3f6c99;
   --badge-image-bg: #e7eff9;
   --badge-unavailable-fg: #965e23;
-  --switch-off: #aab2ae;
+  /* 开关关闭态轨道：需在 --panel / --bg 上 ≥3:1（WCAG 1.4.11 非文本对比），
+     同时保住白色滑块与轨道的分界 */
+  --switch-off: #7f8a86;
   --switch-knob: #ffffff;
   --status-ring: rgb(38 110 92 / .06);
 

@@ -129,7 +129,7 @@ const timing = computed(() => {
 .model-icon .spinner { margin-right: 0; }
 .model-info { min-width: 0; flex: 1; display: block; }
 .model-name { display: block; font-size: 14px; font-weight: 550; line-height: 1.4; overflow-wrap: anywhere; }
-.duration { display: block; font-size: 11px; color: var(--muted); margin-top: 6px; font-variant-numeric: tabular-nums; }
+.duration { display: block; font-size: 11px; color: var(--muted-strong); margin-top: 6px; font-variant-numeric: tabular-nums; }
 .badges { display: flex; align-items: center; gap: 5px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
 /* 徽章统一 pill：状态语义只靠文字与配色区分，不改形状，扫读更快 */
 .badge {

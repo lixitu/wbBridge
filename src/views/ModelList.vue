@@ -50,9 +50,11 @@ function move(event, step) {
 </script>
 
 <template>
+  <!-- 空态的 <p role="status"> 不是 option：listbox 的直接子元素必须是选项，
+       所以列表为空时不挂 listbox 角色，读屏才不会把这句进行中的说明当成一项。 -->
   <section
     class="models"
-    role="listbox"
+    :role="models.length ? 'listbox' : null"
     aria-label="模型列表"
     @keydown.down="move($event, 1)"
     @keydown.up="move($event, -1)"
@@ -96,7 +98,7 @@ function move(event, step) {
   padding: 10px 14px;
   border: 1px dashed var(--line);
   border-radius: var(--radius-m);
-  color: var(--muted);
+  color: var(--muted-strong);
   font-size: 13px;
   line-height: 1.6;
 }
