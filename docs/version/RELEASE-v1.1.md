@@ -4,7 +4,118 @@
 > 命名规则：`RELEASE-v{主版本}.md`；次版本迭代追加到文件顶部新分节。
 > 版本纪律以根目录 `AGENTS.md`「当前基准版本」章节为准，本文件不另立规则。
 > 整理规则：同类问题多次修复的条目合并为一条，统一记述于最终修复版本；被合并的早期版本保留编号与合并指向，不再重复正文。
-> 当前最新版本：**v1.1.12**（📝 待发布，2026-10-10 本轮全量代码审查的产出；**当前最新已发布**版本是 **v1.1.10**，见下节实测状态）。
+> 当前最新版本：**v1.1.15**（📝 待发布，= v1.1.14 的 WB · auto 智能路由 ＋ **该路由的名字统一成 `WB · auto`、并写进 WorkBuddy/CodeBuddy 的插件配置**；**当前最新已发布**版本是 **v1.1.10**，见后节实测状态）。
+
+---
+
+## v1.1.15
+
+> **状态**: 📝 **待发布**——尚未构建安装包、尚未打标签。七处落点实测一致为 `1.1.15`（`npm run version:check` 输出「全部 7 处版本号一致（1.1.15）」，两侧 `Cargo.lock` 由 cargo 同步）。
+> **日期**: 2026-10-10
+> **GitHub Release 正文**: [`RELEASE-NOTES-v1.1.15.md`](RELEASE-NOTES-v1.1.15.md)（由 v1.1.14 底本改写而来；`RELEASE-NOTES-v1.1.14.md` **已不存在**，`1.1.11~1.1.15` 属同一批未发布工作，一次 Release 只用一份正文）。
+> **与 v1.1.14 的关系**: 同一能力（WB · auto 智能路由）的第二个落点。`1.1.11/1.1.12/1.1.13` 的内容**一字未变**；`1.1.14 → 1.1.15` 之间只有下面两条。五个版本号都**从未构建、从未打标签**——这正是本轮敢全局改名的唯一前提。
+> **`1.2.x~1.3.x` 仍属「不得再占用」**（维护者裁定，见 v1.1.12 一节）。
+
+### 本版内容
+
+1. **合成模型名全局统一为 `WB · auto`**（此前的对外字面量是 `WB.auto`）。用户在评审插件侧展示形态时否掉了 `OC · WB.auto` 这种「前缀套前缀」的写法，裁定**只有 `WB · auto`**。落点：`auto.rs::AUTO_MODEL_ID` 一个字面量管住全部三处使用者（`/v1/models` 的条目 `id`/`name`、`chat()` 的改写判据、写进插件配置的条目 `id`），全仓与全部文档已无 `WB.auto` 残留。
+   - 分隔符逐字节核对为 `20 c2 b7 20`（空格 + U+00B7 + 空格），与 `client_model_id` 生成的 `前缀 · 名称` 同形；该 `id` **刻意绕过** `client_model_id`——走进去会变成 `OC · WB · auto`，与 `server.rs` 里的字面比较永远不匹配，路由整链失效。
+   - 🔴 改名不伤及任何已交付二进制的前提是 `1.1.11~1.1.15` 从未构建、从未打标签；若日后要把旧名字读回来，那是**新增兼容分支**，不是改常量。
+2. **`WB · auto` 写进 WorkBuddy / CodeBuddy 的 `models.json`**——**撤销** v1.1.14 一节里「`WB · auto` 绝不写进插件配置」与「插件配置永不含 `WB · auto`」两条裁定。触发原因是用户实测后的一句话：「肯定要把 WB.auto 写到插件配置，不然谁都不知道如何使用」。
+   - 写入形态（两项默认由用户在 AskUserQuestion 里选定：**保守声明** + **只在池非空时写**）：条目排在本工具名下逐模型条目**之后**（与 `/v1/models` 的末位追加同口径）；`supportsImages: false`；`maxInputTokens` 取池内**最小**上下文、每次同步重算、池里没有数值就不写该键；不写 `reasoning`、不写 `maxOutputTokens`；`url`/`apiKey`/`vendor`/`buddyBridgeOwner` 与逐模型条目同源。
+   - ⚠ **一处比所选默认值更收紧**，如实标注：`supportsToolCall` **不是固定 `true`**，而是 `auto::any_tool_capable(models)`（复用 auto.rs 私有的档位谓词 `fits(model, false, true)`）。理由：发布集里只有 `chatOnly` 模型时，声明 `true` 会让插件侧的工具请求恒定落到 D3 兜底、再被 `prepare` 拒成 400；共用同一个谓词后，插件侧声明与核心选档**不可能分叉**。
+   - 落地：`sync.rs` 新增 `SyncOptions.auto_route`（**默认 false**）+ `merge_models_auto` + 私有的 `merge_with_auto`（原 `merge_models` 主体，`auto_route` 只是其中一个开关）+ `auto_entry` + `smallest_input`；`owned_count` **排除别名**。`orchestration.rs::sync_published` 的**唯一生产调用点**置 `auto_route: true`，两个目标共用同一条写路径。
+   - 🔴 对拍之所以仍逐字节不变：JS 侧从未有这一条 ⇒ `auto_route` 默认 false，且 `tests/js_parity.rs::sync_options` 显式钉成 false、夹具 `expected` 只有逐模型条目。因此本轮 `git diff --stat src-tauri/core/tests/fixtures` **为空**（不像 v1.1.12 那轮要如实分叉）。
+   - 手动条目若已占用 `WB · auto` 这个 id，按既有数据红线**不覆盖**，本工具直接放弃写这一条。
+
+### 对外契约变化（本轮）
+
+| 变化 | 影响面 |
+|---|---|
+| 合成模型名由 `WB.auto` 改为 **`WB · auto`** | `WB.auto` **不再被任何入口接受**；未发布，故不影响已交付二进制 |
+| WorkBuddy / CodeBuddy 的 `models.json` **多一条 `WB · auto`**，且同时进该文档的可用模型列表 | 插件侧从此**选得到**这个入口；`url`/`apiKey` 与逐模型条目同值 |
+| `sync.count` 与 `status.json` 的 `sync.targets.<目标>.count` | **语义不变**，仍只数真实模型（别名不计入），面板不因此多出一行 |
+| 发布集为空时 | 既不写插件条目，也不进 `/v1/models`——两处同一闸门 |
+
+`status.json` 形状未变，`STATUS_SCHEMA_VERSION` 保持 `1`（别名只进插件文档，不进 `status.json` 的模型列表）。
+
+### 验证（本轮真实执行）
+
+- ✅ 核心 `cargo test` **316 通过 / 0 失败**（lib **294** + `js_parity` 11 + `red_lines` 11；lib 288 → 294 = `sync.rs` +6：末位追加与逐字段保守声明、空池不写、`supportsToolCall` 随池变化、临时文件里「写进去→被列出→下一轮空同步删干净」、手动同名条目不被覆盖、非 `auto_route` 路径不写别名）
+- ✅ 核心 `cargo clippy --all-targets` **0 warning**（`touch src/sync.rs src/auto.rs src/server.rs` 后强制重检）
+- ✅ `git diff --stat src-tauri/core/tests/fixtures` **为空**
+- ✅ `npm run version:set -- 1.1.15` 后 `npm run version:check` **7 处一致（1.1.15）**
+- 🔴 **未做**：面板四组 JS 套件 / eslint / `vite:build`（本轮未碰 `src/**` 与 `scripts/*.mjs`）、壳 clippy 与 `cargo test --lib`（未碰 `src-tauri/src/`，IPC 命令与事件一字未动）、GUI 实机、真实模型端到端、构建安装包、打标签
+- 🔴 **未验证**：WorkBuddy / CodeBuddy 自身能否识别这条合成路由并按它发请求（合成条目的字段要求是**推定**符合插件约定，只在临时目录沙箱验证过落盘形态）；`maxInputTokens` 取池内最小值在混搭池里会不会提前截断长上下文请求
+- ⚠ **档位裁定**：按「新功能 = minor」本轮本应占 `1.2.0`，但 `1.2.x~1.3.x` 已被维护者裁定作废且**不得再占用**，minor 位无处可进；本轮属同一未发布能力（WB · auto 路由）的追加，故落 **patch（1.1.14 → 1.1.15）**，该冲突如实记录。
+
+---
+
+## v1.1.14
+
+> **状态**: 📝 **待发布**——尚未构建安装包、尚未打标签。七处落点当时实测一致为 `1.1.14`；**该落点已被 v1.1.15 取代**，`1.1.14` 从未构建、从未打标签。
+> **日期**: 2026-10-10
+> **GitHub Release 正文**: 当时写作 [`RELEASE-NOTES-v1.1.14.md`](RELEASE-NOTES-v1.1.15.md)（该文件已随 v1.1.15 改名，现在只有一份 v1.1.15 底本）。
+> **与 v1.1.13 的关系**: 同一批未发布工作的第三个落点。`1.1.11/1.1.12`（审查修复）与 `1.1.13`（并发 4→8）的内容**一字未变**；`1.1.13 → 1.1.14` 之间新增的只有下面第 1 条 WB · auto。
+> 🔴 **本节两处结论已被 v1.1.15 撤销**，读到即按上方 v1.1.15 一节为准：① 合成模型名 `WB.auto` 已全局改成 **`WB · auto`**；② 「`WB · auto` **绝不写进插件配置**」/「插件配置永不含 `WB · auto`」/「插件 `models.json` 无变化」**已全部作废**，现在会写。
+
+### 本版内容
+
+1. **WB · auto 智能路由模型落地**（对外多出一个合成模型名 `WB · auto`；设计稿见 `docs/plans/2026-10-10-wb-auto-smart-router.md`，本轮按 §10 落地实录收口）。用户要求「WB · auto 只使用可用的模型，使用过程中出现受限、超时、不可用时同时从可用模型中移除，并更新模型列表中该模型的状态」——**实读结论是这条要求的三个子句全部由既有链路承担，本轮没有新增任何摘除/状态代码**：池 = `usable_models()`（目录 ∩ `validated` ∩ 结果 ok），摘除 = `record()` 的 `validated.remove(记账键)`，状态更新 = 同一次写入重算 `availableModels` + 逐键写 `modelResults` → `status.json` → `core-status`/`core-activity` → 面板行。因此**记账键必须是实际模型的全限定 id**（决策点 D2 由推荐项升为强制项），否则摘除打在 `"WB · auto"` 这个假键上、真实模型留在通过集里被反复选中。
+   - 新增 `src-tauri/core/src/auto.rs`：纯函数、无 IO。`AUTO_MODEL_ID`、`has_images`、`has_tools`、`select_with`（选择器注入、可测）、`auto_select`。分级候选按请求内容：图片 → 只看 `images`；工具 → 排除 `chatOnly` 且要求 `toolcall`；两者兼有 → 两个都要；纯文本 → 全池。候选空则退全池（D3 单级兜底），退化后仍不合规的由 `prepare` 的既有 400 给出。随机取模用既有 `protocol::random_uuid()` 的前 4 位十六进制，**未引入 fastrand/rand**。
+   - `server.rs` 两处拦截：`/v1/models` 在池非空时**末尾追加**合成条目（D1：池空即不追加，客户端不会看到点了必失败的空池入口）；`chat()` 在**记账键首次取读之前**改写 `body["model"]`，池快照只取读一次、选择与 `prepare` 共用同一份。响应 `model` 字段与 usage 记账键因此天然都是实际模型 id（回显取自同一个 `body["model"]`）。
+   - 🔴 **两条如实记录的偏差**：① 计划落点 C 的「路由选择写进运行日志」那一行**未做**——`log_line` 是 `orchestration` 私有的，`Handlers` 没有日志通道，为它开新通道超出「最小改动」；② 计划 §7.2 的「router 级 408 读体超时不摘除」单测**未做**——`REQUEST_BODY_TIMEOUT` 在 `chat()` 里是硬编码 20s，该路径已由 v1.1.12 的 `read_body_applies_the_timeout_to_a_body_that_never_finishes` 覆盖，不为此重构签名。
+   - 边界必须如实保留：用户列的三类都**不在** `REQUEST_SHAPED_FAILURES`（`output_truncated` 等格式类四项按数据红线 4 仍不摘除）；客户端取消 / 429 / 408 / `prepare` 的本地 400 全在 `record()` 之前早退，**不触发摘除**；摘除当次只影响 `/v1/models` + `status.json` + 面板，**插件 `models.json` 要等下一轮同步**（`record()` 不调 `sync_published`），恢复只能靠「重新检测」/refresh。`WB · auto` **绝不写进插件配置**——🔴 **该条已被 v1.1.15 撤销，现在会写进两个插件的配置**（本节第 2 条与下方契约表的「插件 `models.json`｜无变化」同理作废）。
+   - D6（同请求内换模型重试）与 D7（对话请求整体超时预算）按推荐默认**都不做**——D7 的缺口如实保留：上游挂死且客户端不取消时，该模型既不失败也不被摘除。
+2. **契约文档新增 `WB · auto` 小节**（`docs/contract.md`）：列表条目形态、路由与分级规则、响应/记账键为全限定 id、摘除语义与四类早退不摘除、插件配置永不含 `WB · auto`、接入边界（回环、Bearer 鉴权、任何非空 `Origin` → 403、并发 ≤8、体 ≤8MB）**一字未放宽**。
+
+### 对外契约变化（本轮）
+
+| 变化 | 影响面 |
+|---|---|
+| `GET /v1/models` 在池非空时**末尾多一条** `{ "id": "WB · auto", ... }` | 客户端枚举模型时会多看到一个入口；池空时不出现 |
+| `POST /v1/chat/completions` 接受 `model = "WB · auto"` | 该请求的响应 `model` 字段是**实际选中模型的全限定 id**，不是 `WB · auto` |
+| `usage.models` / `modelResults` / `validated` 的键 | WB · auto 请求记在真实模型上；面板用量页因此不会出现「WB · auto」这一行 |
+| 插件 `models.json` | **无变化**，永远不写 `WB · auto` |
+
+`status.json` 形状未变，`STATUS_SCHEMA_VERSION` 保持 `1`。
+
+### 验证（本轮真实执行）
+
+- ✅ 核心 `cargo test` **310 通过 / 0 失败**（lib **288** + `js_parity` 11 + `red_lines` 11；lib 261 → 288 = `auto.rs` +18、`server.rs` +9）
+- ✅ 新增 9 项 router 级契约测试覆盖：池空不追加条目、记账键与响应回显都是实际 id、失败请求同样记真实 id、跨 8 个请求池中永无 `WB · auto`、池空即 400 且不记账、429 不记账、客户端取消不记账（也不摘除）、工具请求被路由离 `chatOnly`、格式类失败仍记真实 id 且不摘除
+- ✅ 核心 `cargo clippy --all-targets` **0 warning**（`touch src/lib.rs src/auto.rs src/server.rs` 后强制重检）
+- ✅ `git diff --stat src-tauri/core/tests/fixtures` **为空**（对拍仍逐字节等价；`models_list_uses_client_ids` 的期望值是**按新契约正当更新**的列表断言，不是夹具改动）
+- ✅ `npm run version:set -- 1.1.14` 后 `npm run version:check` **7 处一致（1.1.14）**；版本推进后测试与 clippy **重跑**仍为 310/0 与 0 warning
+- 🔴 **未做**：面板四组 JS 套件 / eslint / `vite:build`（本轮未碰 `src/**` 与 `scripts/*.mjs`）、壳 clippy 与 `cargo test --lib`（未碰 `src-tauri/src/`）、`red_lines.rs` 新断言（理由见上）、GUI 实机、真实模型端到端、构建安装包、打标签
+- ⚠ **档位裁定**：WB · auto 是新功能，按「版本号规则」本应占 minor 位；用户明确裁定本次落 **patch（1.1.14）**，该规则第 1 条为用户指令优先的情形。`1.2.x~1.3.x` 仍不得占用。
+
+---
+
+## v1.1.13
+
+> **状态**: 📝 **待发布**——尚未构建安装包、尚未打标签。七处落点实测一致为 `1.1.13`（`npm run version:check` 输出「全部 7 处版本号一致（1.1.13）」，两侧 `Cargo.lock` 由 cargo 同步）。
+> **日期**: 2026-10-10
+> **GitHub Release 正文**: [`RELEASE-NOTES-v1.1.13.md`](RELEASE-NOTES-v1.1.13.md)（由 v1.1.12 底本改名而来；上一版底本 `RELEASE-NOTES-v1.1.10.md` 已被同一工作树的并行轮次删除，`git show HEAD:docs/version/RELEASE-NOTES-v1.1.10.md` 可取回，恢复或删除属维护者决定）。⚠ 本文件已被 [`RELEASE-NOTES-v1.1.14.md`](RELEASE-NOTES-v1.1.14.md) 取代（`1.1.11~1.1.14` 同属未发布批次、一次 Release 只用一份正文），保留或删除属维护者决定，v1.1.14 那轮**不代做删除**。
+> **与 v1.1.12 的关系**: 同一轮工作的两个落点。`v1.1.12` 那一节记的审查修复**内容一字未变**；`1.1.12 → 1.1.13` 之间新增的只有下面第 1 条容量调整（同一工作树的并行轮次落地）。两个版本号都**从未构建、从未打标签**。
+> **`1.2.x~1.3.x` 仍属「不得再占用」**（维护者裁定，见 v1.1.12 一节）。
+
+### 本版内容
+
+1. **对话接口并发上限 4 → 8**（`server.rs:46 MAX_CONCURRENT_REQUESTS`）。动机是本工具的接入面已扩展为**服务一切 OpenAI 兼容客户端**（不止 WorkBuddy/CodeBuddy 插件），4 路对多 agent 并行或带并行子任务的 coding agent 很容易触顶。判定形态不变（`active > 上限`，即最多 8 路同时在跑）。
+   - 🔴 **对外契约有一处字面变化**：超限的 429 文案由 `At most four requests may run at once` 改为 `At most eight requests may run at once`（`status` / `type` / `code = "busy"` 逐字不变）。全仓实读确认没有任何代码、对拍夹具或面板文案按旧整句匹配。
+   - 红线其余部分一字未动：鉴权（含 `/health`）、任何非空 `Origin` → 403、仅回环监听、请求体 ≤8MB。上限值由 `tests/red_lines.rs:169 transport_limits_are_not_loosened` 固定断言钉死，**再调仍须经用户裁定**。
+   - 并发上限是 WB · auto 的接入边界之一，口径已写进 `docs/plans/2026-10-10-wb-auto-smart-router.md` §1.1（路由是**分散**不是**扩容**，429 对 WB · auto 用户同样是既有行为）。
+2. **文档一致性收口**（本轮，纯注释与文案）：`docs/wiki/Home.md` 的「最多 4 个并发请求」、`docs/version/RELEASE-v1.1.md` v1.1.12 一节的「不受 ≤4 并发限制」、以及 `server.rs` 里两处描述管理路由的「≤4 并发」注释，统一改为不含具体数字的表述或 8——注释改写成引用常量名（`MAX_CONCURRENT_REQUESTS`），避免下次调值再留下一处失真。按「版本号规则」第 3 条（纯文案/注释、不引入新逻辑分支）**不递增**，落点维持 1.1.13。
+   - ⚠ WB · auto 一侧的**要求补充**（2026-10-10 用户追加：使用中出现受限/超时/不可用时把该模型移出可用集合并更新列表状态）在这一轮只落到设计文档 §2.4，**该轮无任何代码**。🔴 本节旧文当时写的是「`src-tauri/core/src/auto.rs` 仍不存在」——**该句已被 v1.1.14 一节作废**：同一天的下一轮把代码落了地，见本节上方 v1.1.14。
+
+### 验证（本轮真实执行）
+
+- ✅ 核心 `cargo test` **283 通过 / 0 失败**（lib 261 + `js_parity` 11 + `red_lines` 11），其中 `transport_limits_are_not_loosened` 与 `busy` 契约测试都按 8 跑通
+- ✅ `git diff --stat src-tauri/core/tests/fixtures` **为空**（对拍仍逐字节等价）
+- ✅ `npm run version:check` **7 处一致（1.1.13）**
+- ✅ 核心 `cargo clippy --all-targets` **0 warning**（注释改动后重跑）
+- 🔴 **未做**：面板四组 JS 套件 / eslint / `vite:build`（本轮未碰 `src/**` 与 `scripts/*.mjs`）、壳 `clippy` 与 `cargo test --lib`（未碰 `src-tauri/src/`）、GUI 实机、构建安装包、打标签
 
 ---
 
@@ -15,7 +126,7 @@
 > **上一版本**: **v1.1.10**（已发布，2026-10-10 实测：Release `draft = false`、23 个资产、线上清单六条 url 逐条可取回）。
 > **GitHub Release 正文**: [`RELEASE-NOTES-v1.1.12.md`](RELEASE-NOTES-v1.1.12.md)（本轮出稿，含固定小节「macOS 首次打开（ad-hoc 签名放行）」，该小节自 v1.1.10 逐字沿用）。⚠ 上一版底本 `RELEASE-NOTES-v1.1.10.md` 本轮**未删**（它是已 Publish 线上正文唯一可在仓库里逐字对账的那份），但**随后被同一工作树的并行轮次删除**（`git status` 实读 ` D`，尚未提交；`git show HEAD:docs/version/RELEASE-NOTES-v1.1.10.md` 可取回）。恢复或删除都属维护者决定，本轮不代做。
 > **本版主题**: **一轮全量代码审查（Rust 核心 + 壳 + Vue 面板）的缺陷修复**，不含新功能——断连泄漏在途会话、管理接口缺请求体预算、会话 id 空串退化，加上面板一批对比度 / 键盘 / 忙态 / ARIA 问题。
-> **版本推进理由**: 缺陷修复 = patch 位。`1.1.10 → 1.1.11 → 1.1.12` **属同一轮**（`1.1.11` 是该轮中途的首次推进，从未构建、从未打标签，其内容与 `1.1.12` 是同一批改动，不是两个批次）。⚠ 如实记录：本轮期间一个并行轮次曾把落点推进到 **`1.2.0`**（其 WB.auto 智能路由**只有设计稿、无任何代码落地**——`src-tauri/core/src/auto.rs` 不存在，全仓 grep `WB.auto` / `auto_select` 无命中），已按维护者裁定回退；`1.2.x~1.3.x` 从未构建、从未打标签，**不得再占用**。
+> **版本推进理由**: 缺陷修复 = patch 位。`1.1.10 → 1.1.11 → 1.1.12` **属同一轮**（`1.1.11` 是该轮中途的首次推进，从未构建、从未打标签，其内容与 `1.1.12` 是同一批改动，不是两个批次）。⚠ 如实记录：本轮期间一个并行轮次曾把落点推进到 **`1.2.0`**（其 WB · auto 智能路由**只有设计稿、无任何代码落地**——`src-tauri/core/src/auto.rs` 不存在，全仓 grep `WB · auto` / `auto_select` 无命中），已按维护者裁定回退；`1.2.x~1.3.x` 从未构建、从未打标签，**不得再占用**。
 
 ### 一、版本号落点（`npm run version:check` 本轮实测：7 处一致 = 1.1.12）
 
@@ -36,7 +147,7 @@
 **A. 核心三处缺陷修复**
 
 1. **客户端断开后泄漏在途会话与权限轮询任务**（`backend.rs`）。一次生成期间核心除了转发内容还会**每 250ms 轮询**该会话的原生工具待审批状态；清理原先写在生成函数的正常/错误返回路径上，而 **hyper 在客户端断开时直接丢弃整个 handler future**，那条清理一行都不执行。结果是每次取消（WorkBuddy 点停止、切会话、超时——日常操作）留下一个永不结束的轮询任务 + 一份会话状态（`active` / `usage_by_session` / 待审批条目），活动流也停不掉。修复形态：新增 `CompleteGuard`（`backend.rs:371`，`impl Drop` 在 `:381`）作为**销毁即清理**的守卫，构造点必须在会话已入表、守卫与 watch 都已建立之后（`:1378` 附近）；清理幂等（内联 finally 用 `finished` 标记占位，Drop 见位即返回）；异步收尾经 `Handle::try_current()` 在当前运行时派发，拿不到运行时的理论路径只做同步清理。
-2. **`/admin/*` 补齐 20s 请求体读取预算**（`server.rs`）。`REQUEST_BODY_TIMEOUT` 原先只挂在 chat 路径外面那一层，五个管理调用点没有它；而管理路由**不受 ≤4 并发限制**，一个只发头不发体的连接能无限期占住任务与缓冲。收拢为 `read_body(body)` → `read_body_bounded(body, REQUEST_BODY_TIMEOUT)`（`:1203`/`:1210`），一处生效、五个调用点未动；超时映射 408 + `code = "timeout"`。
+2. **`/admin/*` 补齐 20s 请求体读取预算**（`server.rs`）。`REQUEST_BODY_TIMEOUT` 原先只挂在 chat 路径外面那一层，五个管理调用点没有它；而管理路由**不受对话并发上限（`MAX_CONCURRENT_REQUESTS`）限制**，一个只发头不发体的连接能无限期占住任务与缓冲。收拢为 `read_body(body)` → `read_body_bounded(body, REQUEST_BODY_TIMEOUT)`（`:1203`/`:1210`），一处生效、五个调用点未动；超时映射 408 + `code = "timeout"`。
 3. **OpenCode 会话响应无 id 时当场失败**（`backend.rs:1295` 附近）。原先 `.unwrap_or("")` 让空串成为一把**共享键**：并发请求在 `active` / `usage_by_session` 里落进同一条目互相干扰，DELETE 退化成 `/session/`。现用 `.filter(|id| !id.is_empty())` + 明确错误。
 
 **B. 面板无障碍与反馈七项**（编号 4~10，数值来源为 `src/styles/variables.css` 的 token 实算，非目测）

@@ -166,7 +166,7 @@ async fn an_empty_api_key_authorizes_nothing() {
 #[test]
 fn transport_limits_are_not_loosened() {
     assert_eq!(server::MAX_BODY_BYTES, 8 * 1024 * 1024, "请求体上限固定 8MB，超出应 413");
-    assert_eq!(server::MAX_CONCURRENT_REQUESTS, 4, "并发上限固定 4，超出应 429 busy");
+    assert_eq!(server::MAX_CONCURRENT_REQUESTS, 8, "并发上限固定 8（2026-10-10 用户裁定 4→8），超出应 429 busy");
     assert_eq!(
         probe::PROBE_TIMEOUT_MS,
         60_000,

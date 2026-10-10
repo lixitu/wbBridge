@@ -36,12 +36,14 @@
 //! | 本 crate 模块 | 对应 JS | 说明 |
 //! |---|---|---|
 //! | [`providers`] | — | 多平台接入的注册表（id/标签/npm/baseURL）与 `providers.json` 凭据通道 |
+//! | [`auto`] | — | WB · auto 合成模型名的纯函数路由（按请求内容在可用池里选实际模型 id） |
 //!
 //! 正确性由两层测试保证：
 //! 1. 各模块内的 Rust 单测（`#[cfg(test)]`）锁定行为；
 //! 2. `tests/js_parity.rs` 用 Node 真实加载 `core/src/*.js`，同输入对拍 JS 与 Rust 的输出。
 
 pub mod atomic;
+pub mod auto;
 pub mod backend;
 pub mod handoff;
 pub mod json;

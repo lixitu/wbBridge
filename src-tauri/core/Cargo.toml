@@ -1,6 +1,6 @@
 [package]
 name = "wbbridge-core"
-version = "1.1.12"
+version = "1.1.15"
 edition = "2021"
 # 自己依赖图的下限是 1.88（icu_* ← idna ← url ← reqwest），取与壳一致的 1.90
 rust-version = "1.90"

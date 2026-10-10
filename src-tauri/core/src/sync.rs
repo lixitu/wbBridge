@@ -138,6 +138,13 @@ pub struct SyncOptions {
     pub require_existing: bool,
     /// 外层形态；默认 [`DocumentShape::Preserve`]，与迁移前 JS 逐字节一致。
     pub shape: DocumentShape,
+    /// 发布集非空时额外写入一条 `WB · auto` 合成路由条目（[`auto_entry`]）。
+    ///
+    /// 默认 false：JS 侧从未有这一条，`tests/fixtures/sync.json` 的对拍与所有既有调用因此
+    /// 逐字节不变。它不是模型、而是一个路由别名，所以只随**当轮发布集**出现：发布集空的那一轮
+    /// 不写，写了之后若发布集转空，下一轮同步会按 `OWNER` 归属把它连同 `availableModels`
+    /// 里的 id 一起摘掉（与逐模型条目同一套清理逻辑）。
+    pub auto_route: bool,
 }
 
 /// `syncModels` 的结果（JS 原形态是 `{ changed, count, backup? }`）。
@@ -311,6 +318,9 @@ pub fn atomic_write_with(file: &Path, text: &str, io: &SyncIo) -> Result<(), Syn
 /// 保留 `document` 里非本服务写入的条目，冲突（同 `id` 或同 `OC · <name>`）的新条目整体丢弃。
 /// 外层形态由 `shape` 决定：[`DocumentShape::Preserve`] 下数组形态的文档直接返回合并后的数组
 /// （迁移前 JS 的行为），[`DocumentShape::ModelsObject`] 下一律产出 `{ "models": […] }`。
+///
+/// 这是**与 JS 对拍的那一个**：不写 `WB · auto`，输出逐字节不变。生产发布链走
+/// [`merge_models_auto`]，见 [`SyncOptions::auto_route`]。
 pub fn merge_models(
     document: &Value,
     models: &[Value],
@@ -318,6 +328,37 @@ pub fn merge_models(
     key: &str,
     allow_empty: bool,
     shape: DocumentShape,
+) -> Result<Value, SyncError> {
+    merge_with_auto(
+        document, models, endpoint, key, allow_empty, shape, false,
+    )
+}
+
+/// [`merge_models`] + 发布集非空时在末位追加一条 [`auto_entry`]（`WB · auto` 合成路由）。
+///
+/// 追加发生在逐模型条目之后、冲突判定之内：用户自己有一条 `id` 为 `WB · auto` 的手动条目时
+/// **不覆盖**（数据红线：手动条目 ID 冲突时不得擅自覆盖）。
+pub fn merge_models_auto(
+    document: &Value,
+    models: &[Value],
+    endpoint: &str,
+    key: &str,
+    allow_empty: bool,
+    shape: DocumentShape,
+) -> Result<Value, SyncError> {
+    merge_with_auto(
+        document, models, endpoint, key, allow_empty, shape, true,
+    )
+}
+
+fn merge_with_auto(
+    document: &Value,
+    models: &[Value],
+    endpoint: &str,
+    key: &str,
+    allow_empty: bool,
+    shape: DocumentShape,
+    auto_route: bool,
 ) -> Result<Value, SyncError> {
     if models.is_empty() && !allow_empty {
         return Err(SyncError::other(
@@ -349,6 +390,15 @@ pub fn merge_models(
             continue;
         }
         entries.push(model_entry(model, &client_id, endpoint, key));
+    }
+    // 合成路由条目排在逐模型条目之后：与 `/v1/models` 的末位追加同一口径。
+    // 判定用 `models.is_empty()` 而不是 `entries.is_empty()`——后者会因全部条目撞 id 而为空，
+    // 那种情况下发布集其实非空，别名仍该出现。
+    if auto_route && !models.is_empty() {
+        let entry = auto_entry(models, endpoint, key);
+        if !conflicts(entry.get("id")) {
+            entries.push(entry);
+        }
     }
 
     let mut combined: Vec<Value> = kept.into_iter().cloned().collect();
@@ -410,6 +460,12 @@ fn is_owned(model: &Value) -> bool {
 }
 
 /// 合并结果里属于本服务的条目数（等价于 JS 的 `merged.models.filter(...).length`）。
+///
+/// 🔴 `WB · auto` 那条合成路由**不计入**（v1.1.15）：`count` 落进 `status.json` 的 `sync.count`
+/// 与 `sync.targets.<目标>.count`，面板把它当「已发布模型数」显示，而面板的模型行来自
+/// `availableModels` / `modelResults`——那里从头到尾没有别名。让条目数与显示数差 1 会让用户
+/// 以为「有一条模型不见了」。`auto_route` 恒 false 的对拍路径里根本不会出现这条 id，因此该过滤
+/// 不影响 `tests/fixtures` 的任何 `expected`。
 fn owned_count(merged: &Value) -> u64 {
     const NONE: &[Value] = &[];
     let list: &[Value] = match merged {
@@ -420,7 +476,10 @@ fn owned_count(merged: &Value) -> u64 {
         },
         _ => NONE,
     };
-    list.iter().filter(|model| is_owned(model)).count() as u64
+    list.iter()
+        .filter(|model| is_owned(model))
+        .filter(|model| model.get("id").and_then(Value::as_str) != Some(crate::auto::AUTO_MODEL_ID))
+        .count() as u64
 }
 
 /// `models.filter(...).map(m => ({ id, name, vendor, url, apiKey, supportsToolCall, supportsImages,
@@ -461,6 +520,60 @@ fn model_entry(model: &Value, client_id: &str, endpoint: &str, key: &str) -> Val
         }
     }
     Value::Object(entry)
+}
+
+/// `WB · auto` 在插件配置里的那一条：一个**合成路由别名**，不是模型。
+///
+/// 与 [`model_entry`] 的三处差别都是刻意的：
+/// 1. `id` / `name` 逐字取 [`crate::auto::AUTO_MODEL_ID`]，**不经过** [`client_model_id`]——
+///    插件发出去的 `model` 就是这里的 `id`，而 `server.rs` 的改写判定比对的也是这个字面量，
+///    拼成 `OC · WB · auto` 就永远匹配不上。形态上它仍与逐模型条目的 `前缀 · 名称` 对齐。
+/// 2. 能力声明取**保守档**（用户裁定 2026-10-10）：`supportsImages` 恒 false（声明了就得承担
+///    「图片+工具档无候选→退全池→落到不支持视觉的模型」这种注定失败的组合），
+///    `supportsToolCall` 取 [`crate::auto::any_tool_capable`]，与核心选择器的档位谓词同源。
+/// 3. 不写 `workBuddyReasoning` 的推理档位、也不写 `maxOutputTokens`：这两个值随实际选中的模型
+///    而变，固定声明只会把某些模型的上游限制错误地套到另一些模型上。
+///    `maxInputTokens` 例外地写成**当轮发布集的最小值**——宁可少给，也不给一个会把小上下文
+///    模型顶爆的值。
+fn auto_entry(models: &[Value], endpoint: &str, key: &str) -> Value {
+    let name = Value::String(crate::auto::AUTO_MODEL_ID.to_string());
+    let mut entry = Map::new();
+    entry.insert("id".to_string(), name.clone());
+    entry.insert("name".to_string(), name);
+    entry.insert("vendor".to_string(), Value::String("Custom".to_string()));
+    entry.insert("url".to_string(), Value::String(endpoint.to_string()));
+    entry.insert("apiKey".to_string(), Value::String(key.to_string()));
+    entry.insert(
+        "supportsToolCall".to_string(),
+        Value::Bool(crate::auto::any_tool_capable(models)),
+    );
+    entry.insert("supportsImages".to_string(), Value::Bool(false));
+    entry.insert("buddyBridgeOwner".to_string(), Value::String(OWNER.to_string()));
+    if let Some(tokens) = smallest_input(models) {
+        entry.insert("maxInputTokens".to_string(), tokens);
+    }
+    Value::Object(entry)
+}
+
+/// 发布集里最小的 `input`（缺失时回落 `context`，与 [`model_entry`] 同一取法）。
+///
+/// 非数值、0、负数一律跳过：这些值在插件侧不是可用的上下文上限，写进去不如不写。
+/// 返回**原样克隆**的那个数，整数不会因为比较而变成 `128000.0`。
+fn smallest_input(models: &[Value]) -> Option<Value> {
+    let mut smallest: Option<(f64, Value)> = None;
+    for model in models {
+        let Some(tokens) = json::coalesce(model.get("input"), model.get("context")) else {
+            continue;
+        };
+        let Some(number) = tokens.as_f64() else { continue };
+        if number <= 0.0 {
+            continue;
+        }
+        if smallest.as_ref().is_none_or(|(best, _)| number < *best) {
+            smallest = Some((number, tokens.clone()));
+        }
+    }
+    smallest.map(|(_, tokens)| tokens)
 }
 
 /// `syncModels(file, models, endpoint, key, options = {})`。
@@ -516,7 +629,11 @@ pub fn sync_models_with(
             SyncError::invalid_json(format!("Invalid JSON in WorkBuddy models.json: {error}"))
         })?,
     };
-    let merged = merge_models(&document, models, endpoint, key, options.allow_empty, options.shape)?;
+    let merged = if options.auto_route {
+        merge_models_auto(&document, models, endpoint, key, options.allow_empty, options.shape)?
+    } else {
+        merge_models(&document, models, endpoint, key, options.allow_empty, options.shape)?
+    };
     let count = owned_count(&merged);
 
     if json::js_stringify(&merged) == json::js_stringify(&document) {
@@ -834,6 +951,7 @@ mod tests {
             allow_empty: true,
             require_existing: true,
             shape: DocumentShape::ModelsObject,
+            auto_route: false,
         };
 
         let outcome =
@@ -1109,6 +1227,7 @@ mod tests {
             allow_empty: false,
             require_existing: true,
             shape: DocumentShape::Preserve,
+            auto_route: false,
         };
         let error = sync_models_with(&file, &[model("a")], "http://e", "k", &options, &test_io())
             .expect_err("缺失文件");
@@ -1138,6 +1257,7 @@ mod tests {
             allow_empty: true,
             require_existing: true,
             shape: DocumentShape::Preserve,
+            auto_route: false,
         };
         let outcome = sync_models_with(&file, &[], "http://e", "k", &options, &test_io())
             .expect("退出清理");
@@ -1181,6 +1301,7 @@ mod tests {
             allow_empty: true,
             require_existing: true,
             shape: DocumentShape::Preserve,
+            auto_route: false,
         };
         let outcome = sync_models_with(&file, &[], "http://e", "k", &options, &test_io())
             .expect("清理");
@@ -1220,5 +1341,157 @@ mod tests {
         assert_eq!(error.status, 502);
         assert_eq!(error.code, "upstream_error");
         assert_eq!(error.message, "boom");
+    }
+
+    // --- WB · auto 合成路由条目（v1.1.15 用户裁定：写进插件配置，保守声明，只随非空发布集出现） ---
+
+    /// 发布集里最小的 `input`，其余字段按「可工具调用」形态给。
+    fn pool(inputs: &[u64], toolcall: bool) -> Vec<Value> {
+        inputs
+            .iter()
+            .enumerate()
+            .map(|(index, input)| {
+                json!({
+                    "id": format!("vendor/m{index}"),
+                    "name": format!("m{index}"),
+                    "input": input,
+                    "toolcall": toolcall,
+                })
+            })
+            .collect()
+    }
+
+    fn merge_auto(document: &Value, models: &[Value]) -> Value {
+        merge_models_auto(document, models, "http://127.0.0.1:41980/v1/chat/completions", "secret", true, DocumentShape::Preserve)
+            .expect("合并成功")
+    }
+
+    #[test]
+    fn the_auto_route_entry_is_appended_last_with_a_conservative_declaration() {
+        let merged = merge_auto(&json!([]), &pool(&[32_000, 128_000], true));
+        let items = merged.as_array().expect("数组");
+        assert_eq!(items.len(), 3, "两条模型 + 一条别名");
+        let alias = &items[2];
+        // id 逐字等于路由名：插件发出的 model 就是它，server.rs 的改写判定比对的也是它。
+        assert_eq!(alias["id"], json!(crate::auto::AUTO_MODEL_ID));
+        assert_eq!(alias["name"], json!(crate::auto::AUTO_MODEL_ID));
+        assert_eq!(alias["vendor"], json!("Custom"));
+        assert_eq!(alias["url"], json!("http://127.0.0.1:41980/v1/chat/completions"));
+        assert_eq!(alias["apiKey"], json!("secret"));
+        assert_eq!(alias["supportsToolCall"], json!(true));
+        assert_eq!(alias["supportsImages"], json!(false), "保守档：绝不声明没有候选的能力");
+        assert_eq!(alias["buddyBridgeOwner"], json!(OWNER));
+        assert_eq!(alias["maxInputTokens"], json!(32_000), "取发布集里的最小上下文");
+        assert!(
+            alias.get("maxOutputTokens").is_none() && alias.get("reasoning").is_none(),
+            "随实际模型而变的值不做固定声明"
+        );
+        assert_eq!(
+            alias.as_object().expect("键序").keys().collect::<Vec<_>>(),
+            vec![
+                "id",
+                "name",
+                "vendor",
+                "url",
+                "apiKey",
+                "supportsToolCall",
+                "supportsImages",
+                "buddyBridgeOwner",
+                "maxInputTokens"
+            ],
+            "键序与 model_entry 同形，整篇 models.json 的文本才稳定"
+        );
+    }
+
+    #[test]
+    fn no_auto_route_entry_when_the_published_set_is_empty() {
+        let merged = merge_auto(&json!([]), &[]);
+        assert_eq!(merged.as_array().expect("数组").len(), 0, "空发布集不写别名");
+    }
+
+    #[test]
+    fn the_alias_declares_tools_only_when_some_candidate_can_take_them() {
+        // 全池 chatOnly：声明 true 会让插件按工具形态发请求，而工具档无候选→退全池→落到
+        // chatOnly 上被 prepare 当场 400，别名于是恒定失败。
+        let chat_only = vec![
+            json!({ "id": "vendor/a", "name": "a", "chatOnly": true }),
+            json!({ "id": "vendor/b", "name": "b", "chatOnly": true }),
+        ];
+        let merged = merge_auto(&json!([]), &chat_only);
+        let alias = &merged.as_array().expect("数组")[2];
+        assert_eq!(alias["id"], json!(crate::auto::AUTO_MODEL_ID));
+        assert_eq!(alias["supportsToolCall"], json!(false));
+
+        let one_can = vec![
+            json!({ "id": "vendor/a", "name": "a", "chatOnly": true }),
+            json!({ "id": "vendor/c", "name": "c", "toolcall": true }),
+        ];
+        let merged = merge_auto(&json!([]), &one_can);
+        let alias = &merged.as_array().expect("数组")[2];
+        assert_eq!(alias["supportsToolCall"], json!(true));
+    }
+
+    #[test]
+    fn the_alias_lands_in_available_models_and_is_dropped_by_the_next_empty_sync() {
+        let dir = sandbox("sync-auto-route");
+        let file = dir.join("models.json");
+        fs::write(&file, "{\"models\":[],\"availableModels\":[]}\n").expect("预置文件");
+        let options = SyncOptions {
+            allow_empty: true,
+            require_existing: true,
+            shape: DocumentShape::Preserve,
+            auto_route: true,
+        };
+
+        let first = sync_models_with(&file, &pool(&[32_000], true), "http://e", "k", &options, &test_io())
+            .expect("首轮同步");
+        assert_eq!(first.count, 1, "别名不计入「已发布模型数」，面板那里没有它这一行");
+        let document: Value =
+            serde_json::from_str(&fs::read_to_string(&file).expect("读取")).expect("解析");
+        assert_eq!(
+            document["availableModels"].as_array().expect("数组").len(),
+            2,
+            "逐模型 id 与别名都要进可选项"
+        );
+        assert_eq!(
+            document["availableModels"][1],
+            json!(crate::auto::AUTO_MODEL_ID)
+        );
+
+        // 发布集转空：别名与逐模型条目一起按 OWNER 归属摘掉，availableModels 同步收敛。
+        let second = sync_models_with(&file, &[], "http://e", "k", &options, &test_io())
+            .expect("清场同步");
+        assert_eq!(second.count, 0);
+        let document: Value =
+            serde_json::from_str(&fs::read_to_string(&file).expect("读取")).expect("解析");
+        assert_eq!(document["models"].as_array().expect("数组").len(), 0);
+        assert_eq!(document["availableModels"].as_array().expect("数组").len(), 0);
+    }
+
+    #[test]
+    fn a_manual_entry_named_like_the_alias_is_never_overwritten() {
+        // 数据红线：手动条目 ID 冲突时不得擅自覆盖——别名与逐模型条目走同一道闸门。
+        let document = json!([{ "id": crate::auto::AUTO_MODEL_ID, "vendor": "SomeoneElse" }]);
+        let merged = merge_auto(&document, &pool(&[32_000], true));
+        let items = merged.as_array().expect("数组");
+        assert_eq!(items.len(), 2, "只写了那条模型，别名被让位丢弃");
+        assert_eq!(items[0]["vendor"], json!("SomeoneElse"), "用户自己那条一字不改");
+        assert_eq!(items[1]["id"], json!("OC · m0"));
+    }
+
+    #[test]
+    fn the_plain_merge_still_writes_no_alias() {
+        // `SyncOptions::default()` 与全部对拍入口都从这里过：默认关，输出逐字节不变。
+        let merged = merge_models(
+            &json!([]),
+            &pool(&[32_000], true),
+            "http://e",
+            "k",
+            false,
+            DocumentShape::Preserve,
+        )
+        .expect("合并");
+        assert_eq!(merged.as_array().expect("数组").len(), 1);
+        assert!(!json::js_stringify(&merged).contains(crate::auto::AUTO_MODEL_ID));
     }
 }

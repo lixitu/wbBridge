@@ -1005,6 +1005,10 @@ fn reset_case_files(case: &Value, sandbox: &Path, base: &str) {
 /// 由 `sync.rs` 的单元测试钉住。
 fn sync_options(input: &Value) -> sync::SyncOptions {
     sync::SyncOptions {
+        // 🔴 对拍恒为 false：JS 侧从未有过 `WB · auto` 这条合成路由（v1.1.15 才在 Rust 侧落地），
+        // 夹具里的 `expected` 因此仍是「只有逐模型条目」的形态。生产发布链走
+        // `orchestration.rs::sync_published`，那里显式打开该开关。
+        auto_route: false,
         allow_empty: input
             .get("allowEmpty")
             .and_then(Value::as_bool)

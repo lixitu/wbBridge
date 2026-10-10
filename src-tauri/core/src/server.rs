@@ -7,7 +7,7 @@
 //! - 鉴权：`Authorization: Bearer <key>`，缺失/不匹配 → 401 `{message, type}`；
 //! - 浏览器 Origin 一律 403 `{message}`；
 //! - 请求体上限 8 MB → 413，非法 JSON → 400，文案与 Node 版逐字一致；
-//! - `/v1/chat/completions` 并发上限 4（含自身）→ 429 `busy`；
+//! - `/v1/chat/completions` 并发上限 8（含自身）→ 429 `busy`；
 //! - SSE：先发校验注释帧、每 10s 心跳、模型首个进度到达时写 streamStart 帧、
 //!   校验后的 SSE 帧缓冲输出、结尾 `data: [DONE]`；
 //! - 错误结构：`{ error: { message, type, code } }`，`type`/`code` 缺省 `upstream_error`；
@@ -18,6 +18,8 @@
 //! 1. JS 把 `meta.activity` 作为回调挂在 meta 对象上（JSON 无法表达函数），Rust 侧改为
 //!    [`RequestContext::activity`]；`meta` 只保留可序列化字段（`tools` / `model` 及后端补充项）。
 //! 2. `Connection` 等 hop-by-hop 头由 hyper 自行管理。
+//! 3. Node 版没有 WB · auto：`/v1/models` 在池非空时于末尾追加合成条目（D1：池空不追加），
+//!    `chat()` 在记账键首次取读之前把 `body["model"]` 改写为实际模型的全限定 id（见 [`crate::auto`]）。
 
 use crate::json::{js_stringify, truthy};
 use crate::model_status::client_model_id;
@@ -41,8 +43,9 @@ use tokio_stream::StreamExt;
 
 /// 请求体上限（对应 Node 的 `MAX_BODY = 8 * 1024 * 1024`）。
 pub const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
-/// 并发上限（对应 Node 的 `active.size > 4`）。
-pub const MAX_CONCURRENT_REQUESTS: usize = 4;
+/// 并发上限（2026-10-10 由用户裁定从 4 调到 8：服务一切 OpenAI 兼容客户端后 4 路很容易触顶；
+/// 判定为 `active > 上限`，即最多 8 路同时在跑）。
+pub const MAX_CONCURRENT_REQUESTS: usize = 8;
 /// 与 Node 的 `setInterval(..., 10000)` 一致的 SSE 心跳间隔。
 pub const DEFAULT_HEARTBEAT: Duration = Duration::from_secs(10);
 /// 模型返回前的占位注释帧（Node：`res.write(': validating model response before emission\n\n')`）。
@@ -785,13 +788,24 @@ async fn handle(
     }
 
     if method == "GET" && route == "/v1/models" {
-        let data = (handlers.get_models)()
+        let models = (handlers.get_models)();
+        let mut data = models
             .iter()
             .map(|model| {
                 let id = client_model_id(model);
                 json!({ "id": id.clone(), "object": "model", "owned_by": "opencode", "name": id })
             })
             .collect::<Vec<_>>();
+        // WB · auto 是合成名、不是模型，因此不进 `get_models()` 的池，只在列表末尾追加一条入口。
+        // 决策点 D1：池为空时不追加——否则客户端在列表里看到一个必然 400 的条目。
+        if !models.is_empty() {
+            data.push(json!({
+                "id": crate::auto::AUTO_MODEL_ID,
+                "object": "model",
+                "owned_by": "opencode",
+                "name": crate::auto::AUTO_MODEL_ID,
+            }));
+        }
         return json_response(StatusCode::OK, json!({ "object": "list", "data": data }));
     }
 
@@ -898,20 +912,34 @@ async fn chat(
 
     if shared.control.active() > MAX_CONCURRENT_REQUESTS {
         return error_response(&BackendError::bridge(&BridgeError::with(
-            "At most four requests may run at once",
+            "At most eight requests may run at once",
             429,
             "busy",
         )));
     }
 
     // 超时与错误形态都在 read_body 内部（原先这里的 20s 包装对 /admin/* 是缺的）。
-    let body = match read_body(body).await {
+    let mut body = match read_body(body).await {
         Ok(body) => body,
         Err(error) => return error_response(&error),
     };
 
+    // 池快照只取读一次：WB · auto 的选择域与 `prepare` 的匹配域必须是同一份，否则两轮之间池收缩
+    // 会选出一个 `prepare` 认不出来的模型。
+    let models = (handlers.get_models)();
+    // 🔴 决策点 D2（强制）：下面的 `model` 是**记账键**——它同时流进 `usage.models`、
+    // `modelResults` 与 `record()` 的 `validated.remove`，所以合成名必须在这首次取读**之前**
+    // 改写成实际模型的全限定 id。否则失败判决打在 `"WB · auto"` 这个假键上，真实模型留在通过集里
+    // 被反复选中，用户要求的「受限/超时/不可用即摘除」就落空。
+    if body.get("model").and_then(Value::as_str) == Some(crate::auto::AUTO_MODEL_ID) {
+        // 选不出（池空）时**不改写**，交回 `prepare` 报既有 400 `model_not_found`——不新增错误码。
+        if let Some(selected) = crate::auto::auto_select(&body, &models) {
+            body["model"] = json!(selected);
+        }
+    }
+
     let mut model = body.get("model").cloned().filter(|value| truthy(Some(value)));
-    let prepared = match prepare(&body, &(handlers.get_models)()) {
+    let prepared = match prepare(&body, &models) {
         Ok(prepared) => prepared,
         Err(error) => return error_response(&BackendError::bridge(&error)),
     };
@@ -1205,7 +1233,7 @@ async fn read_body(body: Body) -> Result<Value, BackendError> {
 }
 
 /// 20s 读取预算原先只挂在 chat 路径外面那一层，`/admin/*` 五处调用点没有它：管理路由不受
-/// ≤4 并发约束，慢速滴 body 就能无限占住在途表条目与 socket。收进本函数让两类路由共用同
+/// `MAX_CONCURRENT_REQUESTS` 约束，慢速滴 body 就能无限占住在途表条目与 socket。收进本函数让两类路由共用同
 /// 一条边界，错误形态（408 / `timeout`）与原先 chat 侧逐字一致。
 async fn read_body_bounded(body: Body, budget: Duration) -> Result<Value, BackendError> {
     match tokio::time::timeout(budget, read_body_within(body)).await {
@@ -1492,7 +1520,7 @@ mod tests {
     #[tokio::test]
     async fn read_body_applies_the_timeout_to_a_body_that_never_finishes() {
         // 被保护的行为：请求体永不结束时必须被读取预算掐断，且 `chat` 与 `/admin/*` 共用这一条
-        // 边界（管理路由不受 ≤4 并发限制，原先只有 chat 外面包了超时）。
+        // 边界（管理路由不受对话并发上限限制，原先只有 chat 外面包了超时）。
         // 用一份极短预算驱动同一条掐断逻辑，避免真等 20 秒；`read_body` 只是把
         // REQUEST_BODY_TIMEOUT 原样传进来。
         let stalled = Body::from_stream(futures::stream::pending::<
@@ -1564,7 +1592,11 @@ mod tests {
             body_json(response).await,
             json!({
                 "object": "list",
-                "data": [{ "id": "OC · Free One", "object": "model", "owned_by": "opencode", "name": "OC · Free One" }],
+                // 池非空时末位追加 WB · auto 合成入口（它不是模型，故不出现在 get_models() 的池里）。
+                "data": [
+                    { "id": "OC · Free One", "object": "model", "owned_by": "opencode", "name": "OC · Free One" },
+                    { "id": "WB · auto", "object": "model", "owned_by": "opencode", "name": "WB · auto" },
+                ],
             })
         );
     }
@@ -2031,7 +2063,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(
             body_json(response).await,
-            json!({ "error": { "message": "At most four requests may run at once", "type": "busy", "code": "busy" } })
+            json!({ "error": { "message": "At most eight requests may run at once", "type": "busy", "code": "busy" } })
         );
 
         gate.notify_waiters();
@@ -2039,6 +2071,298 @@ mod tests {
             let response = task.await.expect("任务可等待").expect("路由可用");
             assert_eq!(response.status(), StatusCode::OK);
         }
+    }
+
+    // --- WB · auto（合成模型名的两处拦截） ---
+
+    enum AutoOutcome {
+        Ok,
+        /// 上游失败：`(文案, 状态码, 错误码)`。
+        Failure(&'static str, u16, &'static str),
+        /// 一直挂着，直到客户端取消。
+        Hang,
+    }
+
+    /// WB · auto 契约测试的服务：池与后端结果注入，所有 `on_result` 记录在案。
+    fn auto_server(
+        models: Vec<Value>,
+        outcome: AutoOutcome,
+    ) -> (Router, ServerControl, Arc<Mutex<Vec<ResultRecord>>>) {
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let sink = records.clone();
+        let server = Server::new(KEY)
+            .get_models(move || models.clone())
+            .status(|| json!({ "phase": "ready" }))
+            .on_result(move |record| {
+                let sink = sink.clone();
+                Box::pin(async move { lock(&sink).push(record) })
+            });
+        let server = match outcome {
+            AutoOutcome::Ok => server
+                .backend(|_, _| Box::pin(async { Ok(json!({ "choices": [] })) })),
+            AutoOutcome::Failure(message, status, code) => server.backend(move |_, _| {
+                Box::pin(async move {
+                    Err(BackendError::bridge(&BridgeError::with(message, status, code)))
+                })
+            }),
+            AutoOutcome::Hang => server.backend(|_, context| {
+                Box::pin(async move {
+                    context.signal.cancelled().await;
+                    Ok(json!({ "choices": [] }))
+                })
+            }),
+        };
+        let (router, control) = server.build();
+        (router, control, records)
+    }
+
+    fn pool_model(id: &str, toolcall: bool, chat_only: bool) -> Value {
+        json!({ "id": id, "name": id, "toolcall": toolcall, "chatOnly": chat_only })
+    }
+
+    fn auto_request(model: &str, tools: Option<Value>) -> Request {
+        let mut body = json!({
+            "model": model,
+            "messages": [{ "role": "user", "content": "hi" }],
+        });
+        if let Some(tools) = tools {
+            body["tools"] = tools;
+        }
+        post("/v1/chat/completions", body)
+    }
+
+    fn read_tool() -> Value {
+        json!({
+            "type": "function",
+            "function": { "name": "Read", "parameters": { "properties": { "file_path": { "type": "string" } } } }
+        })
+    }
+
+    #[tokio::test]
+    async fn wb_auto_is_listed_only_while_the_pool_has_models() {
+        // 决策点 D1：池空时列表里不出现一个必然 400 的入口。
+        let (router, _, _) = auto_server(vec![pool_model("free-1", false, false)], AutoOutcome::Ok);
+        let listed = body_json(router.oneshot(get("/v1/models")).await.expect("路由可用")).await;
+        assert_eq!(
+            listed["data"].as_array().expect("列表是数组").last(),
+            Some(&json!({
+                "id": crate::auto::AUTO_MODEL_ID,
+                "object": "model",
+                "owned_by": "opencode",
+                "name": crate::auto::AUTO_MODEL_ID,
+            })),
+            "非空池的列表末位是 WB · auto 入口"
+        );
+
+        let (router, _, _) = auto_server(vec![], AutoOutcome::Ok);
+        let listed = body_json(router.oneshot(get("/v1/models")).await.expect("路由可用")).await;
+        assert_eq!(
+            listed,
+            json!({ "object": "list", "data": [] }),
+            "池空时不得追加 WB · auto"
+        );
+    }
+
+    #[tokio::test]
+    async fn wb_auto_records_and_echoes_the_real_model_id() {
+        // 🔴 决策点 D2（强制）的契约面：记账键与响应回显都必须是实际模型的全限定 id。
+        let (router, _, records) = auto_server(vec![model()], AutoOutcome::Ok);
+        let response = router
+            .oneshot(auto_request(crate::auto::AUTO_MODEL_ID, None))
+            .await
+            .expect("路由可用");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            body_json(response).await["model"],
+            json!("free-1"),
+            "响应回显不得是 WB · auto"
+        );
+
+        let records = lock(&records);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].model, Some(json!("free-1")), "记账键必须是实际模型 id");
+        assert_eq!(records[0].meta["model"], json!("free-1"));
+        assert_eq!(records[0].source, "request");
+    }
+
+    #[tokio::test]
+    async fn a_failed_wb_auto_request_records_the_real_model_id() {
+        // 用户要求的「受限/超时/不可用即从可用模型摘除」由既有 record() 承担，前提是本条：
+        // 失败记录的键必须是实际模型，否则 validated.remove 打在 "WB · auto" 这个假键上。
+        let (router, _, records) = auto_server(
+            vec![model()],
+            AutoOutcome::Failure("Model is not available in your country", 403, "upstream_error"),
+        );
+        let response = router
+            .oneshot(auto_request(crate::auto::AUTO_MODEL_ID, None))
+            .await
+            .expect("路由可用");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        let records = lock(&records);
+        assert_eq!(records.len(), 1);
+        assert!(!records[0].ok);
+        assert_eq!(records[0].model, Some(json!("free-1")));
+        assert_eq!(records[0].code.as_deref(), Some("upstream_error"));
+    }
+
+    #[tokio::test]
+    async fn wb_auto_never_becomes_a_recorded_key_across_requests() {
+        // 池内永无 WB · auto：任何一次记账（成功或失败）都不得出现合成名。
+        let pool = vec![
+            pool_model("opencode/a", false, false),
+            pool_model("opencode/b", true, false),
+            pool_model("opencode/chat", false, true),
+        ];
+        let (router, _, records) = auto_server(pool.clone(), AutoOutcome::Ok);
+        for _ in 0..8 {
+            let response = router
+                .clone()
+                .oneshot(auto_request(crate::auto::AUTO_MODEL_ID, None))
+                .await
+                .expect("路由可用");
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        let records = lock(&records);
+        assert_eq!(records.len(), 8);
+        let ids: Vec<&str> = pool.iter().map(|m| m["id"].as_str().unwrap()).collect();
+        for record in records.iter() {
+            let key = record.model.as_ref().and_then(Value::as_str).expect("记账键必有");
+            assert!(ids.contains(&key), "记账键必须落在池内模型上：{key}");
+            assert_ne!(key, crate::auto::AUTO_MODEL_ID);
+        }
+    }
+
+    #[tokio::test]
+    async fn wb_auto_with_an_empty_pool_is_a_400_and_records_nothing() {
+        // 选不出即不改写：交回 prepare 的既有 400，不新增错误码、不记录、不摘除任何模型。
+        let (router, _, records) = auto_server(vec![], AutoOutcome::Ok);
+        let response = router
+            .oneshot(auto_request(crate::auto::AUTO_MODEL_ID, None))
+            .await
+            .expect("路由可用");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body_json(response).await,
+            json!({
+                "error": {
+                    "message": "Select an available free model from /v1/models",
+                    "type": "model_not_found",
+                    "code": "model_not_found",
+                }
+            })
+        );
+        assert!(lock(&records).is_empty(), "本地 400 不构成对任何模型的判决");
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_wb_auto_request_records_nothing() {
+        // 边界：客户端取消不是对模型的判决，取消的请求既不计数也不摘除。
+        let (router, control, records) = auto_server(vec![model()], AutoOutcome::Hang);
+        let pending = {
+            let router = router.clone();
+            tokio::spawn(async move {
+                router
+                    .oneshot(auto_request(crate::auto::AUTO_MODEL_ID, None))
+                    .await
+            })
+        };
+        for _ in 0..50 {
+            if control.active() > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(control.active(), 1);
+        control.abort_all();
+
+        let response = pending.await.expect("任务可等待").expect("路由可用");
+        assert!(body_text(response).await.is_empty());
+        assert!(lock(&records).is_empty(), "取消的 WB · auto 请求不得写结果，因此不得摘除任何模型");
+    }
+
+    #[tokio::test]
+    async fn wb_auto_routes_tool_requests_away_from_chat_only_models() {
+        // 只有 toolcall 且非 chatOnly 的那个候选可服务带 tools 的请求（单层退档，决策点 D3）。
+        let pool = vec![
+            pool_model("opencode/chat", false, true),
+            pool_model("opencode/tools", true, false),
+        ];
+        let (router, _, records) = auto_server(pool, AutoOutcome::Ok);
+        let response = router
+            .oneshot(auto_request(crate::auto::AUTO_MODEL_ID, Some(json!([read_tool()]))))
+            .await
+            .expect("路由可用");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_json(response).await["model"], json!("opencode/tools"));
+        let records = lock(&records);
+        assert_eq!(records[0].model, Some(json!("opencode/tools")));
+        assert_eq!(records[0].meta["tools"], json!(1));
+    }
+
+    #[tokio::test]
+    async fn wb_auto_at_the_concurrency_cap_records_nothing() {
+        // §2.4.4 的早退之一：429 `busy` 发生在读体与记账之前，因此既不计入用量也不摘除任何模型。
+        let (router, control, records) = auto_server(vec![model()], AutoOutcome::Hang);
+        let mut pending = Vec::new();
+        for _ in 0..MAX_CONCURRENT_REQUESTS {
+            let router = router.clone();
+            pending.push(tokio::spawn(async move {
+                router
+                    .oneshot(auto_request(crate::auto::AUTO_MODEL_ID, None))
+                    .await
+            }));
+        }
+        for _ in 0..200 {
+            if control.active() >= MAX_CONCURRENT_REQUESTS {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(control.active(), MAX_CONCURRENT_REQUESTS);
+
+        let response = router
+            .clone()
+            .oneshot(auto_request(crate::auto::AUTO_MODEL_ID, None))
+            .await
+            .expect("路由可用");
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            body_json(response).await,
+            json!({
+                "error": {
+                    "message": "At most eight requests may run at once",
+                    "type": "busy",
+                    "code": "busy",
+                }
+            })
+        );
+        assert!(lock(&records).is_empty(), "触顶的 429 不构成对任何模型的判决");
+
+        control.abort_all();
+        for task in pending {
+            let _ = task.await.expect("任务可等待").expect("路由可用");
+        }
+        assert!(lock(&records).is_empty(), "取消的 WB · auto 请求不得写结果，因此不得摘除任何模型");
+    }
+
+    #[tokio::test]
+    async fn a_format_shaped_wb_auto_failure_still_keys_the_real_model() {
+        // 数据红线 4 的早退分支在编排层 `record()` 里（格式类四项不撤销已发布模型）；
+        // HTTP 层要保证的是它拿到的键仍是实际 id——否则连「记一次失败」都会打在假键上。
+        let (router, _, records) = auto_server(
+            vec![model()],
+            AutoOutcome::Failure("Model output was truncated", 502, "output_truncated"),
+        );
+        let response = router
+            .oneshot(auto_request(crate::auto::AUTO_MODEL_ID, None))
+            .await
+            .expect("路由可用");
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let records = lock(&records);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].code.as_deref(), Some("output_truncated"));
+        assert_eq!(records[0].model, Some(json!("free-1")));
     }
 
     // --- SSE ---

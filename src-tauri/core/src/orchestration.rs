@@ -373,7 +373,7 @@ fn update(patch: Value) -> Value {
 /// 在**同一次持锁**内累加 `usage`、写入 `modelResults`；两个 `None` 即原来的 `update` 语义。
 ///
 /// 必须与补丁合并共用一把锁：`status.json` 是全量快照而不是增量日志，调用方先读旧值、再各自整体
-/// 回写时，后写者会覆盖先写者的计数与逐模型结果（并发上限 4 内即可复现）。
+/// 回写时，后写者会覆盖先写者的计数与逐模型结果（并发上限 8 内即可复现）。
 fn update_with_usage(
     patch: Value,
     usage_entry: Option<(&str, bool, i64)>,
@@ -745,10 +745,16 @@ fn sync_published(published: Option<Vec<Value>>, allow_empty: bool) {
             let key = key.clone();
             let result = tokio::task::spawn_blocking(move || {
                 // 形态按目标固定：WorkBuddy 保留文档原形态，CodeBuddy 一律写 `{ "models": […] }`。
+                // `auto_route: true`（v1.1.15 用户裁定）：发布集非空时在末位额外写一条
+                // `WB · auto` 合成路由，让插件列表里直接看得见它——此前只有直连本地 HTTP 的
+                // 客户端能用上，用户在 WorkBuddy/CodeBuddy 里根本无从发现。
+                // 闸门与逐模型条目完全相同：`OWNER` 归属、id 冲突不覆盖、发布集转空的下一轮
+                // 由同一次同步把条目与 `availableModels` 里的 id 一起摘掉。
                 let options = SyncOptions {
                     allow_empty: true,
                     require_existing: true,
                     shape: target.document_shape(),
+                    auto_route: true,
                 };
                 sync_models(Path::new(&path), &models, &endpoint, &key, &options)
             })

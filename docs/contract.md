@@ -85,6 +85,26 @@
 - 面板主动终止核心、或核心任务非预期结束后的重启，均走同一个 `shutdown` 动作（核心侧会先完成
   WorkBuddy 配置清理再收尾），重启由壳命令 `restart_core` 重新装配一次核心实例。
 
+## 对外模型接口：`WB · auto` 合成模型名（v1.1.14 落地、v1.1.15 起写入插件配置，端到端未实测）
+
+> 实现：`src-tauri/core/src/auto.rs`（纯函数选择器）+ `src-tauri/core/src/server.rs` 的两处拦截
+> （`/v1/models` 追加条目、`chat()` 在记账键首次取读前改写 `body["model"]`）
+> + `src-tauri/core/src/sync.rs` 的 `auto_entry`（写进插件配置的那一条）。
+> 设计与逐条取舍见 `docs/plans/2026-10-10-wb-auto-smart-router.md`（§10 是落地实录）。
+> 🔴 **名字**：对外唯一字面量是 `WB · auto`（分隔符逐字节 = 空格 + U+00B7 + 空格，与 `OC · 名称` 同形）；
+> v1.1.14 之前写作 `WB.auto`，v1.1.15 全局改名后**旧名字不再被任何入口接受**（`1.1.11~1.1.15` 从未构建、从未打标签，改名不伤及已交付二进制）。
+
+| 项 | 契约 |
+|---|---|
+| `GET /v1/models` | **池非空**时列表末位多一条 `{ "id": "WB · auto", "object": "model", "owned_by": "opencode", "name": "WB · auto" }`；池为空（探测全失败/尚未探测）**不追加**——不给客户端一个必然 400 的入口 |
+| `POST /v1/chat/completions` | `model` 填 `WB · auto` 即由核心按请求内容在**可用池**里选一个实际模型转发；其余字段、错误码、SSE 帧序与手动指定模型时**逐字一致** |
+| 选档规则 | 纯文本 → 全池（含仅对话模型）；带图片 part → 要求 `images`；带非空 `tools` → 要求 `toolcall` 且非 `chatOnly`；图片 + 工具 → 要求两者；该档候选为空 → **退回全池**（不新增错误码，随后由 `prepare` 给出既有 400）；同档多候选 → 均匀随机取一（分散负载） |
+| 响应与记账 | 响应的 `model` 字段（流式与非流式都一样）= **实际选中模型的全限定 id**（如 `modelscope/Qwen/Qwen3-8B`），**不是** `WB · auto`；`status.json` 的 `usage.models`、`modelResults` 与 `validated` 的键同样是这个实际 id |
+| 失败即摘除 | 复用既有链路，本功能零新增判决：受限 / 超时 / 不可用类的失败会 `validated.remove(实际 id)` → `/v1/models` 与面板状态当次即收缩；格式类四项（`invalid_model_output` / `invalid_tool_call` / `native_tool_activity` / `output_truncated`）按数据红线**不摘除**；客户端取消、429 `busy`、408 读体超时、本地 400 全部发生在记账之前，**不构成对任何模型的判决** |
+| 插件配置（**v1.1.15 起的改动**） | 发布集非空时，`WB · auto` 会作为一条**独立条目**写进 WorkBuddy 与 CodeBuddy 的 `models.json`，排在本工具名下逐模型条目**之后**，并同样进该文档的可用模型列表——插件的模型选择器里因此选得到它。v1.1.14 裁定的是「绝不写进插件」，用户实测后推翻（「不然谁都不知道如何使用」）。字段形态（保守声明，能力字段宁少勿多）：`{ id, name }` = `WB · auto`（该 `id` **刻意绕过** `client_model_id`，否则会生成 `OC · WB · auto`、与 `chat()` 的字面比较永不匹配）；`vendor` = `Custom`；`url` / `apiKey` / `buddyBridgeOwner` 与逐模型条目同源；`supportsToolCall` = **池里是否存在能接工具调用的候选**（`auto::any_tool_capable`，与核心选档共用同一谓词，因此两侧不可能分叉）；`supportsImages` = `false`；`maxInputTokens` = 池内**最小**上下文（每次同步重算，取 `input`、缺失回落 `context`，非数值/0/负数跳过；一个都没有就**不写该键**）；**不写** `reasoning` 与 `maxOutputTokens`。发布集为空则整条不写；用户手动建的同名 `id` 条目按数据红线**不被覆盖**（本条直接放弃）。🔴 插件能否识别并按它发请求**未实测** |
+| `sync.count` 语义（不变） | `status.json` 的 `sync.count` 与 `sync.targets.<目标>.count` **只数真实模型**，不把 `WB · auto` 计入；`status.json` 的模型列表（面板数据源）也**不含**该合成路由，面板不会因此多出一行 |
+| 接入边界（不变） | 仅监听 `127.0.0.1`；一切请求都要 `Authorization: Bearer <api-key>`；**任何非空 `Origin` 一律 403**（浏览器内嵌 `fetch` 用不了，CLI / 桌面 agent 直连可用）；并发 ≤8、请求体 ≤8MB |
+
 ## 写入目标与检测规则
 
 模型发布（`sync_published`）向**所有已检测到的插件**分发写入，目标集合与定位优先级由
@@ -97,7 +117,8 @@
 
 - **「已安装」的判定只有一条：定位函数返回 `Some`**（候选文件必须通过 `validate_models_file` 的路径与形状校验）。不猜进程、不猜注册表；显式位置失效时绝不静默回退（与 WorkBuddy 既有约定一致）。
 - 两个目标共用同一套幂等写入（`sync::sync_models`：OWNER 归属标记、冲突不覆盖、文件锁、二次读取、原子替换），CodeBuddy 不是第二套实现。**不再写 `.bak` 备份**（2026-10-09 用户裁定：备份从来没有读取方、面板也没有恢复入口，却按发布次数在插件配置目录里无限堆积）；每次同步（含内容无变化的那次）会按同名族白名单 `<配置文件名>.buddy-bridge-<纯 ASCII 数字>.bak` 清扫旧版本攒下的存量备份，用户自己命名的 `*.bak` 与任何其它文件一律不碰。
-- `sync` 形状（加法式变更，`schemaVersion` 不递增）：新增 `sync.targets.{workBuddy,codeBuddy}`，每个目标 `status` ∈ `ok|missing|error`，`ok` 携带 `count/changed`（早期版本还带 `backup`，随「不再写备份」一并移除，面板从未读过它），`missing` 携带 `reason`，`error` 携带 `error`；顶层 `count` = 各成功目标之和；顶层 `error` 仅在「至少一个目标被定位且全部定位目标都失败」时出现（部分失败不算顶层失败）；新增顶层 `codeBuddyModelsFile` 字段。
+- **v1.1.15 起，发布集非空时两个目标的 `models.json` 都会多一条 `WB · auto`**（形态见上节「插件配置」行）：由 `sync::auto_entry` 生成、走同一套 OWNER 归属与冲突不覆盖规则，排在逐模型条目之后；发布集为空时不写、下一轮空同步也会把它一并删掉。生产发布链是唯一开启该写入的地方（`orchestration::sync_published` 传 `SyncOptions.auto_route = true`），**对拍路径与任何调用方默认都是 `false`**——JS 侧从未有这一条，默认值保证 `tests/fixtures` 逐字节不变。
+- `sync` 形状（加法式变更，`schemaVersion` 不递增）：新增 `sync.targets.{workBuddy,codeBuddy}`，每个目标 `status` ∈ `ok|missing|error`，`ok` 携带 `count/changed`（早期版本还带 `backup`，随「不再写备份」一并移除，面板从未读过它），`missing` 携带 `reason`，`error` 携带 `error`；顶层 `count` = 各成功目标之和；顶层 `error` 仅在「至少一个目标被定位且全部定位目标都失败」时出现（部分失败不算顶层失败）；新增顶层 `codeBuddyModelsFile` 字段。⚠ `count` **不含**那条 `WB · auto`（`owned_count` 显式排除别名），所以「插件里比 `count` 多显示一行」是预期结果，不是记账错乱。
 - 面板侧：集成视图逐目标展示状态（缺 `targets` 时回退单行展示，兼容旧核心）；底部摘要行的措辞已不绑定单一目标。
 
 ## 运行形态与传输落点
