@@ -486,12 +486,16 @@ fn admin_route(action: &str) -> Result<&'static str, String> {
         .ok_or_else(|| format!("未知操作：{action}"))
 }
 
-#[tauri::command]
-async fn core_action(app: AppHandle, state: State<'_, AppState>, action: String, payload: Option<Value>) -> Result<Value, String> {
-    let route = admin_route(&action)?;
-    // 锁的作用域只到「取出端口」为止：真正的阻塞调用（api_key 最多轮询 15s、admin_call 超时 60s）
-    // 下沉到 spawn_blocking。留在同步命令里会占住主线程，期间 restart_core、core_running、
-    // graceful_stop（含退出流程）全部串行卡死，面板与托盘一起无响应。
+/// 调核心管理接口的公共封装：锁的作用域只到「取出端口」为止，真正阻塞的调用
+/// （api_key 最多轮询 15s、admin_call 超时 60s）下沉到 spawn_blocking。
+/// 留在同步命令里会占住主线程，期间 restart_core、core_running、
+/// graceful_stop（含退出流程）全部串行卡死，面板与托盘一起无响应。
+async fn admin_command(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    route: &'static str,
+    payload: Option<Value>,
+) -> Result<Value, String> {
     let port = {
         let guard = state.core.lock().unwrap();
         guard.as_ref().map(|core| core.port)
@@ -504,6 +508,99 @@ async fn core_action(app: AppHandle, state: State<'_, AppState>, action: String,
     })
     .await
     .map_err(|e| format!("动作线程已崩溃：{e}"))?
+}
+
+/// 面板动作一律以**类型化命令**暴露（替换旧的 `core_action` 通用代理）：
+/// - 动作名不再是任意字符串：八个动作各对应一条命令（即 [`ADMIN_ROUTES`] / 核心
+///   `ACTION_ROUTES` 的八条路由），未知命令在 IPC 层根本不存在，无法再拼任意动作名；
+/// - 每个命令的参数都是强类型字段，serde 反序列化即完成校验：字段名或类型错误在 IPC 层
+///   直接拒绝；payload 由壳侧按该动作的契约组装后再转发，调用方不再能送任意请求体；
+/// - 与既往前端契约保持形状兼容：`refresh / shutdown / provider-status` 无参数，
+///   `probe` 收可选 `model / providers`，`import` 收可选 `modelsFile`，
+///   `system-proxy` 必填 `enabled`，`set-provider-key` 必填 `provider + apiKey`，
+///   `clear-provider-key` 必填 `provider`（后两者的 provider 合法性仍由核心裁决，
+///   壳层不重复业务校验，保持单一真相）。
+
+#[tauri::command]
+async fn core_refresh(app: AppHandle, state: State<'_, AppState>) -> Result<Value, String> {
+    admin_command(app, state, "/admin/refresh", None).await
+}
+
+#[tauri::command]
+async fn core_probe(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    model: Option<String>,
+    providers: Option<Vec<String>>,
+) -> Result<Value, String> {
+    let mut payload = serde_json::Map::new();
+    if let Some(model) = model {
+        payload.insert("model".into(), Value::String(model));
+    }
+    if let Some(providers) = providers {
+        payload.insert("providers".into(), serde_json::to_value(providers).unwrap_or(Value::Null));
+    }
+    admin_command(app, state, "/admin/probe", Some(Value::Object(payload))).await
+}
+
+#[tauri::command]
+async fn core_import(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    models_file: Option<String>,
+) -> Result<Value, String> {
+    let payload = models_file.map(|file| serde_json::json!({ "modelsFile": file }));
+    admin_command(app, state, "/admin/import", payload).await
+}
+
+#[tauri::command]
+async fn core_system_proxy(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<Value, String> {
+    admin_command(app, state, "/admin/system-proxy", Some(serde_json::json!({ "enabled": enabled }))).await
+}
+
+#[tauri::command]
+async fn core_shutdown(app: AppHandle, state: State<'_, AppState>) -> Result<Value, String> {
+    admin_command(app, state, "/admin/shutdown", None).await
+}
+
+#[tauri::command]
+async fn core_provider_status(app: AppHandle, state: State<'_, AppState>) -> Result<Value, String> {
+    admin_command(app, state, "/admin/provider-status", None).await
+}
+
+#[tauri::command]
+async fn core_set_provider_key(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    provider: String,
+    api_key: String,
+) -> Result<Value, String> {
+    admin_command(
+        app,
+        state,
+        "/admin/set-provider-key",
+        Some(serde_json::json!({ "provider": provider, "apiKey": api_key })),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn core_clear_provider_key(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    provider: String,
+) -> Result<Value, String> {
+    admin_command(
+        app,
+        state,
+        "/admin/clear-provider-key",
+        Some(serde_json::json!({ "provider": provider })),
+    )
+    .await
 }
 
 /// 用系统默认浏览器打开外部链接（申请 Key 的官方页等）。
@@ -566,7 +663,7 @@ async fn restart_core(app: AppHandle) -> Result<(), String> {
 /// 重启主体的既有逻辑（不含线程调度）：停旧实例 → 启新实例 → 记录/清除失败原因。
 fn restart_core_with(app: &AppHandle, state: &State<AppState>) -> Result<(), String> {
     // 锁的作用域只到「取出句柄」为止：stop_core 会走 HTTP 优雅退出并等待编排任务收摊，最坏
-    // 十余秒，持锁期间 core_running、core_action 与退出流程都会被一并阻塞。
+    // 十余秒，持锁期间 core_running、core_* 动作命令与退出流程都会被一并阻塞。
     let existing = state.core.lock().unwrap().take();
     if let Some(core) = existing {
         let key = core_key(state).ok();
@@ -739,7 +836,14 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
-            core_action,
+            core_refresh,
+            core_probe,
+            core_import,
+            core_system_proxy,
+            core_shutdown,
+            core_provider_status,
+            core_set_provider_key,
+            core_clear_provider_key,
             restart_core,
             core_running,
             data_dir_path,

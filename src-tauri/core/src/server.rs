@@ -954,6 +954,14 @@ async fn chat(
         model = Some(json!(model_id.clone()));
     }
 
+    // 先把「看不见实体」的情形（body 没写 model、写了也不在池里）稳妥回落到解析出的 id。
+    let raw_id = model
+        .as_ref()
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let accounting = accounting_key(&models, &raw_id, &model_id);
+
     let body_model = body.get("model").cloned().unwrap_or(Value::Null);
     let stream = truthy(body.get("stream"));
     let include_usage = truthy(
@@ -1006,7 +1014,7 @@ async fn chat(
         return match result {
             Ok(mut value) => {
                 (handlers.on_result)(record(
-                    &model, true, "", None, None, duration_ms, &meta,
+                    &accounting, true, "", None, None, duration_ms, &meta,
                 ))
                 .await;
                 if let Value::Object(target) = &mut value {
@@ -1016,7 +1024,7 @@ async fn chat(
             }
             Err(error) => {
                 (handlers.on_result)(record(
-                    &model,
+                    &accounting,
                     false,
                     &error.message(),
                     error.status.map(Value::from),
@@ -1036,7 +1044,7 @@ async fn chat(
         signal: signal.clone(),
         controller: controller.clone(),
         stream_start,
-        model,
+        accounting,
         body_model,
         include_usage,
         heartbeat: handlers.heartbeat,
@@ -1056,7 +1064,8 @@ struct StreamJob {
     signal: AbortSignal,
     controller: AbortController,
     stream_start: Arc<Mutex<Option<Value>>>,
-    model: Option<Value>,
+    /// 记账身份（全限定 id）：与回显用的 `body_model` 刻意分开，两者不可互换。
+    accounting: Option<Value>,
     body_model: Value,
     include_usage: bool,
     heartbeat: Duration,
@@ -1075,7 +1084,7 @@ impl StreamJob {
             signal,
             controller,
             stream_start,
-            model,
+            accounting,
             body_model,
             include_usage,
             heartbeat,
@@ -1106,7 +1115,8 @@ impl StreamJob {
         let duration_ms = elapsed_ms(started);
         let frame = match result {
             Ok(mut value) => {
-                (handlers.on_result)(record(&model, true, "", None, None, duration_ms, &meta)).await;
+                (handlers.on_result)(record(&accounting, true, "", None, None, duration_ms, &meta))
+                    .await;
                 if let Value::Object(target) = &mut value {
                     target.insert("model".to_string(), body_model);
                 }
@@ -1121,7 +1131,7 @@ impl StreamJob {
             }
             Err(error) => {
                 (handlers.on_result)(record(
-                    &model,
+                    &accounting,
                     false,
                     &error.message(),
                     error.status.map(Value::from),
@@ -1183,6 +1193,43 @@ fn record(
         source: "request",
         meta: meta.snapshot(),
     }
+}
+
+/// 把**展示形态**的 client id（`OC · Space Bunny Free`）归一成 `models` 里的全限定 id
+///（`opencode/space-bunny-free`）。找不到同名时 `None`，由调用侧决定回落。
+fn fully_qualified_id(models: &[Value], client_id: &str) -> Option<String> {
+    models
+        .iter()
+        .find(|model| client_model_id(model) == client_id)
+        .and_then(|model| model.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// 已经是清单里的全限定 id 吗？（该模型的成与败要打在同一个键上，这是唯一可靠的记账身份。）
+fn is_known_id(models: &[Value], candidate: &str) -> bool {
+    models
+        .iter()
+        .any(|model| model.get("id").and_then(Value::as_str) == Some(candidate))
+}
+
+/// 本次请求的**记账身份**：始终是全限定 id。
+///
+/// 同一个模型在 `models.json` 里对外叫展示名（`OC · Space Bunny Free`），在核心里叫全限定 id
+///（`opencode/space-bunny-free`）。`prepare` 两种写法都认，于是 `usage.models`、
+/// `modelResults` 与 `record()` 的 `validated.remove` 会同时出现两个互斥的键——失败判决因此
+/// 永远删不到 `usable_models()` 查的那个键，坏模型留在可用池被反复选中。
+///
+/// 这里统一到全限定 id，让同一模型的成与败落在同一处。找不到对应实体时保留原值，
+/// 退化为既有行为而不是丢掉这次结果。
+fn accounting_key(models: &[Value], raw: &str, fallback_id: &str) -> Option<Value> {
+    if is_known_id(models, raw) {
+        return Some(json!(raw));
+    }
+    fully_qualified_id(models, raw)
+        .map(|id| json!(id))
+        .or_else(|| (!fallback_id.is_empty()).then(|| json!(fallback_id)))
+        .or_else(|| (!raw.is_empty()).then(|| json!(raw)))
 }
 
 // ---------------------------------------------------------------------------
@@ -1599,6 +1646,69 @@ mod tests {
                 ],
             })
         );
+    }
+
+    // 客户端（插件）按 `models.json` 里的展示名发请求：若记账键不作归一化，成功打全限定 id、
+    // 失败打展示名，`record()` 的 `validated.remove` 就会删到一个从不存在的键，坏模型永远
+    // 留在 `usable_models()` 里被反复选中。这两项把「同一模型成与败落在同一键」钉住。
+    #[tokio::test]
+    async fn accounting_key_normalizes_client_id_success() {
+        let (router, records) = recording_server();
+        let body = json!({
+            "model": "OC · Free One",
+            "stream": false,
+            "messages": [{ "role": "user", "content": "hi" }],
+        });
+        let response = router
+            .oneshot(post("/v1/chat/completions", body))
+            .await
+            .expect("路由可用");
+        assert_eq!(response.status(), StatusCode::OK);
+        // 回显仍用客户端写的原值，只有记账键被改写。
+        assert_eq!(body_json(response).await["model"], json!("OC · Free One"));
+
+        let records = lock(&records);
+        assert_eq!(records.len(), 1);
+        assert!(records[0].ok);
+        assert_eq!(records[0].model, Some(json!("free-1")));
+    }
+
+    #[tokio::test]
+    async fn accounting_key_normalizes_client_id_failure() {
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let sink = records.clone();
+        let server = Server::new(KEY)
+            .backend(|_, _| {
+                Box::pin(async {
+                    Err(BackendError::bridge(&BridgeError::with(
+                        "boom",
+                        502,
+                        "invalid_model_output",
+                    )))
+                })
+            })
+            .get_models(|| vec![model()])
+            .on_result(move |record| {
+                let sink = sink.clone();
+                Box::pin(async move { lock(&sink).push(record) })
+            });
+        let (router, _) = server.build();
+        let body = json!({
+            "model": "OC · Free One",
+            "stream": false,
+            "messages": [{ "role": "user", "content": "hi" }],
+        });
+        let response = router
+            .oneshot(post("/v1/chat/completions", body))
+            .await
+            .expect("路由可用");
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+
+        let records = lock(&records);
+        assert_eq!(records.len(), 1);
+        assert!(!records[0].ok);
+        // 失败判决必须打在清单里的全限定 id 上，否则永远删不掉。
+        assert_eq!(records[0].model, Some(json!("free-1")));
     }
 
     #[tokio::test]

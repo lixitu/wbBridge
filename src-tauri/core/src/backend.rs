@@ -277,6 +277,12 @@ fn take_chars(text: &str, limit: usize) -> String {
 
 const FIVE_SECONDS: Duration = Duration::from_secs(5);
 const TRANSLATE_DEADLINE: Duration = Duration::from_secs(20);
+/// 建会话预算：OpenCode 本地服务建会话通常亚秒级，20s 与翻译截止同量级；超时报错，
+/// 避免上游挂起时请求无限等待（JS 原版同样无超时，属遗留缺陷，此处主动收口）。
+const SESSION_DEADLINE: Duration = Duration::from_secs(20);
+/// SSE 事件单行上限：合法事件一行远小于该值，超限说明流已损坏，报错后由 watchEvents
+/// 1s 重连，防止上游长时间不发换行符时行缓冲无限增长。
+const MAX_SSE_LINE: usize = 8 * 1024 * 1024;
 
 #[derive(Clone)]
 struct ActiveMeta {
@@ -620,12 +626,29 @@ impl Backend {
             while let Some(index) = buffer.find('\n') {
                 let line = buffer[..index].to_string();
                 buffer.replace_range(..=index, "");
+                if line.len() > MAX_SSE_LINE {
+                    return Err(BackendError::with(
+                        format!(
+                            "Event stream line exceeded {MAX_SSE_LINE} bytes; stream considered corrupted"
+                        ),
+                        502,
+                        "event_stream_error",
+                    ));
+                }
                 let Some(data) = line.strip_prefix("data:") else {
                     continue;
                 };
                 if let Ok(wrapper) = serde_json::from_str::<Value>(js_trim(data)) {
                     self.handle_event(&wrapper);
                 }
+            }
+            // 还没等来换行符的尾巴同样受上限约束，防止上游长时间不发换行时缓冲无限增长。
+            if buffer.len() > MAX_SSE_LINE {
+                return Err(BackendError::with(
+                    format!("Event stream line exceeded {MAX_SSE_LINE} bytes; stream considered corrupted"),
+                    502,
+                    "event_stream_error",
+                ));
             }
         }
     }
@@ -820,7 +843,11 @@ impl Backend {
         activity.report(progress);
     }
 
-    /// `reject(permission, message, signal)`：拒绝一条审批（回复失败时由调用方吞掉）。
+    /// `reject(permission, message, signal)`：拒绝一条审批。
+    ///
+    /// 失败处置由调用方决定：纯拒绝路径（chat-only 拦截、无法映射）吞掉失败也不会双执行，
+    /// 因为审批会随 complete 的 finally 一起清掉；handoff 交接路径必须把失败上抛——否则
+    /// OpenCode 侧动作仍「待批准」，外部再执行同一动作即双执行。
     async fn reject(
         &self,
         permission: &Value,
@@ -1039,13 +1066,15 @@ impl Backend {
         }
         if let Some(handoff) = handoff {
             Self::report_phase(meta, activity, "handoff", None);
-            let _ = self
-                .reject(
-                    permission,
-                    "This native action is executed by the external client instead.",
-                    signal,
-                )
-                .await;
+            // 拒绝必须先于交接：reject 失败意味着 OpenCode 侧该原生动作仍「待批准」，
+            // 此时若照常返回 handoff，外部客户端执行一次、审批随后又被放行又执行一次，
+            // 动作会双执行。回复失败必须上抛，走 complete 的统一清理。
+            self.reject(
+                permission,
+                "This native action is executed by the external client instead.",
+                signal,
+            )
+            .await?;
             return Ok(Some(handoff));
         }
         let reason = if call_id.is_none() {
@@ -1288,7 +1317,7 @@ impl Backend {
                 "POST",
                 Some(&json!({ "title": "WB Bridge", "permission": permission_list() })),
                 Some(&signal),
-                None,
+                Some(SESSION_DEADLINE),
             )
             .await?;
         // 空 id 不能当成合法键往下走：两个并发请求都会落到 `""` 上，互相覆盖 active /
@@ -1478,7 +1507,11 @@ impl Backend {
                     .usage_by_session
                     .insert(session_id.clone(), None);
                 let message_route = format!("{route}/message");
+                // biased + watch 在前：两边都就绪时先取 watch。watch 返回 handoff 意味着
+                // 审批已经 reject、外部应执行该动作——若这里随机选到 message，handoff 会被
+                // 丢弃（动作既不执行也不交接）。对齐 JS `Promise.race` 按数组顺序取先落定者。
                 let response = tokio::select! {
+                    biased;
                     raced = &mut watch => raced?,
                     raced = self.request(&message_route, "POST", Some(&payload), Some(&signal), None) => raced?,
                 };
@@ -2106,7 +2139,7 @@ mod tests {
 
     use crate::protocol::prepare;
     use axum::extract::State;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     struct MockState {
         attempts: AtomicUsize,
@@ -2116,6 +2149,8 @@ mod tests {
         session: Value,
         /// true 时 `POST /session/:id/message` 永不返回（模拟上游挂起 / 客户端中途断连）。
         hang: bool,
+        /// true 时 `POST /permission/:id/reply` 返回 500（模拟 reject 失败）。
+        reject_fails: AtomicBool,
         permission_hits: AtomicUsize,
         abort_hits: AtomicUsize,
         delete_hits: AtomicUsize,
@@ -2124,40 +2159,47 @@ mod tests {
     async fn mock_handler(
         State(state): State<Arc<MockState>>,
         req: axum::extract::Request,
-    ) -> axum::Json<Value> {
+    ) -> axum::response::Response {
+        use axum::response::IntoResponse;
         let method = req.method().clone();
         let path = req.uri().path().to_string();
         if method == axum::http::Method::POST && path == "/session" {
-            return axum::Json(state.session.clone());
+            return axum::Json(state.session.clone()).into_response();
         }
         if method == axum::http::Method::GET && path == "/permission" {
             state.permission_hits.fetch_add(1, Ordering::SeqCst);
-            return axum::Json(Value::Array(state.permissions.clone()));
+            return axum::Json(Value::Array(state.permissions.clone())).into_response();
+        }
+        if method == axum::http::Method::POST && path.contains("/reply") {
+            if state.reject_fails.load(Ordering::SeqCst) {
+                return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "reject failed").into_response();
+            }
+            return axum::Json(json!({})).into_response();
         }
         if method == axum::http::Method::POST && path.ends_with("/abort") {
             state.abort_hits.fetch_add(1, Ordering::SeqCst);
-            return axum::Json(json!({}));
+            return axum::Json(json!({})).into_response();
         }
         if method == axum::http::Method::DELETE && path.starts_with("/session/") {
             state.delete_hits.fetch_add(1, Ordering::SeqCst);
-            return axum::Json(json!(true));
+            return axum::Json(json!(true)).into_response();
         }
         if method == axum::http::Method::POST && path.ends_with("/message") {
             if state.hang {
                 tokio::time::sleep(Duration::from_secs(3600)).await;
-                return axum::Json(json!({}));
+                return axum::Json(json!({})).into_response();
             }
             let idx = state
                 .attempts
                 .fetch_add(1, Ordering::SeqCst)
                 .min(state.replies.len().saturating_sub(1));
-            return axum::Json(state.replies.get(idx).cloned().unwrap_or_else(|| json!({})));
+            return axum::Json(state.replies.get(idx).cloned().unwrap_or_else(|| json!({}))).into_response();
         }
         if method == axum::http::Method::GET && path.starts_with("/session/") {
             // handoffUsage 的 GET /session/:id/message?limit=1。
-            return axum::Json(json!([]));
+            return axum::Json(json!([])).into_response();
         }
-        axum::Json(json!({}))
+        axum::Json(json!({})).into_response()
     }
 
     /// 起一个只覆盖 Backend 会调用的路由的假服务，返回 base URL 与服务任务。
@@ -2188,6 +2230,7 @@ mod tests {
             permissions,
             session,
             hang,
+            reject_fails: AtomicBool::new(false),
             permission_hits: AtomicUsize::new(0),
             abort_hits: AtomicUsize::new(0),
             delete_hits: AtomicUsize::new(0),
@@ -2300,6 +2343,59 @@ mod tests {
         let error = result.expect_err("chatOnly 遇到原生审批必须失败");
         assert_eq!(error.code.as_deref(), Some("native_tool_activity"));
         assert_eq!(error.status, Some(502));
+    }
+
+    /// handoff 路径的 reject 失败绝不能被吞：拒绝没送达时 OpenCode 侧动作仍「待批准」，
+    /// 若照常返回 handoff，外部执行一次、审批放行又执行一次，动作双执行。必须上抛并走统一清理。
+    #[tokio::test]
+    async fn handoff_reject_failure_aborts_complete_instead_of_returning_handoff() {
+        let permissions = vec![json!({
+            "id": "per_1",
+            "sessionID": "ses_mock",
+            "tool": { "callID": "call_1", "tool": "bash" },
+            "metadata": { "command": "ls -la", "filepath": "/tmp" },
+        })];
+        let (base, server, mock) =
+            start_mock_with(vec![good_envelope("never")], permissions, true).await;
+        mock.reject_fails.store(true, Ordering::SeqCst);
+        let backend = Backend::new(&base, "pw", |_| {});
+        let model = mock_model(false);
+        let mut body = mock_body();
+        body["tools"] = json!([{
+            "type": "function",
+            "function": {
+                "name": "Bash",
+                "parameters": {
+                    "type": "object",
+                    "properties": { "command": { "type": "string" } },
+                    "required": ["command"],
+                },
+            },
+        }]);
+        let prepared = prepare(&body, std::slice::from_ref(&model)).unwrap();
+        let meta = SharedMeta::new(json!({ "model": model }));
+        let (_controller, signal) = AbortSignal::channel();
+        let result = backend
+            .complete(
+                prepared,
+                RequestContext {
+                    meta: meta.clone(),
+                    signal,
+                    activity: Activity::silent(),
+                },
+            )
+            .await;
+        server.abort();
+
+        let error = result.expect_err("reject 失败时不得返回 handoff 成功");
+        assert!(
+            error.message.contains("reject failed"),
+            "错误应来自 reply 失败：{error:?}"
+        );
+        assert!(
+            meta.get("handoff").is_none(),
+            "reject 失败时不得留下已经交接的痕迹"
+        );
     }
 
     #[tokio::test]

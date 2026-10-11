@@ -8,8 +8,10 @@
 //! - 每个模型各自持有 60s 的 deadline（首次尝试与重试共用同一个，不重置）。
 
 use crate::protocol::BridgeError;
+use regex::Regex;
 use serde_json::{json, Value};
 use std::collections::HashSet;
+use std::sync::OnceLock;
 use uuid::Uuid;
 
 /// 单个模型的探测超时预算（毫秒），对应 `PROBE_TIMEOUT = 60000`。
@@ -107,10 +109,13 @@ pub fn format_unsupported(error: &BridgeError) -> bool {
         return true;
     }
     // 对应 Node 的 /only.{0,10}auto.{0,40}supported.{0,20}tool_choice/i
-    // 使用 regex 大小写不敏感匹配
-    regex::Regex::new(r"(?i)only.{0,10}auto.{0,40}supported.{0,20}tool_choice")
-        .map(|re| re.is_match(&error.message))
-        .unwrap_or(false)
+    // 使用 regex 大小写不敏感匹配；正则只编译一次并缓存（探测判定的热路径）。
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)only.{0,10}auto.{0,40}supported.{0,20}tool_choice")
+            .expect("静态字面量正则")
+    })
+    .is_match(&error.message)
 }
 
 /// 上游明说「这个模型不支持函数/工具调用」：SiliconFlow 回的是
@@ -129,10 +134,14 @@ pub fn format_unsupported(error: &BridgeError) -> bool {
 pub fn tool_call_unsupported(message: &str) -> bool {
     const CALL: &str = r"(?:function|tool)[_ -]?(?:calls?|calling|use)";
     const REFUSED: &str = r"not\s+(?:supported|allowed|enabled|available|implemented)|unsupported|does\s+not\s+(?:support|allow)|no\s+(?:support|implementation)";
-    let pattern = format!(r"(?is)({CALL}).{{0,40}}?({REFUSED})|({REFUSED}).{{0,40}}?({CALL})");
-    regex::Regex::new(&pattern)
-        .map(|re| re.is_match(message))
-        .unwrap_or(false)
+    // 模式由编译期常量组合而成，每次探测都要判定 → 只编译一次并缓存。
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        let pattern =
+            format!(r"(?is)({CALL}).{{0,40}}?({REFUSED})|({REFUSED}).{{0,40}}?({CALL})");
+        Regex::new(&pattern).expect("常量组合正则")
+    })
+    .is_match(message)
 }
 
 /// 兜底 chat-only 请求也报「不支持函数调用」时，判定为**确认仅对话**，应发布而非失败。
@@ -197,9 +206,12 @@ pub fn probe_failure(cause: BridgeError, timed_out: bool) -> BridgeError {
 pub fn unserved_model_message(message: &str) -> Option<String> {
     const UNSERVED: &str = r"no\s+provider\s+supported";
     const SUBJECT: &str = r"model(?:\s+id)?|service(?:\s+id)?|provider";
-    let pattern =
-        format!(r"(?is)({SUBJECT}).{{0,120}}?({UNSERVED})|({UNSERVED}).{{0,120}}?({SUBJECT})");
-    let re = regex::Regex::new(&pattern).ok()?;
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        let pattern =
+            format!(r"(?is)({SUBJECT}).{{0,120}}?({UNSERVED})|({UNSERVED}).{{0,120}}?({SUBJECT})");
+        Regex::new(&pattern).expect("常量组合正则")
+    });
     if !re.is_match(message) {
         return None;
     }
@@ -229,16 +241,23 @@ pub fn unserved_model_message(message: &str) -> Option<String> {
 pub fn unknown_service_id_message(message: &str) -> Option<String> {
     const ABSENT: &str = r"does\s+not\s+exist|not\s+exist(?:s|ed)?";
     const SUBJECT: &str = r"(?:model|service(?:\s+id)?|endpoint)s?";
-    let pattern = format!(r"(?is)({SUBJECT}).{{0,60}}?({ABSENT})|({ABSENT}).{{0,60}}?({SUBJECT})");
-    let re = regex::Regex::new(&pattern).ok()?;
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        let pattern =
+            format!(r"(?is)({SUBJECT}).{{0,60}}?({ABSENT})|({ABSENT}).{{0,60}}?({SUBJECT})");
+        Regex::new(&pattern).expect("常量组合正则")
+    });
     if !re.is_match(message) {
         return None;
     }
     // 「没有访问权」的措辞形态（ModelScope 用 `or you do not have access to it`）。
-    let blocked = regex::Regex::new(
-        r"(?i)(?:do\s+not|don'?t|cannot)\s+have\s+access|no\s+access\s+permission|access\s+denied",
-    )
-    .ok()?;
+    static BLOCKED: OnceLock<Regex> = OnceLock::new();
+    let blocked = BLOCKED.get_or_init(|| {
+        Regex::new(
+            r"(?i)(?:do\s+not|don'?t|cannot)\s+have\s+access|no\s+access\s+permission|access\s+denied",
+        )
+        .expect("静态字面量正则")
+    });
     Some(if blocked.is_match(message) {
         format!(
             "你的这把 Key 没有该模型的访问权限（原文：{message}）。这个条目确实在对方的模型清单里，\

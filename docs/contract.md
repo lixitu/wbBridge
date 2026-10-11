@@ -1,7 +1,8 @@
 # 壳 ↔ 核心 管理接口契约
 
 > 本文件是「面板动作 → 核心路由」唯一的人工可读契约。以下三处实现必须保持一致：
-> 1. `src-tauri/src/lib.rs` 的 `ADMIN_ROUTES` 与 `admin_route()`（壳侧动作表，托盘与面板共用）
+> 1. `src-tauri/src/lib.rs` 的 `ADMIN_ROUTES` 与 `admin_route()`（壳侧动作表；托盘 pick 分支仍经
+>    `admin_route("import")`，面板入口已收口为 8 个类型化命令，见下节）
 > 2. `src-tauri/core/src/server.rs` 的 `ACTION_ROUTES` 与 `route_for()`（核心侧路由表）
 > 3. 本文件的表格
 >
@@ -39,20 +40,24 @@
 > ⚠ **Stage 1 状态（2026-10-03）**：这三条只有核心 + 壳侧链路，**面板还没有入口视图**（Stage 5 才接），
 > 且写入的 Key 目前**没有消费者**（`isolated_config()` 注入属 Stage 3）——按它们做动作不会多发布一个模型。
 
-面板侧链路：`src/core/bridge.js` 的 `action(name, value)`（前端内核，不是后端）→ Tauri 命令
-`core_action(action, payload)` → `admin_route()` → `admin_call()`；例外是面板的 `restart` 动作，它不经
-`/admin/*`，直接映射为壳命令 `restart_core`。壳另有 **三个**命令（均不经 `/admin/*`）：
+面板侧链路：`src/core/bridge.js` 的 `action(name, value)`（前端内核，不是后端）先把动作分发到
+**8 个类型化 Tauri 命令**（`core_refresh`/`core_probe`/`core_import`/`core_system_proxy`/`core_shutdown`/
+`core_provider_status`/`core_set_provider_key`/`core_clear_provider_key`，取代旧 `core_action(action, payload)`
+通用代理：动作名不再是任意字符串，每条只映射一个 `/admin/*` 路由，参数经 serde 类型校验，路由与载荷语义不变）
+→ `admin_route()`/`admin_call()`；例外是面板的 `restart` 动作，它不经 `/admin/*`，直接映射为壳命令
+`restart_core`。壳另有 **四个**命令（均不经 `/admin/*`）：
 
 | 壳命令 | 载荷 | 返回 / 语义 |
 |---|---|---|
 | `core_running` | 无 | 查询核心是否在运行 |
 | `data_dir_path` | 无 | 取当前数据目录路径 |
 | `read_log` | **无参数** | 只读数据目录下 `opencode.log` 的**尾部**，返回 `{ text, truncated, bytes }`；尾部截断 256KB / 最多 1200 行，不读 `opencode.log.previous`；不接受路径入参、不写任何文件 |
+| `open_external` | `url`（仅 https） | 用系统浏览器打开外链；安全边界 = 仅 https + RFC 3986 字符白名单，URL 只以命令行参数传给系统打开器（不经 shell 解析） |
 
 新增 / 改名只读命令必须同步 `src-tauri/src/lib.rs` 的 `generate_handler`；自有命令不经 capability 授权，
 `capabilities/default.json` 无需改动。
 
-**面板的第二条边界：Tauri 官方插件命令（自动更新）**，它**不经** `core_action` / `/admin/*`，因此不在上面的动作表里：
+**面板的第二条边界：Tauri 官方插件命令（自动更新）**，它**不经**上面的 8 个 `core_*` 管理命令 / `/admin/*`，因此不在上面的动作表里：
 
 | 面板调用（`src/core/bridge.js`） | 底层插件命令 | 说明 |
 |---|---|---|
@@ -85,14 +90,14 @@
 - 面板主动终止核心、或核心任务非预期结束后的重启，均走同一个 `shutdown` 动作（核心侧会先完成
   WorkBuddy 配置清理再收尾），重启由壳命令 `restart_core` 重新装配一次核心实例。
 
-## 对外模型接口：`WB · auto` 合成模型名（v1.1.14 落地、v1.1.15 起写入插件配置，端到端未实测）
+## 对外模型接口：`WB · auto` 合成模型名（v1.1.14 落地、v1.1.15 起写入插件配置，2026-10-11 实机取证已端到端跑通）
 
 > 实现：`src-tauri/core/src/auto.rs`（纯函数选择器）+ `src-tauri/core/src/server.rs` 的两处拦截
 > （`/v1/models` 追加条目、`chat()` 在记账键首次取读前改写 `body["model"]`）
 > + `src-tauri/core/src/sync.rs` 的 `auto_entry`（写进插件配置的那一条）。
 > 设计与逐条取舍见 `docs/plans/2026-10-10-wb-auto-smart-router.md`（§10 是落地实录）。
 > 🔴 **名字**：对外唯一字面量是 `WB · auto`（分隔符逐字节 = 空格 + U+00B7 + 空格，与 `OC · 名称` 同形）；
-> v1.1.14 之前写作 `WB.auto`，v1.1.15 全局改名后**旧名字不再被任何入口接受**（`1.1.11~1.1.15` 从未构建、从未打标签，改名不伤及已交付二进制）。
+> v1.1.14 之前写作 `WB.auto`，v1.1.15 全局改名后**旧名字不再被任何入口接受**（`1.1.11~1.1.14` 从未构建、从未打标签，v1.1.15 现已发布且只用新名，改名不伤及已交付二进制）。
 
 | 项 | 契约 |
 |---|---|
@@ -101,7 +106,7 @@
 | 选档规则 | 纯文本 → 全池（含仅对话模型）；带图片 part → 要求 `images`；带非空 `tools` → 要求 `toolcall` 且非 `chatOnly`；图片 + 工具 → 要求两者；该档候选为空 → **退回全池**（不新增错误码，随后由 `prepare` 给出既有 400）；同档多候选 → 均匀随机取一（分散负载） |
 | 响应与记账 | 响应的 `model` 字段（流式与非流式都一样）= **实际选中模型的全限定 id**（如 `modelscope/Qwen/Qwen3-8B`），**不是** `WB · auto`；`status.json` 的 `usage.models`、`modelResults` 与 `validated` 的键同样是这个实际 id |
 | 失败即摘除 | 复用既有链路，本功能零新增判决：受限 / 超时 / 不可用类的失败会 `validated.remove(实际 id)` → `/v1/models` 与面板状态当次即收缩；格式类四项（`invalid_model_output` / `invalid_tool_call` / `native_tool_activity` / `output_truncated`）按数据红线**不摘除**；客户端取消、429 `busy`、408 读体超时、本地 400 全部发生在记账之前，**不构成对任何模型的判决** |
-| 插件配置（**v1.1.15 起的改动**） | 发布集非空时，`WB · auto` 会作为一条**独立条目**写进 WorkBuddy 与 CodeBuddy 的 `models.json`，排在本工具名下逐模型条目**之后**，并同样进该文档的可用模型列表——插件的模型选择器里因此选得到它。v1.1.14 裁定的是「绝不写进插件」，用户实测后推翻（「不然谁都不知道如何使用」）。字段形态（保守声明，能力字段宁少勿多）：`{ id, name }` = `WB · auto`（该 `id` **刻意绕过** `client_model_id`，否则会生成 `OC · WB · auto`、与 `chat()` 的字面比较永不匹配）；`vendor` = `Custom`；`url` / `apiKey` / `buddyBridgeOwner` 与逐模型条目同源；`supportsToolCall` = **池里是否存在能接工具调用的候选**（`auto::any_tool_capable`，与核心选档共用同一谓词，因此两侧不可能分叉）；`supportsImages` = `false`；`maxInputTokens` = 池内**最小**上下文（每次同步重算，取 `input`、缺失回落 `context`，非数值/0/负数跳过；一个都没有就**不写该键**）；**不写** `reasoning` 与 `maxOutputTokens`。发布集为空则整条不写；用户手动建的同名 `id` 条目按数据红线**不被覆盖**（本条直接放弃）。🔴 插件能否识别并按它发请求**未实测** |
+| 插件配置（**v1.1.15 起的改动**） | 发布集非空时，`WB · auto` 会作为一条**独立条目**写进 WorkBuddy 与 CodeBuddy 的 `models.json`，排在本工具名下逐模型条目**之后**，并同样进该文档的可用模型列表——插件的模型选择器里因此选得到它。v1.1.14 裁定的是「绝不写进插件」，用户实测后推翻（「不然谁都不知道如何使用」）。字段形态（保守声明，能力字段宁少勿多）：`{ id, name }` = `WB · auto`（该 `id` **刻意绕过** `client_model_id`，否则会生成 `OC · WB · auto`、与 `chat()` 的字面比较永不匹配）；`vendor` = `Custom`；`url` / `apiKey` / `buddyBridgeOwner` 与逐模型条目同源；`supportsToolCall` = **池里是否存在能接工具调用的候选**（`auto::any_tool_capable`，与核心选档共用同一谓词，因此两侧不可能分叉）；`supportsImages` = `false`；`maxInputTokens` = 池内**最小**上下文（每次同步重算，取 `input`、缺失回落 `context`，非数值/0/负数跳过；一个都没有就**不写该键**）；**不写** `reasoning` 与 `maxOutputTokens`。发布集为空则整条不写；用户手动建的同名 `id` 条目按数据红线**不被覆盖**（本条直接放弃）。✅ 2026-10-11 实机取证：两个插件的 `models.json` 均含 `WB · auto`，且 `status.json.usage` 累计 37 次真实请求（ok 32 / failed 5），证实插件侧能识别并按它发请求 |
 | `sync.count` 语义（不变） | `status.json` 的 `sync.count` 与 `sync.targets.<目标>.count` **只数真实模型**，不把 `WB · auto` 计入；`status.json` 的模型列表（面板数据源）也**不含**该合成路由，面板不会因此多出一行 |
 | 接入边界（不变） | 仅监听 `127.0.0.1`；一切请求都要 `Authorization: Bearer <api-key>`；**任何非空 `Origin` 一律 403**（浏览器内嵌 `fetch` 用不了，CLI / 桌面 agent 直连可用）；并发 ≤8、请求体 ≤8MB |
 

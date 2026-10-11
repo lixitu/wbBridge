@@ -718,16 +718,6 @@ fn sync_published(published: Option<Vec<Value>>, allow_empty: bool) {
         return;
     }
 
-    if env_text("BUDDY_NO_SYNC").as_deref() == Some("1") {
-        let count = models.len() as u64;
-        chain_sync(async move {
-            update_and_persist(json!({
-                "sync": { "skipped": true, "count": count, "time": now_iso8601() }
-            }));
-        });
-        return;
-    }
-
     // 双目标分发：对每个已定位的目标各写一次（同一份发布集、同一套幂等合并），未检测到的
     // 目标报 missing 及原因；聚合形状（count 之和、顶层 error 仅在全部定位目标失败时出现）
     // 见 targets.rs::aggregate_sync。逐目标串行 await，写入本身在 spawn_blocking 里。
@@ -1132,119 +1122,10 @@ async fn run_probe_batch(
         }
         update_and_persist(patch);
 
-        let started = Instant::now();
-        let meta = SharedMeta::new(probe_meta());
-        // 每个模型一个 deadline：重试与首次尝试共用同一预算，整批探测耗时有界。
-        let (deadline, signal) = AbortSignal::channel();
-        let timer = tokio::spawn({
-            let deadline = deadline.clone();
-            async move {
-                tokio::time::sleep(Duration::from_millis(PROBE_TIMEOUT_MS)).await;
-                deadline.abort();
-            }
-        });
-
-        let outcome = probe_single_model(&model, &all_models, &meta, signal).await;
-        timer.abort();
-        let duration_ms = started.elapsed().as_millis() as i64;
-
-        let error = match outcome {
-            ProbeOutcome::Passed => {
-                record(&model_id, true, None, None, None, duration_ms, "probe", None, &meta.snapshot()).await;
-                drop_pending(&mut pending, &model_id);
-                update_and_persist(json!({ "probe": { "running": true, "pending": pending.clone() } }));
-                continue;
-            }
-            ProbeOutcome::Failed(cause) => cause,
-        };
-        // 探测拥有自己的 deadline：abort 本身是opaque 的，超时必须改写为 TimeoutError 语义。
-        let timed = deadline.signal().is_aborted() && !app.probe_abort.signal().is_aborted();
-        let error = probe::probe_failure(error, timed);
-        if app.stopping.load(Ordering::Relaxed) {
-            drop_pending(&mut pending, &model_id);
-            update_and_persist(json!({ "probe": { "running": true, "pending": pending.clone() } }));
-            continue;
-        }
-        if error.code == "no_action" {
-            // 文本回复说明模型可用、只是没产生动作：按仅对话发布而不是判失败（数据红线）。
-            record(
-                &model_id,
-                true,
-                Some("探测时只返回文本、未产生动作；已按仅对话发布"),
-                None,
-                Some("chat_only"),
-                duration_ms,
-                "probe",
-                Some(true),
-                &meta.snapshot(),
-            )
-            .await;
-        } else if probe::format_unsupported(&error) {
-            let degrade = chat_only_attempt(&model).await;
-            match degrade {
-                Ok(()) => {
-                    record(
-                        &model_id,
-                        true,
-                        Some("模型不支持函数调用，已按仅对话发布"),
-                        None,
-                        Some("chat_only"),
-                        duration_ms,
-                        "probe",
-                        Some(true),
-                        &meta.snapshot(),
-                    )
-                    .await;
-                }
-                Err(chat_error) => {
-                    // 兜底 chat-only 请求也被网关以「不支持函数调用」拒绝：主探测与兜底指向同一结论，
-                    // 说明该模型本就只服务于对话通道。仍按仅对话发布，而不是当成失败。
-                    if probe::chat_only_fallback_confirms_chat_only(&chat_error) {
-                        if !app.stopping.load(Ordering::Relaxed) {
-                            record(
-                                &model_id,
-                                true,
-                                Some("模型不支持函数调用，已按仅对话发布（chat-only 兜底同样被网关拒绝）"),
-                                None,
-                                Some("chat_only"),
-                                duration_ms,
-                                "probe",
-                                Some(true),
-                                &meta.snapshot(),
-                            )
-                            .await;
-                        }
-                    } else if !app.stopping.load(Ordering::Relaxed) {
-                        record(
-                            &model_id,
-                            false,
-                            Some(&chat_error.message),
-                            Some(status_value(i64::from(chat_error.status))),
-                            Some(&chat_error.code),
-                            duration_ms,
-                            "probe",
-                            None,
-                            &meta.snapshot(),
-                        )
-                        .await;
-                    }
-                }
-            }
-        } else {
-            let message = if timed { "Model probe timed out".to_string() } else { error.message.clone() };
-            record(
-                &model_id,
-                false,
-                Some(&message),
-                Some(status_value(i64::from(error.status))),
-                Some(&error.code),
-                duration_ms,
-                "probe",
-                None,
-                &meta.snapshot(),
-            )
-            .await;
-        }
+        // 探测与结局记录（通过/仅对话/失败）由两条入口共享的同一段决策负责，见
+        // `settle_single_probe`。这里只做批量特有的收尾：无论结局如何都从 pending 摘掉
+        // 并回写进度（通过/失败路径原本各自做一遍相同的事）。
+        settle_single_probe(&model, &all_models).await;
         drop_pending(&mut pending, &model_id);
         update_and_persist(json!({ "probe": { "running": true, "pending": pending.clone() } }));
     }
@@ -1263,15 +1144,44 @@ async fn run_single_probe(model: Value) {
     if app.stopping.load(Ordering::Relaxed) {
         return;
     }
+    let all_models = app.models();
+
+    let disposition = settle_single_probe(&model, &all_models).await;
+    // 「重新检测」只在明确的通过结局（真通过、仅对话降级成功、兜底确认仅对话）后重新发布；
+    // no_action 与失败不触发——与升级前行为逐字一致。
+    if matches!(disposition, ProbeDisposition::Passed) {
+        sync_published(None, false);
+    }
+}
+
+/// 一次探测的归宿结论（[`settle_single_probe`] 的返回值）。
+enum ProbeDisposition {
+    /// 探测最终以「通过」落地（真通过、仅对话降级成功、兜底确认仅对话）：单模型入口会重新发布。
+    Passed,
+    /// 模型可用但只返回了文本、未产生动作：按仅对话记录，但**不触发重新发布**（沿用既有行为，
+    /// 批量入口由 `auto_import` 统一收口）。
+    PassedNoAction,
+    /// 探测失败（或正关停、未记录）：不发布。
+    Failed,
+}
+
+/// 两个探测入口共用的「单模型探测 + 结局记录」：建立 deadline → 跑探测 → 按结局 `record`
+/// （通过 / 仅对话降级 / 失败），返回浓缩的归宿结论。
+///
+/// 为什么必须是公共函数：两条入口曾经各写一份归宿，chat-only 兜底判定只加在批量入口上，
+/// 单模型「重新检测」没跟上，同一个模型批量判「已按仅对话发布」、单独重检判「失败」，
+/// 面板因此自相矛盾（2026-10-10 实测到）。归宿只有一份后，任何新入口只要经由本函数
+/// 就天然拿到同一套判定。
+async fn settle_single_probe(model: &Value, all_models: &[Value]) -> ProbeDisposition {
+    let app = global_app();
     let model_id = model
         .get("id")
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    let all_models = app.models();
-
     let started = Instant::now();
     let meta = SharedMeta::new(probe_meta());
+    // 每个模型一个 deadline：重试与首次尝试共用同一预算，整批探测耗时有界。
     let (deadline, signal) = AbortSignal::channel();
     let timer = tokio::spawn({
         let deadline = deadline.clone();
@@ -1281,24 +1191,25 @@ async fn run_single_probe(model: Value) {
         }
     });
 
-    let outcome = probe_single_model(&model, &all_models, &meta, signal).await;
+    let outcome = probe_single_model(model, all_models, &meta, signal).await;
     timer.abort();
     let duration_ms = started.elapsed().as_millis() as i64;
 
     let error = match outcome {
         ProbeOutcome::Passed => {
             record(&model_id, true, None, None, None, duration_ms, "probe", None, &meta.snapshot()).await;
-            sync_published(None, false);
-            return;
+            return ProbeDisposition::Passed;
         }
         ProbeOutcome::Failed(cause) => cause,
     };
+    // 探测拥有自己的 deadline：abort 本身是 opaque 的，超时必须改写为 TimeoutError 语义。
     let timed = deadline.signal().is_aborted() && !app.probe_abort.signal().is_aborted();
     let error = probe::probe_failure(error, timed);
     if app.stopping.load(Ordering::Relaxed) {
-        return;
+        return ProbeDisposition::Failed;
     }
     if error.code == "no_action" {
+        // 文本回复说明模型可用、只是没产生动作：按仅对话发布而不是判失败（数据红线）。
         record(
             &model_id,
             true,
@@ -1311,9 +1222,11 @@ async fn run_single_probe(model: Value) {
             &meta.snapshot(),
         )
         .await;
-    } else if probe::format_unsupported(&error) {
-        let degrade = chat_only_attempt(&model).await;
-        match degrade {
+        return ProbeDisposition::PassedNoAction;
+    }
+    if probe::format_unsupported(&error) {
+        let degrade = chat_only_attempt(model).await;
+        return match degrade {
             Ok(()) => {
                 record(
                     &model_id,
@@ -1327,13 +1240,11 @@ async fn run_single_probe(model: Value) {
                     &meta.snapshot(),
                 )
                 .await;
-                sync_published(None, false);
+                ProbeDisposition::Passed
             }
             Err(chat_error) => {
-                // 与批量探测同一个判定：兜底那次纯对话请求也被网关以「不支持函数调用」拒绝时，
-                // 主探测与兜底指向同一结论（该模型本就只服务对话通道），仍按仅对话发布。
-                // 少了这一支的话，面板点「重新检测」会把一个能对话的模型判成失败——批量探测
-                // 里同一个模型却是「已按仅对话发布」，两条入口归宿不一致（2026-10-10 实测到）。
+                // 兜底那次纯对话请求也被网关以「不支持函数调用」拒绝：主探测与兜底指向同一结论，
+                // 说明该模型本就只服务于对话通道。仍按仅对话发布，而不是当成失败。
                 if probe::chat_only_fallback_confirms_chat_only(&chat_error) {
                     if !app.stopping.load(Ordering::Relaxed) {
                         record(
@@ -1348,8 +1259,9 @@ async fn run_single_probe(model: Value) {
                             &meta.snapshot(),
                         )
                         .await;
-                        sync_published(None, false);
+                        return ProbeDisposition::Passed;
                     }
+                    ProbeDisposition::Failed
                 } else if !app.stopping.load(Ordering::Relaxed) {
                     record(
                         &model_id,
@@ -1363,24 +1275,27 @@ async fn run_single_probe(model: Value) {
                         &meta.snapshot(),
                     )
                     .await;
+                    ProbeDisposition::Failed
+                } else {
+                    ProbeDisposition::Failed
                 }
             }
-        }
-    } else {
-        let message = if timed { "Model probe timed out".to_string() } else { error.message.clone() };
-        record(
-            &model_id,
-            false,
-            Some(&message),
-            Some(status_value(i64::from(error.status))),
-            Some(&error.code),
-            duration_ms,
-            "probe",
-            None,
-            &meta.snapshot(),
-        )
-        .await;
+        };
     }
+    let message = if timed { "Model probe timed out".to_string() } else { error.message.clone() };
+    record(
+        &model_id,
+        false,
+        Some(&message),
+        Some(status_value(i64::from(error.status))),
+        Some(&error.code),
+        duration_ms,
+        "probe",
+        None,
+        &meta.snapshot(),
+    )
+    .await;
+    ProbeDisposition::Failed
 }
 
 enum ProbeOutcome {
@@ -2741,7 +2656,8 @@ mod tests {
     ///
     /// 这条守卫的存在理由就是这个 bug 真实发生过：判定逻辑只加在批量入口上，单模型「重新检测」
     /// 没跟上，于是同一个模型批量探测判「已按仅对话发布」、单独重检判「失败」，面板因此自相矛盾。
-    /// 两个入口都要真实调用核心实例（`global_app`），没有注入点可喂假后端，所以只能钉住调用位点本身；
+    /// 归宿判定现在收敛在 `settle_single_probe` 一处：它必须保有兜底确认判定，且两条入口都必须
+    /// 经由它；谁绕过公共函数、另写一份归宿，谁就会和另一条入口对同一个模型给出相反的结论。
     /// 判定函数自己的行为由 `probe.rs` 的 `chat_only_fallback_rejection_confirms_chat_only` 钉。
     #[test]
     fn both_probe_entry_points_honour_a_chat_only_fallback_rejection() {
@@ -2752,12 +2668,20 @@ mod tests {
             .expect("批量探测入口必须排在单模型入口之前");
         let single = source
             .split_once("async fn run_single_probe(")
+            .and_then(|rest| rest.1.split_once("async fn settle_single_probe("))
+            .expect("单模型探测入口必须排在公共归宿函数之前");
+        let settle = source
+            .split_once("async fn settle_single_probe(")
             .and_then(|rest| rest.1.split_once("enum ProbeOutcome"))
-            .expect("单模型探测入口必须排在 ProbeOutcome 定义之前");
+            .expect("公共归宿函数必须排在 ProbeOutcome 定义之前");
+        assert!(
+            settle.0.contains("chat_only_fallback_confirms_chat_only"),
+            "公共归宿函数必须引用兜底确认判定，否则两条入口对同一个模型会给出相反的结论"
+        );
         for (name, body) in [("run_probe_batch", batch.0), ("run_single_probe", single.0)] {
             assert!(
-                body.contains("chat_only_fallback_confirms_chat_only"),
-                "{name} 必须引用兜底确认判定，否则两条入口对同一个模型会给出相反的结论"
+                body.contains("settle_single_probe"),
+                "{name} 必须经由公共归宿函数，否则两条入口对同一个模型会给出相反的结论"
             );
         }
     }

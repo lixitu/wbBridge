@@ -959,13 +959,14 @@ pub fn isolated_environment(
         "OPENCODE_CONFIG_CONTENT".to_string(),
         js_stringify(&isolated_config(providers_section)),
     );
-    // Bun 运行时在向上游模型 API 和 models.opencode.ai 发 HTTPS 请求时，
-    // 若用户网络存在 TLS 拦截（公司代理/VPN/ZScaler 等），会因不信任拦截
-    // 证书而报 "self signed certificate"。Bun 不读取 macOS 系统钥匙串，
-    // 所以即使拦截证书已安装到系统钥匙串也无济于事。这里关闭 TLS 验证
-    // 让探测和对话能正常工作；wbBridge 本身的 HTTP API 在 127.0.0.1
-    // 上不受影响。
-    env.insert("NODE_TLS_REJECT_UNAUTHORIZED".to_string(), "0".to_string());
+    // TLS 证书校验保持默认开启：子进程环境里同时含明文 provider Key（上面的
+    // OPENCODE_CONFIG_CONTENT），一旦关闭校验，任何中间人（公共 Wi-Fi、劫持
+    // DNS、公司出口）都能窃取全部平台凭据并伪造模型响应。
+    //
+    // 若用户网络存在 TLS 拦截（公司代理/VPN/ZScaler 等），Bun 不读取 macOS
+    // 系统钥匙串，会报 "self signed certificate"。正确做法是经由白名单里已有的
+    // SSL_CERT_FILE / NODE_EXTRA_CA_CERTS 注入受信拦截证书（见 ENV_ALLOW），
+    // 而非静默降级校验。证书握手失败会以明确错误上报给用户排查。
     env
 }
 

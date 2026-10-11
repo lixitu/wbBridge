@@ -1,6 +1,13 @@
 // 前端业务内核：与 Tauri 壳的唯一边界。
 // 契约与 Electron 版 window.buddy 一致（action/onState/onDismiss），
 // 组件一律经由本模块调用，不直接触碰 window.__TAURI__。
+// Tauri 的 JS 绑定全部按需 import（无 withGlobalTauri 全局注入）：壳只暴露注册过的命令，
+// JS API 由 @tauri-apps/* npm 包提供，插件能力仍受 src-tauri/capabilities/default.json 约束。
+import { listen } from '@tauri-apps/api/event'
+import { invoke } from '@tauri-apps/api/core'
+import { open as openDialog } from '@tauri-apps/plugin-dialog'
+import { check as checkForUpdate } from '@tauri-apps/plugin-updater'
+import { relaunch } from '@tauri-apps/plugin-process'
 import { activityText } from './activity.js'
 
 const listeners = { state: [], dismiss: [] }
@@ -50,7 +57,6 @@ function publish(next) {
 function ensureBridge() {
   if (started) return
   started = true
-  const { listen } = window.__TAURI__.event
   listen('core-status', event => enqueue(() => event.payload || {}, true)).catch(console.error)
   listen('core-activity', event => enqueue(prev => ({ ...prev, ...(event.payload || {}) }))).catch(console.error)
   listen('core-failed', event => {
@@ -79,10 +85,35 @@ export function onDismiss(cb) {
   listeners.dismiss.push(cb)
 }
 
+// 动作 → 壳的类型化命令（与 src-tauri/src/lib.rs 的 `core_*` 命令一一对应：
+// 不再有 `core_action` 通用代理，动作名与参数都由壳侧强类型校验，字段按命令参数名
+// 的 camelCase 形式组装；这里不做业务校验，只转发前端值）。
+function invokeCoreAction(name, value) {
+  switch (name) {
+    case 'refresh': return invoke('core_refresh')
+    case 'probe': {
+      const args = {}
+      if (value?.model != null) args.model = value.model
+      if (value?.providers != null) args.providers = value.providers
+      return invoke('core_probe', args)
+    }
+    case 'import': {
+      const args = {}
+      if (value?.modelsFile != null) args.modelsFile = value.modelsFile
+      return invoke('core_import', args)
+    }
+    case 'system-proxy': return invoke('core_system_proxy', { enabled: value?.enabled === true })
+    case 'shutdown': return invoke('core_shutdown')
+    case 'provider-status': return invoke('core_provider_status')
+    case 'set-provider-key': return invoke('core_set_provider_key', { provider: value?.provider, apiKey: value?.apiKey })
+    case 'clear-provider-key': return invoke('core_clear_provider_key', { provider: value?.provider })
+    default: throw new Error(`未知操作：${name}`)
+  }
+}
+
 export async function action(name, value) {
   ensureBridge()
   try {
-    const { invoke } = window.__TAURI__.core
     if (name === 'restart') {
       await invoke('restart_core')
       return { ok: true, result: {} }
@@ -94,7 +125,7 @@ export async function action(name, value) {
       // 能走到这里按钮必然处于可用态（phase=ready），lastState 已由 core-status 填好。
       const resolved = typeof lastState.modelsFile === 'string' && lastState.modelsFile
       if (!resolved) {
-        const selected = await window.__TAURI__.dialog.open({
+        const selected = await openDialog({
           multiple: false,
           directory: false,
           filters: [{ name: 'WorkBuddy models.json', extensions: ['json'] }],
@@ -103,7 +134,7 @@ export async function action(name, value) {
         value = { modelsFile: selected }
       }
     }
-    const result = await invoke('core_action', { action: name, payload: value ?? null })
+    const result = await invokeCoreAction(name, value)
     return { ok: true, result }
   } catch (error) {
     return { ok: false, error: String(error) }
@@ -117,7 +148,6 @@ export async function action(name, value) {
 export async function readLog() {
   ensureBridge()
   try {
-    const { invoke } = window.__TAURI__.core
     return { ok: true, result: await invoke('read_log') }
   } catch (error) {
     return { ok: false, error: String(error) }
@@ -129,7 +159,6 @@ export async function readLog() {
 export async function openExternal(url) {
   ensureBridge()
   try {
-    const { invoke } = window.__TAURI__.core
     await invoke('open_external', { url })
     return { ok: true, result: {} }
   } catch (error) {
@@ -141,7 +170,6 @@ export async function openExternal(url) {
 export async function dataDir() {
   ensureBridge()
   try {
-    const { invoke } = window.__TAURI__.core
     return { ok: true, result: await invoke('data_dir_path') }
   } catch (error) {
     return { ok: false, error: String(error) }
@@ -149,8 +177,9 @@ export async function dataDir() {
 }
 
 // ── 自动更新：updater / process 插件的封装 ─────────────────────────
-// 两个插件的 JS 绑定由 withGlobalTauri 注入到 window.__TAURI__（见 tauri-plugin-*
-// 的 api-iife.js），所以不需要任何 @tauri-apps/plugin-* npm 依赖；组件依旧不得直触全局对象。
+// 两个插件的 JS 绑定来自 @tauri-apps/plugin-* npm 包（权限已在 capabilities/default.json
+// 授予 updater:default / process:allow-restart），不需要任何 window.__TAURI__ 全局对象；
+// 组件依旧不得直触插件 API。
 // check() 返回的 Update 句柄只在模块内持有：交给组件就没法再调 downloadAndInstall，
 // 且它带有一整组不可序列化的方法。
 
@@ -163,10 +192,8 @@ function updateError(error) {
 // 发现新版本时返回 { version, notes }；已是最新返回 result = null。
 export async function checkUpdate() {
   ensureBridge()
-  const updater = window.__TAURI__?.updater
-  if (!updater?.check) return { ok: false, error: '此构建不含更新通道' }
   try {
-    const update = await updater.check()
+    const update = await checkForUpdate()
     pendingUpdate = update ?? null
     if (!update) return { ok: true, result: null }
     return {
@@ -209,10 +236,8 @@ export async function downloadUpdate(onProgress) {
 // 所以这条路径同样会先停核心、收掉 OpenCode 子进程，不为更新另开一条退出链路。
 export async function relaunchApp() {
   ensureBridge()
-  const process = window.__TAURI__?.process
-  if (!process?.relaunch) return { ok: false, error: '此构建不支持重启' }
   try {
-    await process.relaunch()
+    await relaunch()
     return { ok: true, result: {} }
   } catch (error) {
     return { ok: false, error: updateError(error) }

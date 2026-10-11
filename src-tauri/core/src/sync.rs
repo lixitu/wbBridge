@@ -219,17 +219,70 @@ fn system_now_ms() -> u64 {
     }
 }
 
-/// 锁文件守卫：无论正常返回还是中途 `?` 提前返回，都会关闭句柄并删除锁文件
+/// 锁文件内容：两行 `<持有者 token>\n<创建时刻毫秒>\n`。
+///
+/// - `owner`：本次同步持有的随机 token。释放（[`LockGuard::release`]）前必须比对锁文件里的
+///   当前内容，只有仍是自己的 token 才删除——锁被判定过期并抢占后，旧持有者迟到的清理
+///   绝不能把新持有者的锁删掉；
+/// - `created_ms`：锁的创建时刻，stale 判定优先读它而不是 mtime（mtime 会被备份/网盘
+///   同步等工具 touch 污染，导致锁永远不过期）。
+fn lock_payload(owner: &str, now_ms: u64) -> String {
+    format!("{owner}\n{now_ms}\n")
+}
+
+/// 解析锁内容为 `(owner, created_ms)`；空文件/旧格式/乱码返回 `None`（调用方回退到 mtime 判定）。
+fn parse_lock_payload(bytes: &[u8]) -> Option<(String, u64)> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut lines = text.lines();
+    let owner = lines.next()?.trim().to_string();
+    let created_ms: u64 = lines.next()?.trim().parse().ok()?;
+    Some((owner, created_ms))
+}
+
+/// 锁文件是否已过期（超过 [`SyncIo::lock_stale_ms`] 没被释放，视为上一次同步已崩溃）。
+///
+/// 优先读内容里的创建时刻——mtime 会被备份/网盘同步 touch，用它判过期可能把活跃锁误判成
+/// 僵尸锁；旧版遗留的空锁文件没有内容，回退 mtime。读不到文件（不存在/无权限）按未过期处理，
+/// 后续 `create_new` 失败会自然落到「已有同步在跑」。
+fn lock_is_stale(lock_file: &Path, io: &SyncIo) -> bool {
+    let now = (io.now)() as i64;
+    let threshold = io.lock_stale_ms as i64;
+    match fs::read(lock_file) {
+        Ok(bytes) => match parse_lock_payload(&bytes) {
+            Some((_, created_ms)) => now - created_ms as i64 > threshold,
+            None => lock_mtime_stale(lock_file, now, threshold),
+        },
+        Err(_) => false,
+    }
+}
+
+/// 用 mtime 判定锁过期；拿不到 mtime（文件刚被删/文件系统不支持）按未过期处理。
+fn lock_mtime_stale(lock_file: &Path, now: i64, threshold: i64) -> bool {
+    fs::metadata(lock_file)
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|elapsed| now - elapsed.as_millis() as i64 > threshold)
+        .unwrap_or(false)
+}
+
+/// 锁文件守卫：无论正常返回还是中途 `?` 提前返回，都会释放锁文件
 /// （对应 JS `finally { await lock.close(); await fs.unlink(lockFile).catch(() => {}); }`）。
 struct LockGuard {
     path: PathBuf,
-    handle: Option<File>,
+    owner: String,
 }
 
 impl LockGuard {
     fn release(&mut self) {
-        self.handle = None;
-        let _ = fs::remove_file(&self.path);
+        // 只删除内容里仍是我们 token 的锁：内容不一致（已被抢占替换）或已不存在都不动。
+        let current = fs::read(&self.path)
+            .ok()
+            .and_then(|bytes| parse_lock_payload(&bytes))
+            .map(|(owner, _)| owner);
+        if current.as_deref() == Some(self.owner.as_str()) {
+            let _ = fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -299,7 +352,11 @@ pub fn atomic_write_with(file: &Path, text: &str, io: &SyncIo) -> Result<(), Syn
         let mut handle = create_new_private(&temp).map_err(|error| io_error(&error, &temp))?;
         handle
             .write_all(text.as_bytes())
+            // `flush` 只把用户态缓冲交给内核；`sync_all` 把数据与元数据真正刷到磁盘。
+            // 缺了最后一步，rename 可能在数据落盘前就成功，主机断电后会留下空/截断的目标文件，
+            // 「原子替换」就只剩 rename 的原子性、丢了崩溃一致性。
             .and_then(|()| handle.flush())
+            .and_then(|()| handle.sync_all())
             .map_err(|error| io_error(&error, &temp))?;
         drop(handle);
         match io.replace {
@@ -559,9 +616,43 @@ fn auto_entry(models: &[Value], endpoint: &str, key: &str) -> Value {
 ///
 /// 非数值、0、负数一律跳过：这些值在插件侧不是可用的上下文上限，写进去不如不写。
 /// 返回**原样克隆**的那个数，整数不会因为比较而变成 `128000.0`。
+///
+/// 🔴 **统计域是「能接工具调用的候选」，不是整个发布集**。理由是一条 surprising 的实测落差：
+/// 池里混着 OCR 这类专用模型时（`toolcall: false`、上下文 8K~16K），直接取全池最小值会让
+/// `WB · auto` 声明 `maxInputTokens = 8192`，而同池里有 1000000 的长上下文模型——**122 倍**
+/// 的容量被一个从不参与文本对话的模型锁死。这里与 [`crate::auto::any_tool_capable`] 同源：
+/// 那条别名既然按「能接工具」声明 `supportsToolCall`，它的上下文上限就该在同一个候选域里算，
+/// 而不是被永远不会被选中去干这件事的模型拉低。
+/// 全池都接不了工具时退化为全池最小值（不让这个键凭空消失，保守性由原点 likewise 兜住）。
 fn smallest_input(models: &[Value]) -> Option<Value> {
+    smallest_input_in(models, true)
+}
+
+/// 该模型能不能接带工具调用的请求——与 [`crate::auto::any_tool_capable`] 用的是同一条判据
+///（`chatOnly` 一律不行，其余要求 `toolcall` 为真），只是这里作用在**单个**模型上。
+///
+/// 刻意与 [`crate::auto`] 的档位谓词保持一致：那条别名既然按「能接工具」声明
+/// `supportsToolCall`，它的上下文上限就该在同一个候选域里算。
+fn tool_callable_model(model: &Value) -> bool {
+    if json::truthy(model.get("chatOnly")) {
+        return false;
+    }
+    matches!(model.get("toolcall"), Some(Value::Bool(true)))
+}
+
+fn smallest_input_in(models: &[Value], tool_callable_first: bool) -> Option<Value> {
+    let tool_callable: Vec<&Value> = models
+        .iter()
+        .filter(|model| tool_callable_model(model))
+        .collect();
+    let fallback: Vec<&Value> = models.iter().collect();
+    let candidates: &[&Value] = if tool_callable_first && !tool_callable.is_empty() {
+        &tool_callable
+    } else {
+        &fallback
+    };
     let mut smallest: Option<(f64, Value)> = None;
-    for model in models {
+    for model in candidates {
         let Some(tokens) = json::coalesce(model.get("input"), model.get("context")) else {
             continue;
         };
@@ -600,26 +691,29 @@ pub fn sync_models_with(
     create_dir_private(parent).map_err(|error| io_error(&error, parent))?;
 
     let lock_file = sibling(file, ".buddy-bridge.lock");
-    if let Ok(metadata) = fs::metadata(&lock_file) {
-        let mtime_ms = metadata
-            .modified()
-            .ok()
-            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-            .map(|elapsed| elapsed.as_millis() as i64);
-        if let Some(mtime_ms) = mtime_ms {
-            if (io.now)() as i64 - mtime_ms > io.lock_stale_ms as i64 {
-                let _ = fs::remove_file(&lock_file);
-            }
-        }
+    // stale 判定与抢占：先判过期再删，但删完**立刻**用 `create_new` 原子抢锁。
+    // `O_EXCL`（`create_new`）本身就是并发裁决点——即使两个进程同时看到同一把过期锁、
+    // 都执行了删除，也只有一方能创建成功，另一方按「已有同步在跑」收场，不会双持锁。
+    if lock_is_stale(&lock_file, io) {
+        let _ = fs::remove_file(&lock_file);
     }
 
     // JS 用 `fs.open(lockFile, 'wx', 0o600).catch(...)`：任何失败都归因于「已有同步在跑」。
+    let owner = random_uuid();
+    let mut handle = create_new_private(&lock_file)
+        .map_err(|_| SyncError::other("Model sync already running; no changes made"))?;
+    handle
+        .write_all(lock_payload(&owner, (io.now)()).as_bytes())
+        .and_then(|()| handle.flush())
+        .map_err(|error| {
+            // 锁已创建但内容写坏：清掉半成品，避免留下无人认领的锁，再报具体 IO 错误。
+            let _ = fs::remove_file(&lock_file);
+            io_error(&error, &lock_file)
+        })?;
+    drop(handle);
     let mut guard = LockGuard {
         path: lock_file.clone(),
-        handle: Some(
-            create_new_private(&lock_file)
-                .map_err(|_| SyncError::other("Model sync already running; no changes made"))?,
-        ),
+        owner,
     };
 
     let old = read_text(file, options.require_existing)?;
@@ -1164,6 +1258,88 @@ mod tests {
         assert!(!lock.exists());
     }
 
+    /// 占锁方 release 时如果锁已被他人抢占（内容 token 已换人），只允许静默退出，
+    /// 绝不能把新持有者的锁删掉——这是「锁过期后被抢占」场景的正确性核心。
+    #[test]
+    fn release_does_not_remove_lock_owned_by_another_holder() {
+        let dir = sandbox("sync-lock-raced");
+        let lock = dir.join("models.json.buddy-bridge.lock");
+        fs::write(&lock, lock_payload("new-holder-owner", frozen_now())).expect("新持有者占锁");
+        {
+            let mut guard = LockGuard {
+                path: lock.clone(),
+                owner: "old-holder-owner".to_string(),
+            };
+            guard.release();
+        }
+        assert!(lock.exists(), "token 不匹配时不得删除他人锁");
+        assert_eq!(
+            fs::read_to_string(&lock).expect("读取"),
+            lock_payload("new-holder-owner", frozen_now()),
+            "锁内容不得被改动"
+        );
+    }
+
+    /// 正常情况下 release 只删自己的锁（token 一致），且删后内容不可再被恢复。
+    #[test]
+    fn release_removes_own_lock() {
+        let dir = sandbox("sync-lock-own");
+        let lock = dir.join("models.json.buddy-bridge.lock");
+        let owner = "own-token".to_string();
+        fs::write(&lock, lock_payload(&owner, frozen_now())).expect("占锁");
+        {
+            let guard = LockGuard {
+                path: lock.clone(),
+                owner,
+            };
+            drop(guard);
+        }
+        assert!(!lock.exists(), "token 一致时应删除自己的锁");
+    }
+
+    /// 带 token 且内容时间戳新鲜的锁是活跃锁：即使 mtime 被备份/网盘工具 touch 得很旧，
+    /// 也必须拒绝同步而不是抢占。内容时间戳是权威判据。
+    #[test]
+    fn sync_refuses_when_lock_held_by_fresh_owned_lock() {
+        let dir = sandbox("sync-lock-fresh");
+        let file = dir.join("models.json");
+        let lock = dir.join("models.json.buddy-bridge.lock");
+        fs::write(&lock, lock_payload("active-holder", frozen_now())).expect("占锁");
+        let error = sync_models_with(
+            &file,
+            &[model("a")],
+            "http://e",
+            "k",
+            &SyncOptions::default(),
+            &test_io(),
+        )
+        .expect_err("锁冲突");
+        assert_eq!(error.message, "Model sync already running; no changes made");
+        assert!(!file.exists());
+        assert!(lock.exists(), "活跃锁不得被删");
+    }
+
+    /// 内容里的创建时刻超过过期阈值即视为崩溃遗留，可以抢占；抢占成功后释放的是自己的锁。
+    #[test]
+    fn sync_reclaims_stale_lock_by_payload_timestamp() {
+        let dir = sandbox("sync-stale-payload");
+        let file = dir.join("models.json");
+        let lock = dir.join("models.json.buddy-bridge.lock");
+        let stale_ms = frozen_now() - LOCK_STALE_MS - 1;
+        fs::write(&lock, lock_payload("crashed-holder", stale_ms)).expect("崩溃遗留");
+        let outcome = sync_models_with(
+            &file,
+            &[model("a")],
+            "http://e",
+            "k",
+            &SyncOptions::default(),
+            &test_io(),
+        )
+        .expect("抢占过期锁");
+        assert!(outcome.changed);
+        assert!(!lock.exists(), "抢占后释放的是自己的锁");
+    }
+
     fn system_now_ms_plus_an_hour() -> u64 {
         system_now_ms() + 3_600_000
     }
@@ -1364,6 +1540,45 @@ mod tests {
     fn merge_auto(document: &Value, models: &[Value]) -> Value {
         merge_models_auto(document, models, "http://127.0.0.1:41980/v1/chat/completions", "secret", true, DocumentShape::Preserve)
             .expect("合并成功")
+    }
+
+    // 🔴 混搭池的护栏：专用小模型（OCR 一类，toolcall=false、上下文极小）曾经把整条别名
+    // 的 `maxInputTokens` 拉到 8192，而同池有 1000000 的长上下文模型——122 倍容量被一个
+    // 永远不会被选中去干这件事的模型锁死（真实池观测：`siliconflow-cn/deepseek-ai/DeepSeek-OCR`）。
+    // 统计域必须与 `supportsToolCall` 同源，取「能接工具调用的候选」的最小值。
+    #[test]
+    fn auto_route_context_ignores_models_that_cannot_take_tools() {
+        let merged = merge_auto(
+            &json!([]),
+            &[
+                json!({ "id": "v/ocr", "name": "ocr", "context": 8_192, "toolcall": false }),
+                json!({ "id": "v/big", "name": "big", "input": 1_000_000, "toolcall": true }),
+                json!({ "id": "v/mid", "name": "mid", "input": 128_000, "toolcall": true }),
+            ],
+        );
+        let alias = &merged.as_array().expect("数组")[3];
+        assert_eq!(
+            alias["maxInputTokens"],
+            json!(128_000),
+            "OCR 那类专用模型不参与下限统计；取能接工具的候选里的最小值"
+        );
+        assert_eq!(alias["supportsToolCall"], json!(true));
+    }
+
+    // 全池都接不了工具时，退化回全池最小值——不让 `maxInputTokens` 凭空消失，
+    // 保守声明的语义由原来的口径兜住。
+    #[test]
+    fn auto_route_context_falls_back_when_no_model_takes_tools() {
+        let merged = merge_auto(
+            &json!([]),
+            &[
+                json!({ "id": "v/ocr", "name": "ocr", "context": 8_192, "toolcall": false }),
+                json!({ "id": "v/chat", "name": "chat", "input": 32_000, "chatOnly": true }),
+            ],
+        );
+        let alias = &merged.as_array().expect("数组")[2];
+        assert_eq!(alias["maxInputTokens"], json!(8_192), "全池无工具候选时回全池最小值");
+        assert_eq!(alias["supportsToolCall"], json!(false), "此时也不声明工具能力");
     }
 
     #[test]

@@ -1,7 +1,7 @@
 [
   {
     "identifier": "default",
-    "description": "WB Bridge 主窗口能力：窗口 / 事件等核心插件 API 的最小集合。注意：本应用自有的 IPC 命令（core_action / restart_core / core_running / data_dir_path，见 src-tauri/src/lib.rs 的 generate_handler）属于应用命令，不经 capability 授权，因此这里既不需要也无法为它们列条目；本文件只声明插件侧权限。",
+    "description": "WB Bridge 主窗口能力：窗口 / 事件等核心插件 API 的最小集合。注意：本应用自有的 IPC 命令（core_refresh / core_probe / core_import / core_system_proxy / core_shutdown / core_provider_status / core_set_provider_key / core_clear_provider_key / restart_core / core_running / data_dir_path / read_log / open_external，见 src-tauri/src/lib.rs 的 generate_handler）属于应用命令，不经 capability 授权，因此这里既不需要也无法为它们列条目；本文件只声明插件侧权限。",
     "windows": ["main"],
     "permissions": [
       "core:default",

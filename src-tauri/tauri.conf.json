@@ -10,7 +10,6 @@
     "beforeBuildCommand": "npm run vite:build"
   },
   "app": {
-    "withGlobalTauri": true,
     "windows": [
       {
         "title": "WB Bridge",

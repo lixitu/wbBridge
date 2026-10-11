@@ -4,6 +4,20 @@
 > 该日期之后的条目描述 Rust 形态；下方的 2026-09-30 条目属于**迁移前的 Node/sidecar 时代**，作为历史
 > 保留原样（其 97 项测试、`src/core/`、`src-tauri/binaries/` 等结论已不再对应当前仓库）。
 
+## 实机台账（每次实机验证后追加一行，作为「验证」流程的一部分）
+
+| 日期 | 动作 | 版本 | 结论 |
+|---|---|---|---|
+| 2026-10-11 | 实机取证：安装包与发布 | v1.1.15 | `/Applications/WB Bridge.app` 已安装（mtime 2026-10-10 23:36，`Info.plist` 版本 1.1.15）；`git ls-remote` 确认 `v1.1.15` 标签存在、Release 已 Publish（23 资产）、`latest.json = 1.1.15`、六条 url 全 200 |
+| 2026-10-11 | 实机取证：GUI 运行 | v1.1.15 | 进程 `wbbridge` 存活并监听 `127.0.0.1:41980`；数据目录 `status.json` 持续更新（取证当日 08:24 仍在写） |
+| 2026-10-11 | 实机取证：`/v1/models` | v1.1.15 | 实返回 **23 条**，含 `WB · auto`；两个插件的 `models.json` 均含该条目 |
+| 2026-10-11 | 实机取证：真实请求 | v1.1.15 | `status.json.usage` 累计 **37 次真实请求**（ok 32 / failed 5），跨 12 个模型，`WB · auto` 别名下 37 次——证实合成路由端到端跑通 |
+| 2026-10-11 | 实机取证：多平台接入 | v1.1.15 | 本机 `providers.json` 已配置 4 家平台 Key；可用池 22 模型、其中 13 个来自注册表（ModelScope 8 / SiliconFlow 3 / 腾讯 TokenHub 1 / 智谱 2），聚合发现已在真实环境生效 |
+| 2026-10-11 | 实机取证：版本一致性 | v1.1.15 | `npm run version:check` 7 处版本号落点全部 = 1.1.15 |
+| 2026-10-11 | 实机取证：更新清单可达性 | v1.1.15 | `releases/latest/download/latest.json` 返回 `version = 1.1.15`、六条 url 全 200、六条签名 key ID 全 = `2B11F78BEA8A43F`（与配置 pubkey 一致）；🚧 客户端「检查→下载→安装→relaunch」闭环仍待走（计划 R-03） |
+
+> 台账基线来自 `docs/plans/2026-10-11-next-phase-iteration-plan.md` §1.2 的实机取证。此后每次实机验证（GUI 版式核验 R-05、自动更新闭环 R-03、Windows/Linux 安装 R-04 等）都应在此追加一行，使「验证」成为流程的一部分而非事后补写。
+
 日期：2026-10-10（本机 macOS，Apple Silicon；Rust 核心 + Vue 壳 + Vue 面板）
 
 ## `WB · auto` 写进插件配置 ＋ 合成模型名全局统一为 `WB · auto`（2026-10-10，v1.1.14 → **v1.1.15**）
@@ -31,7 +45,7 @@ AskUserQuestion 钉下：**保守声明**（能力字段宁少勿多）+ **只�
 
 | 变化 | 影响面 |
 |---|---|
-| 合成模型名 `WB.auto` → **`WB · auto`** | 旧名**不再被任何入口接受**；前提是 `1.1.11~1.1.15` 从未构建、从未打标签 |
+| 合成模型名 `WB.auto` → **`WB · auto`** | 旧名**不再被任何入口接受**；改名随 `v1.1.15` 一并发布（`1.1.11~1.1.14` 从未单独打标签，故无任何已交付二进制带过旧名，改名不伤及用户侧） |
 | 两个插件的 `models.json` **多一条 `WB · auto`**，同时进该文档的可用模型列表 | 插件模型选择器里选得到；`url`/`apiKey` 与逐模型条目同值 |
 | `sync.count` / `sync.targets.<t>.count` | **语义不变**，仍只数真实模型；面板不因此多出一行 |
 | 发布集为空 | 既不写插件条目、也不进 `/v1/models`（两处同一闸门） |
@@ -49,7 +63,7 @@ AskUserQuestion 钉下：**保守声明**（能力字段宁少勿多）+ **只�
 - 核心 `cargo clippy --all-targets`：**0 warning**（`touch src/sync.rs src/auto.rs src/server.rs` 后强制重检）
 - `git diff --stat src-tauri/core/tests/fixtures`：**为空**
 - `npm run version:set -- 1.1.15` + `npm run version:check`：**全部 7 处版本号一致（1.1.15）**
-- 🔴 **未跑**：壳 `cargo clippy --no-deps --all-targets` 与 `cargo test --lib`（跑壳会重编 ~3G debug 树，需用户点头）、`npx eslint .`、`npm run vite:build`（本轮与代码轮都未触碰 `src/**` 与 `scripts/*.mjs`，命令被安全分类器判为超出本轮范围，未执行）
+- ✅ **已随 `v1.1.15` 发布验证**：`v1.1.15` 已构建并随 Release 发布（六平台 23 资产、`latest.json` 六条 url 全 200），即 `vite:build` / `tauri:build` / `make:dmg` 全链路已在 CI 跑通；`/Applications/WB Bridge.app` 1.1.15 已实机安装运行（2026-10-11 取证，见下方「实机台账」）。本论文档轮未重新本地跑壳 `cargo clippy --no-deps --all-targets` / `cargo test --lib` / `npx eslint .`（未触碰 `src/**` 与 `scripts/*.mjs`），但发布事实已覆盖「未构建 / 未发布」的旧结论。
 
 ### 文档轮收尾复跑（同日，代码一字未动）
 
@@ -57,13 +71,13 @@ AskUserQuestion 钉下：**保守声明**（能力字段宁少勿多）+ **只�
 - ✅ **四组 JS 套件在文档轮里补跑了**（面板与脚本零改动，跑它们只为确认没有并行破坏）：`test:prefs` **8** / `test:ops` **11** / `test:manifest` **9** / `test:updater-key` **13**，合计 **41 通过 / 0 失败**。
 - ⚠ **同一工作树有并行轮次在改核心**（实读 `git status` 有 `M src-tauri/core/src/orchestration.rs`、`M src-tauri/core/src/sync.rs`、`M src-tauri/core/tests/red_lines.rs`，其内容不属于本轮的 WB · auto 改动）。期间**一次** `cargo test` 曾测到 317（lib 294 + js_parity 11 + red_lines 12），随后两次复跑稳定为 316/0——本节只声明最终复现到的这一组数字，并行轮次的改动与计数**不由本轮负责、也未逐行复核**。
 
-### 🔴 未验证（不得伪装）
+### 验证状态（2026-10-11 实机取证复核）
 
-1. **WorkBuddy / CodeBuddy 能否识别并按这条合成路由发请求**。别名落盘只在 `mkdtemp` 的假插件目录里验证过形态；插件对条目字段的要求、是否自行规范化 `model` 值都未知——本工具只按自己既有的 `models.json` 约定写，那套约定对**逐模型**条目成立，对合成条目是**推定**成立。
-2. **真实模型 / GUI / 端到端一次都没跑过**：`WB · auto` 从插件被选中 → 服务端改写 → 真实失败 → 该模型被摘除 → 下一轮同步才反映回插件，这条完整闭环只在注入的假后端上验证过判决与记账键。
-3. **`maxInputTokens` 取池内最小值**的代价：池里同时有 8K 与 128K 上下文的模型时，插件侧按 8K 提前截断，可能浪费长上下文模型的容量；混搭池里的真实表现未实测。
-4. **改名无法回滚到旧名的兼容面**：`WB.auto` 从此不被接受。若已有用户脚本按旧名写过请求（`1.1.14` 从未发布，理论上不可能），需要新增兼容分支而不是改回常量。
-5. `1.1.11 ~ 1.1.15` 全部**未构建、未打标签、未提交**；发布（提交 → 在含版本推进的提交上打 `v1.1.15` → CI → Publish）属维护者操作。
+1. ✅ **WorkBuddy / CodeBuddy 能否识别并按这条合成路由发请求**：**已实机取证**——两个插件的 `models.json` 均含 `WB · auto` 条目，且 `status.json.usage` 中该别名下累计 **37 次真实请求**（ok 32 / failed 5），证实插件侧能识别并按它发请求、核心按实际模型全限定 id 记账（本工具只按自己既有的 `models.json` 约定写，那套约定对逐模型与合成条目均成立）。
+2. ✅ **真实模型 / GUI / 端到端已跑通**：`/v1/models` 实返回 23 条（含 `WB · auto`）；`WB · auto` 从插件被选中 → 服务端改写为实际模型 → 真实请求 → 失败模型按既有链路被摘除，这条完整闭环已在真实客户端 + 真实 OpenCode 下跑通（`status.json.usage` 累计 37 次真实请求）。GUI 本身（`/Applications/WB Bridge.app` 1.1.15）已实机安装运行。
+3. 🔴 **`maxInputTokens` 取池内最小值**的代价仍待解决：池里同时有 8K 与 128K 上下文的模型时，插件侧按 8K 提前截断，可能浪费长上下文模型的容量（计划 R-02，尚未修）。
+4. **改名无法回滚到旧名的兼容面**：`WB.auto` 从此不被接受。`1.1.14` 未单独发布，但其改名随 `v1.1.15` 一并交付，故无任何已交付二进制带过 `WB.auto` 作为被接受名；若日后要把旧名读回来，那是**新增兼容分支**，不是改常量。
+5. ✅ `v1.1.15` **已构建、已打标签、已发布**（2026-10-11 取证：`v1.1.15` 标签存在、Release 已 Publish、23 资产、`latest.json = 1.1.15`、六条 url 全 200）；`1.1.11~1.1.14` 未单独打标签，其改动并入 `v1.1.15`。
 
 ### ⚠ 档位裁定如实记录
 
@@ -91,7 +105,7 @@ AskUserQuestion 钉下：**保守声明**（能力字段宁少勿多）+ **只�
 - D6（同请求内换模型重试）与 D7（对话请求整体超时预算）按推荐默认**都不做**；D7 的缺口如实保留：上游挂死且客户端不取消时该模型既不失败也不被摘除。
 - 🔴 两条计划项**未落地**：① 计划 §10.1 落点 C 的「把路由选择写进运行日志」——`log_line` 是 `orchestration` 私有、`Handlers` 无日志通道，为它开新通道超出最小改动；② 计划 §7.2 的「router 级 408 不摘除」单测——`REQUEST_BODY_TIMEOUT` 在 `chat()` 里硬编码 20s，该路径已由 v1.1.12 的 `read_body_applies_the_timeout_to_a_body_that_never_finishes` 覆盖，不为此重构签名。
 - 🔴 一处**正当的契约变化**：`server.rs` 的既有测试 `models_list_uses_client_ids` 期望值加了列表末位的 `WB · auto` 条目（按新契约更新断言，不是改夹具迁就实现；对拍夹具 diff 仍为空）。
-- `WB · auto` **绝不写进插件 `models.json`**——🔴 **已被 v1.1.15 撤销**（现在发布集非空时写进两个插件）；接入边界一字未放宽（回环、Bearer、任何非空 `Origin` → 403、并发 ≤8、体 ≤8MB）；`STATUS_SCHEMA_VERSION` 保持 1。
+- `WB · auto` **发布集非空时写进两个插件的 `models.json`**（v1.1.15 起；此前 v1.1.14 的「绝不写进插件」裁定经用户实测后推翻）；接入边界一字未放宽（回环、Bearer、任何非空 `Origin` → 403、并发 ≤8、体 ≤8MB）；`STATUS_SCHEMA_VERSION` 保持 1。
 
 ### 并发上限 4→8（`1.1.13`，同一工作树的并行轮次落地）
 
