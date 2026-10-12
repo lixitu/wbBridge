@@ -59,7 +59,7 @@
 #     ⚠ 变量取到**空值**时 tauri 报「failed to decode secret key: incorrect updater private key
 #       password: Missing comment in secret key」——这句看着像口令错，实际是空值（本机 14 组形态复现
 #       钉死了这个映射），而且它要等整套 Rust 编译跑完、在打包那一步才炸。
-#       ⚠ 2026-10-03 用户决定：**不在 CI 里设私钥前置校验步骤**（私钥与口令是否在位由维护者自行确认）。
+#       ⚠ 2026-10-03 用户决定：**不在 CI 里设私钥前置校验步骤**（私钥与口令是否在位由公司自行确认）。
 #       未配置该变量时 createUpdaterArtifacts 会让构建直接失败，而不是静默产出一批没有 .sig 的更新包。
 #   • pubkey 里只有**一条**公钥，且必须是签这批 .sig 的那把（当前 key ID 2B11F78BEA8A43F）：
 #       2026-10-03 实读 tauri-plugin-updater 2.13 与 minisign-verify 0.2.5 的源码，纠正了此前写进文档的

@@ -41,7 +41,7 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 export const DEFAULT_KEY_PATH = path.join(os.homedir(), '.tauri', 'wbBridge-updater.key');
 
 // 取值优先级由 loadEnvFiles 的入参顺序决定（先命中者生效）：仓库 .env.local > 仓库 .env >
-// ~/.tauri/wbBridge.env > ~/.tauri/wbBridge-updater.env。后两个是维护者本机既有的私钥习惯
+// ~/.tauri/wbBridge.env > ~/.tauri/wbBridge-updater.env。后两个是公司本机既有的私钥习惯
 // 位置（与参考项目同款），存在才读。进程环境始终压过文件。
 export const ENV_FILES = [
   path.join(ROOT, '.env.local'),

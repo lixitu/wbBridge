@@ -173,7 +173,7 @@ test('injectKey：加密态私钥且没有任何口令时只告警，不阻断�
     const encrypted = fakeKey('encrypted');
     const env = { [KEY_CONTENT_NAME]: encrypted };
     const r = run(env, dir);
-    assert.equal(r.injected, true, '前置校验已撤掉：是否在位由维护者自行确认，报错交回 tauri');
+    assert.equal(r.injected, true, '前置校验已撤掉：是否在位由公司自行确认，报错交回 tauri');
     assert.equal(KEY_PASSWORD_NAME in env, false, '加密态钥不能自作主张置空口令（那会把「缺口令」伪装成「口令是空串」）');
     assert.ok(r.logger.lines.some((l) => /未提供口令，签名将失败/.test(l)));
     assert.ok(r.actions.includes('加密态私钥 + 无口令（告警）'));
@@ -356,5 +356,5 @@ test('接线：tauri:build 经包装器、build 链 make:dmg、CI 读 vars 并�
   assert.equal(firstConfiguredKeyId(root), blocks[0].split('key:').pop().trim());
   assert.equal(conf.bundle.targets.includes('dmg'), false, 'dmg 由 scripts/make-dmg.sh 生成：Tauri 的 create-dmg 走 AppleScript，CI 无 GUI 会失败');
   assert.equal(conf.bundle.createUpdaterArtifacts, true);
-  assert.equal(DEFAULT_KEY_PATH, path.join(os.homedir(), '.tauri', 'wbBridge-updater.key'), '本地兜底路径要与维护者的实际私钥位置一致');
+  assert.equal(DEFAULT_KEY_PATH, path.join(os.homedir(), '.tauri', 'wbBridge-updater.key'), '本地兜底路径要与公司的实际私钥位置一致');
 });

@@ -81,7 +81,7 @@ AskUserQuestion 钉下：**保守声明**（能力字段宁少勿多）+ **只�
 
 ### ⚠ 档位裁定如实记录
 
-按「新功能 = minor」本轮应占 `1.2.0`，但 `1.2.x~1.3.x` 已被维护者裁定作废且**不得再占用**，minor 位**无处可进**；本轮属同一未发布能力（WB · auto 路由）的追加，故落 **patch（`1.1.14 → 1.1.15`）**。
+按「新功能 = minor」本轮应占 `1.2.0`，但 `1.2.x~1.3.x` 已被公司裁定作废且**不得再占用**，minor 位**无处可进**；本轮属同一未发布能力（WB · auto 路由）的追加，故落 **patch（`1.1.14 → 1.1.15`）**。
 
 ## WB · auto 智能路由核心代码落地 ＋ 并发上限 4→8（2026-10-10，v1.1.13 → **v1.1.14**）
 
@@ -186,7 +186,7 @@ AskUserQuestion 钉下：**保守声明**（能力字段宁少勿多）+ **只�
 - 🔴 核心 3 项的单测跑在**注入的假 OpenCode 服务**上（`start_mock_session`），不是真实 OpenCode 1.18.35；「客户端真实断开」这一事件从未发生过一次，`/admin/*` 的 20s 预算也没遇过真实慢客户端。
 - 🔴 **`v1.1.11` / `v1.1.12` 从未构建、从未打标签** ⇒ 本轮所有修复在用户侧**还不存在**，必须构建并发版才生效。
 - 🔴 **远端发布状态本轮无法复核**：本机 `api.github.com` 不可达（拦截/重定向），远端只以 `git ls-remote --tags origin` 为凭（实有 `v1.1.10` = `befe96e7`，无 `v1.1.12`）。
-- ⚠ **并发改动如实记录**：同一工作树里有并行轮次在写。两处直接影响本轮文档：① 本轮出稿 v1.1.12 时**没有删**上一版底本 `RELEASE-NOTES-v1.1.10.md`（理由：删文件属破坏性且不在指令字面范围，且该轮发布状态无法复核，它是唯一可与线上正文对账的那份），**随后它被并行轮次删除**（`git status` 实读 ` D`，未提交）——本轮不代做恢复，取舍留给维护者；② 并行轮次还删除了 `docs/plans/2026-10-03-*.md`（2）、`docs/qa/smoke-checklist.md`、`docs/research/upstream-architecture.md`、`docs/superpowers/specs/*`（3），并新增未跟踪的 `docs/plans/2026-10-10-wb-auto-smart-router.md`；⚠ `AGENTS.md` 的「上游调研基线」一行仍指向**已不在工作区**的 `docs/research/upstream-architecture.md`（本轮未改该行，属并行轮次的整理范围）。
+- ⚠ **并发改动如实记录**：同一工作树里有并行轮次在写。两处直接影响本轮文档：① 本轮出稿 v1.1.12 时**没有删**上一版底本 `RELEASE-NOTES-v1.1.10.md`（理由：删文件属破坏性且不在指令字面范围，且该轮发布状态无法复核，它是唯一可与线上正文对账的那份），**随后它被并行轮次删除**（`git status` 实读 ` D`，未提交）——本轮不代做恢复，取舍留给公司；② 并行轮次还删除了 `docs/plans/2026-10-03-*.md`（2）、`docs/qa/smoke-checklist.md`、`docs/research/upstream-architecture.md`、`docs/superpowers/specs/*`（3），并新增未跟踪的 `docs/plans/2026-10-10-wb-auto-smart-router.md`；⚠ `AGENTS.md` 的「上游调研基线」一行仍指向**已不在工作区**的 `docs/research/upstream-architecture.md`（本轮未改该行，属并行轮次的整理范围）。
 - 🔴 本轮**未提交、未推送**（`提交由用户决定`）。
 
 ## 全量文档同步至 v1.1.10 ＋ 壳侧一条真实 clippy warning 的等价改写（2026-10-10，按规则**不推进版本号**）
@@ -234,7 +234,7 @@ AskUserQuestion 钉下：**保守声明**（能力字段宁少勿多）+ **只�
 
 日期：2026-10-09（本机 macOS，Apple Silicon；Rust 核心 + Vue 壳 + Vue 面板）
 
-## 多平台接入 Stage 3 + Stage 5：Key 注入、聚合发现、空集闸门与「平台」视图（2026-10-09，版本推进至 1.1.0；其后 1.2.0 / 1.3.x 的推进已由维护者裁定作废，当前落点回退为 1.1.2）
+## 多平台接入 Stage 3 + Stage 5：Key 注入、聚合发现、空集闸门与「平台」视图（2026-10-09，版本推进至 1.1.0；其后 1.2.0 / 1.3.x 的推进已由公司裁定作废，当前落点回退为 1.1.2）
 
 ### 沙箱前置实测（同日上午，四轮对照实验）
 
@@ -276,7 +276,7 @@ AskUserQuestion 钉下：**保守声明**（能力字段宁少勿多）+ **只�
 - 核心 cargo clippy --all-targets：**0 warning**；壳 cargo test --lib：**9 通过**；
 - git diff --stat src-tauri/core/tests/fixtures 为空（对拍夹具零改动，逐字节等价仍成立）；
 - JS 侧：test:prefs 8 / test:manifest 9 / test:updater-key 13 全绿、npx eslint 0 problem、
-  vite:build 通过、version:check 5 处一致（**1.1.0**——当时由维护者裁定按语义化版本推进 minor 位；该裁定已于同日推翻，版本回退并统一为 **1.1.2**）。
+  vite:build 通过、version:check 5 处一致（**1.1.0**——当时由公司裁定按语义化版本推进 minor 位；该裁定已于同日推翻，版本回退并统一为 **1.1.2**）。
 
 ### 🔴 未验证（必须实机确认）
 
@@ -360,7 +360,7 @@ AskUserQuestion 钉下：**保守声明**（能力字段宁少勿多）+ **只�
 
 - ❌ **端到端无效**：Key 写进 `providers.json` 后**当前没有任何消费者**——`isolated_config()` 注入与 `free_models` 注册表驱动属 Stage 3，四平台现在**不会多出一个模型**。
 - ❌ 面板没有入口（Stage 5）；真实 Key 从未在 Tauri GUI 里输入过；`providers.json` 的 `0600` 权限只在 unix 单测里断言，Windows 未验证。
-- ❌ **上游未知仍未解**：注入 `provider.<id>` 声明后，OpenCode 是否把该平台回显进 `providers.all[]`（决定 Stage 3 能否复用现有 `free_models`）——维护者的带 Key 实验尚未做。Stage 1 与之无关，因此可以先落。
+- ❌ **上游未知仍未解**：注入 `provider.<id>` 声明后，OpenCode 是否把该平台回显进 `providers.all[]`（决定 Stage 3 能否复用现有 `free_models`）——公司的带 Key 实验尚未做。Stage 1 与之无关，因此可以先落。
 
 ## v1.0.2 追加：签名注入链路重写 + 单条公钥 + hdiutil dmg（2026-10-03，不推进版本号）
 
@@ -502,7 +502,7 @@ CI 取到空值的机制：私钥当时只配在 GitHub **Secrets**，而三个 
 | 签名自检脚本 | 新增 `scripts/with-updater-key.mjs`：按 **进程环境 > `.env.local` > `.env`** 汇齐私钥与口令（逐项独立回落、**逐项打印来源**；`~/…` 先展开；环境变量里**存在** `_PASSWORD` 即按显式处理，显式空串＝无口令、不再回落文件）→ ① 形态校验 ② 同目录 `.pub` 的 key ID 必须在配置白名单内（不在即**失败关闭**）③ **真跑一次 `tauri signer sign`**（临时目录 `mkdtemp` + 签完即删，密钥与口令**只经环境**传给子进程、不进 argv、不打印）→ 全过才继续后接的命令。`--check-only` 只自检不构建。**定位为本地手跑工具**（2026-10-03 用户决定：不接入 `npm run build`、不作为 CI 步骤） | `scripts/with-updater-key.mjs` |
 | 前置单测 | 新增 `scripts/with-updater-key.test.mjs`（`node --test`，**9 用例**）+ `npm run test:updater-key`：取值优先级 / 显式空口令压过文件 / `~` 展开 / 四类非法形态 / key ID 白名单解析 / 配对失败关闭 / 四条解码报错→成因映射 / **CLI 在相对路径下确实执行**且空值与路径型私钥在试签前退出 1（**报错不回显密钥**）/ 接线断言（`release.yml` 把私钥读成 `vars.`、**不含**任何私钥前置步骤、`npm run build` **不**经本脚本）。不联网、不调 tauri CLI、不碰真实私钥 | `scripts/with-updater-key.test.mjs`、`package.json` |
 | `npm run build` 维持裸构建 | `build` 保持 `vite:build && tauri build`；前置自检脚本 `scripts/with-updater-key.mjs` 为**本地手跑工具**（`--check-only`），不接入 `npm run build`、也不作为 CI 步骤（2026-10-03 用户决定） | `package.json` |
-| CI 变量 | 三个 build 作业的 `TAURI_SIGNING_PRIVATE_KEY{,_PASSWORD}` 从 `secrets.` 改 `vars.`（`GITHUB_TOKEN` 不变）；顶部注释整段重写（Variables 与其明文代价、口令非空、两条 key ID 白名单、空值→`Missing comment` 的映射）。⚠ 三个 build 作业**不含**私钥前置校验步骤——一度加过，同日按用户决定撤除（私钥在位与否由维护者自行确认，这类配置错仍要等到打包那一步才暴露） | `.github/workflows/release.yml` |
+| CI 变量 | 三个 build 作业的 `TAURI_SIGNING_PRIVATE_KEY{,_PASSWORD}` 从 `secrets.` 改 `vars.`（`GITHUB_TOKEN` 不变）；顶部注释整段重写（Variables 与其明文代价、口令非空、两条 key ID 白名单、空值→`Missing comment` 的映射）。⚠ 三个 build 作业**不含**私钥前置校验步骤——一度加过，同日按用户决定撤除（私钥在位与否由公司自行确认，这类配置错仍要等到打包那一步才暴露） | `.github/workflows/release.yml` |
 | CI 单测步骤 | test 作业那一步改名「运行面板偏好、更新清单与签名自检单测」，追加 `node --test scripts/with-updater-key.test.mjs` | `.github/workflows/release.yml` |
 | 文档同步 | `AGENTS.md`（签名与发布一节整体更正 + 验证边界表两行 + 命令清单与模块清单与测试规范与基线表与交付约定）、`.env.example`（重写为「不必 export、包装脚本自取；口令非空；CI 用 Variables」）、`docs/wiki/版本与发布.md`（报错→成因对照表 + 前置脚本 + 密钥现状更正 + 发布检查清单两项）、`docs/wiki/常见问题与故障排查.md`（新增「CI 报 `Missing comment in secret key`」条目） | 五处文档 |
 
