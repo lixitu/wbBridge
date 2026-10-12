@@ -50,7 +50,7 @@ xattr -dr com.apple.quarantine "/Applications/WB Bridge.app"
 
   ```sh
   curl -s http://127.0.0.1:41980/v1/chat/completions \
-    -H "Authorization: Bearer $(cat "$HOME/Library/Application Support/app.wbbridge.desktop/api-key")" \
+    -H "Authorization: Bearer $(cat "$HOME/Library/Application Support/cn.hzdamei.wbbridge/api-key")" \
     -H "Content-Type: application/json" \
     -d '{"model":"WB · auto","messages":[{"role":"user","content":"你好"}]}'
   ```
@@ -92,7 +92,7 @@ curl -H "Authorization: Bearer $(cat "$HOME/Library/Application Support/Buddy Br
      http://127.0.0.1:41980/health
 ```
 
-> ⚠ 数据目录随运行形态不同，排查时不要混用：桌面应用使用 Tauri `app_data_dir`（macOS `~/Library/Application Support/app.wbbridge.desktop`，identifier `app.wbbridge.desktop`）；独立核心二进制使用平台默认目录（macOS `~/Library/Application Support/Buddy Bridge`、Windows `%APPDATA%\Buddy Bridge`、Linux `${XDG_CONFIG_HOME:-~/.config}/Buddy Bridge`），可用 `BUDDY_DATA_DIR` 覆盖。`/health` 同样需要 Bearer 鉴权。
+> ⚠ 数据目录随运行形态不同，排查时不要混用：桌面应用使用 Tauri `app_data_dir`（macOS `~/Library/Application Support/cn.hzdamei.wbbridge`，identifier `cn.hzdamei.wbbridge`）；独立核心二进制使用平台默认目录（macOS `~/Library/Application Support/Buddy Bridge`、Windows `%APPDATA%\Buddy Bridge`、Linux `${XDG_CONFIG_HOME:-~/.config}/Buddy Bridge`），可用 `BUDDY_DATA_DIR` 覆盖。`/health` 同样需要 Bearer 鉴权。
 
 ## 工程结构
 
@@ -119,7 +119,7 @@ docs/           验证记录（validation.md）、版本日志（version/）、�
 - 新增 `POST /admin/shutdown` 管理接口与 `BUDDY_PARENT_PID` 父进程看门狗（独立运行核心时生效）：Windows 下 SIGTERM 不可靠、壳可能被强杀，两者共同保证退出时总能优雅清理 WorkBuddy 配置。
 - 托盘、导入、系统代理、模型检测与自动导入等行为与原版一致；界面保留原设计系统并优化了层级、留白、悬停反馈与深浅色主题。面板布局按本项目方案重做：侧栏为**分组导航**（模型 / 运行 / 集成 / 其他 + 运行设置），模型详情不再是「点开模型行就地展开」，而是**右侧常驻分栏**——选中模型后列表与详情并排显示，详情宽 `clamp(300px, 45%, 360px)`，可用 `Esc`、详情头部「收起详情」或窗口失焦收起，任何窗口宽度都不降级为上下堆叠。默认窗口 **1120×720**（最小 860×560），侧栏宽 208px。侧栏 5 个入口全部可点（模型与服务 / 运行日志 / 用量与额度 / WorkBuddy 集成 / 关于与更新），非模型视图在主区独立滚动，同样不引入按宽度堆叠的降级分支。
 - logo 全新设计（悬索桥 + W 形缆线），全平台图标已就绪（`src-tauri/icons/`）。
-- 原 Node 核心（`core/src/*.js` 与其 97 项测试）已整体归档到仓库之外（`/Users/wbtrex/website/localServer/node/trexwb/backup/wbBridge-node-20261001/`）；Rust 核心通过冻结在 `src-tauri/core/tests/fixtures/*.json` 的 JS 真相快照（**271 例 / 11 个模块**：atomic、handoff、json、model_status、platform、protocol、reasoning、repair、sync、system_proxy、workbuddy_config）保持行为一致，对拍测试不再需要 Node 环境。
+- 原 Node 核心（`core/src/*.js` 与其 97 项测试）已整体归档到仓库之外；Rust 核心通过冻结在 `src-tauri/core/tests/fixtures/*.json` 的 JS 真相快照（**271 例 / 11 个模块**：atomic、handoff、json、model_status、platform、protocol、reasoning、repair、sync、system_proxy、workbuddy_config）保持行为一致，对拍测试不再需要 Node 环境。
 
 ## 已知限制
 

@@ -130,7 +130,7 @@
 
 | 形态 | 入口 | 端口 | 数据目录（`api-key` / `status.json` 所在处） |
 |---|---|---|---|
-| 桌面壳（正式形态） | `src-tauri/src/lib.rs::start_core` → `orchestration::run(StartOptions { data_dir, port, handle_signals: false })` | `pick_port()`：默认 41980，被占用时回退到系统分配的空闲端口 | Tauri `app_data_dir`（macOS `~/Library/Application Support/app.wbbridge.desktop`，identifier `app.wbbridge.desktop`） |
+| 桌面壳（正式形态） | `src-tauri/src/lib.rs::start_core` → `orchestration::run(StartOptions { data_dir, port, handle_signals: false })` | `pick_port()`：默认 41980，被占用时回退到系统分配的空闲端口 | Tauri `app_data_dir`（macOS `~/Library/Application Support/cn.hzdamei.wbbridge`，identifier `cn.hzdamei.wbbridge`） |
 | 独立核心二进制 | `src-tauri/core/src/main.rs`（`handle_signals: true`，读 `BUDDY_*` 环境变量） | `BUDDY_PORT`，默认 41980 | `BUDDY_DATA_DIR`，否则平台默认（macOS `~/Library/Application Support/Buddy Bridge`、Windows `%APPDATA%\Buddy Bridge`、Linux `${XDG_CONFIG_HOME:-~/.config}/Buddy Bridge`） |
 
 > 两种形态共用同一份编排代码，但数据目录互不相通；`/health` 排查时必须按运行形态取对应目录里的 `api-key`，
@@ -141,7 +141,7 @@
 curl -H "Authorization: Bearer $(cat "$HOME/Library/Application Support/Buddy Bridge/api-key")" \
      http://127.0.0.1:41980/health
 # 桌面壳形态（Tauri app_data_dir，端口见同目录 status.json 的 endpoint）
-curl -H "Authorization: Bearer $(cat "$HOME/Library/Application Support/app.wbbridge.desktop/api-key")" \
+curl -H "Authorization: Bearer $(cat "$HOME/Library/Application Support/cn.hzdamei.wbbridge/api-key")" \
      http://127.0.0.1:41980/health
 ```
 > 壳不再 `spawn` 核心进程，而是在自己的专用 tokio 运行时上装配核心任务并持有其完整生命周期；

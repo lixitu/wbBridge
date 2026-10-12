@@ -72,7 +72,7 @@ test('六平台齐全：写出六个平台键、签名与 url，url 用 GitHub �
     assert.equal(manifest.platforms['darwin-aarch64'].signature, 'sig:WB Bridge_1_aarch64.app.tar.gz')
     assert.equal(
       manifest.platforms['darwin-aarch64'].url,
-      'https://github.com/trexwb/wbBridge/releases/download/v9.9.9/WB.Bridge_1_aarch64.app.tar.gz',
+      'https://github.com/lixitu/wbBridge/releases/download/v9.9.9/WB.Bridge_1_aarch64.app.tar.gz',
       'GitHub 把资产名的空格规范化成点，空格/%20 形式一律 404（v1.0.2 实测），url 必须用点形式',
     )
     assert.equal(manifest.platforms['darwin-x86_64'].url.endsWith('/WB.Bridge_1_x86_64.app.tar.gz'), true)

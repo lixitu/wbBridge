@@ -1,8 +1,8 @@
 [package]
 name = "wbbridge"
-version = "1.1.15"
+version = "1.0.0"
 description = "WB Bridge — 让 WorkBuddy 使用 OpenCode 免费模型"
-authors = ["WB Bridge"]
+authors = ["杭州大美科技有限公司 <service@hzdamei.cn>"]
 edition = "2021"
 # 下限由锁定依赖图决定：tauri 2.12 / tray-icon / 各官方插件都声明 1.90（与核心 crate 保持一致）
 rust-version = "1.90"

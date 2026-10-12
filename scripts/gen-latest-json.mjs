@@ -26,7 +26,7 @@ const arg = (name, fallback) => {
 
 const conf = JSON.parse(readFileSync(path.join(ROOT, 'src-tauri/tauri.conf.json'), 'utf8'))
 const version = conf.version
-const repo = 'trexwb/wbBridge'
+const repo = 'lixitu/wbBridge'
 const tag = arg('tag') || `v${version}`
 const base = `https://github.com/${repo}/releases/download/${tag}`
 const dir = arg('dir', 'artifacts')

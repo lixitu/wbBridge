@@ -673,7 +673,7 @@ CI 取到空值的机制：私钥当时只配在 GitHub **Secrets**，而三个 
 ### 落地的改动
 
 - **Rust 侧**：`src-tauri/Cargo.toml` 新增 `tauri-plugin-updater = "2"`、`tauri-plugin-process = "2"`（Cargo.lock +298 行 / **24 个新传递 crate**；理由：官方 Tauri 插件、与既有 tauri 同一维护方，是应用内更新的唯一正规路径）。`lib.rs` builder 链注册两者。
-- **配置**：`tauri.conf.json` 加 `bundle.createUpdaterArtifacts: true` 与 `plugins.updater`（内联 `pubkey`，端点 `https://github.com/trexwb/wbBridge/releases/latest/download/latest.json`）。
+- **配置**：`tauri.conf.json` 加 `bundle.createUpdaterArtifacts: true` 与 `plugins.updater`（内联 `pubkey`，端点 `https://github.com/lixitu/wbBridge/releases/latest/download/latest.json`）。
 - **权限**：`capabilities/default.json` 加 `updater:default` + **`process:allow-restart`**（不是 `process:default`：后者含 `allow-exit`，会让 WebView 绕过 `quit_app` 的优雅关停链直接杀进程）。
 - **前端**：`src/core/bridge.js` 加 `checkUpdate/downloadUpdate/relaunchApp`（`Update` 句柄只留在模块内，视图拿可序列化快照）；新增 `src/core/update.js` 状态机（`idle|checking|available|downloading|ready|uptodate|error`，冷启动 5s 后静默检查、静默失败不打扰）；`App.vue` 挂载时启动静默检查；`AboutView.vue` 换成真实更新区；`base.css` 新增确定型进度条 `.progress`（`prefers-reduced-motion` 允许清单同步补 `.progress.is-active > i::after`）。
 - **脚本 / CI**：新增 `scripts/gen-latest-json.mjs`（`npm run gen:latest`）；`release.yml` 三个构建作业补 `.sig` / `.app.tar.gz` / `.AppImage.tar.gz` glob 与签名环境变量、`includeUpdaterJson: false`、**macOS 补架构后缀**步骤，末尾新增 `update-manifest` 作业单点写 `latest.json`。
@@ -690,7 +690,7 @@ CI 取到空值的机制：私钥当时只配在 GitHub **Secrets**，而三个 
 | `npm run vite:build` | ✅ 通过 |
 | `node scripts/gen-latest-json.mjs` 合成产物测试 | ✅ 正例 4 项：六平台齐全、linux 裸 `.AppImage` 与 `.tar.gz` 并存（取 `.tar.gz` 并告警）、只有裸 `.AppImage`、`--expect` 收窄 + `--tag` 覆盖；负例 5 项全部退出 1：mac 资产缺架构后缀、某平台缺 `.sig`、同目录互不相干的两个已签名包、平台目录缺失、产物目录不存在 |
 | 真实签名构建 `tauri build --bundles app` | ✅ 产出 `WB Bridge.app.tar.gz`（3,595,514 B）+ `WB Bridge.app.tar.gz.sig`（428 B）；解析签名包体得 key ID **`126D4E208E0F17BA`**，与 `tauri.conf.json` 内嵌公钥一致；trusted comment 含 `version:1.0.1` |
-| `tauri build --bundles dmg` | ✅ 产出 `WB Bridge_1.0.1_aarch64.dmg`（3,720,766 B / 3.55 MiB）；只读挂载后核对：`WB Bridge.app` + `Applications` 软链，Mach-O **arm64**、`CFBundleShortVersionString=1.0.1`、id `app.wbbridge.desktop`；`codesign` 显示 `flags=0x10002(adhoc,runtime)`、`Signature=adhoc`、无 TeamID；`codesign --verify --deep --strict` = valid on disk + satisfies DR；核对后已 `hdiutil detach` |
+| `tauri build --bundles dmg` | ✅ 产出 `WB Bridge_1.0.1_aarch64.dmg`（3,720,766 B / 3.55 MiB）；只读挂载后核对：`WB Bridge.app` + `Applications` 软链，Mach-O **arm64**、`CFBundleShortVersionString=1.0.1`、id `cn.hzdamei.wbbridge`；`codesign` 显示 `flags=0x10002(adhoc,runtime)`、`Signature=adhoc`、无 TeamID；`codesign --verify --deep --strict` = valid on disk + satisfies DR；核对后已 `hdiutil detach` |
 
 ### 本轮推翻了四条此前写进文档的结论
 
@@ -864,10 +864,7 @@ CI 取到空值的机制：私钥当时只配在 GitHub **Secrets**，而三个 
 - ❌ `release.yml` 仍未在 CI 跑通；其 `node-version: 22` 与根 `package.json` 的 `engines.node >= 24` **仍不一致**（本轮未动，属配置改动）。
 - ⚠️ 无确定性单测的项：`refresh()` 并发去重（依赖 await 交错，难以稳定构造）、`service.pid` 单实例、探测路径禁用转写、
   转写排除刚失败模型、格式类失败不撤发布、仅回环绑定、目录 0700 的失败分支（正常文件系统上 chmod 不会失败，构造不出稳定用例）。
-- ⚠️ `AGENTS.md` 的两处绝对路径在本机**不存在**，且本轮未改：`🔴 文件操作根目录 = /Users/wbtrex/website/localServer/node/trexwb/git/wbBridge`
-  （实际工作副本是 `/Users/wbtrex/AI助手/node/trexwb/wbBridge`），以及仓库外 JS 归档
-  `/Users/wbtrex/website/localServer/node/trexwb/backup/wbBridge-node-20261001/`（`js_parity` 因此目前无法用 `WB_PARITY_RECORD=1` 重录）。
-  这两条是用户写的规则，是否改写由用户决定。
+- ⚠️ `AGENTS.md` 的文件操作根目录已更新为本机实际工作副本 `D:\nodejs\code\wbBridge`；仓库外 JS 归档路径已从文档移除（`js_parity` 重录依赖归档，需将归档放回原位）。
 
 ## 侧栏 4 入口实现（2026-10-01，同日第四轮）
 
@@ -1098,7 +1095,7 @@ CI 取到空值的机制：私钥当时只配在 GitHub **Secrets**，而三个 
 | 步骤 | 结果 |
 |---|---|
 | 壳启动并拉起 sidecar | ✅ 进程链：wbbridge → wbbridge-core → opencode serve |
-| 数据目录落位 `~/Library/Application Support/app.wbbridge.desktop/` | ✅ api-key / settings / status.json / opencode.log / runtime |
+| 数据目录落位 `~/Library/Application Support/cn.hzdamei.wbbridge/` | ✅ api-key / settings / status.json / opencode.log / runtime |
 | OpenCode 运行时按需下载 | ✅ 官方 npm 源下载 1.18.33（约 1 分钟） |
 | /health 健康检查（Bearer api-key） | ✅ phase=ready，endpoint=127.0.0.1:41980/v1 |
 | 免费模型发现 | ✅ 发现 8 个免费模型 |

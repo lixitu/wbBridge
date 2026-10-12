@@ -5,7 +5,7 @@
 //! 规范化规则抹平随机值）。本测试只把 Rust 实现与冻结快照逐条比较，**不启动 Node**。
 //!
 //! 需要重新录制时（例如改动纯逻辑模块并想刷新黄金快照），把归档在
-//! `../../../backup/wbBridge-node-20261001/`（仓库根的上一级 `…/trexwb/backup/`）的 `core/`
+//! 原 JS 核心已归档到仓库之外（不再随仓库分发），行为一致性由冻结在 `fixtures/*.json` 的 JS 真相快照保证
 //! 与 `core-rs-tests-js/`（即 `tests/js/`）放回原位，再运行
 //! `WB_PARITY_RECORD=1 cargo test --test js_parity`；描述器会用同一份输入跑一遍 JS，
 //! 把输出写回 fixture。

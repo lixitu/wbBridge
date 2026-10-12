@@ -5,11 +5,11 @@
 **本项目是「Tauri 桌面壳 + 同进程内嵌 Rust 核心」的桥接工具。核心（`src-tauri/core/`，crate 名 `wbbridge-core`）作为 `path` 依赖静态编进壳（`src-tauri/`）里，跑在壳专用 tokio 多线程运行时上，仍在 `127.0.0.1:41980`（端口被占则由壳另择端口）提供 OpenAI 兼容 API，把**隔离托管**的 OpenCode 免费模型发布给 WorkBuddy；控制面板 `src/`（Vue 3 SFC + Vite 构建，产物 `dist/`）由 Tauri WebView 加载，经 `invoke('core_refresh' | 'core_probe' | 'core_import' | 'core_system_proxy' | 'core_shutdown' | 'core_provider_status' | 'core_set_provider_key' | 'core_clear_provider_key' | 'restart_core' | 'core_running' | 'data_dir_path' | 'read_log')` 与 `core-status` / `core-activity` / `core-failed` 事件驱动。**
 
 > 🔴 **已彻底移除 Node 运行环境**：不再有 Node sidecar、`@yao-pkg/pkg`、esbuild 预打包，不再有 `src-tauri/binaries/`（`externalBin` 为空数组）。Node 仅用于前端构建（Vite）与 `scripts/*.mjs`。原 JS 核心与其测试已归档到仓库**之外**：
-> `/Users/wbtrex/website/localServer/node/trexwb/backup/wbBridge-node-20261001/`（详见该目录 README）。
+> 归档位置不随仓库分发（详见归档处 README）。
 >
 > 🔴 **所有 Agent（包括 file-agent、browser-agent、computer-agent 等一切主 Agent、Sub-Agent、子代理）在本项目中执行任何任务时，必须无条件遵守本 `AGENTS.md` 定义的全部规则，不得以任何理由违反。**
 >
-> 🔴 **文件操作根目录**：本项目所有文件操作默认以 `/Users/wbtrex/website/localServer/node/trexwb/git/wbBridge` 为根目录，**不得偏离**。
+> 🔴 **文件操作根目录**：本项目所有文件操作默认以 `D:\nodejs\code\wbBridge` 为根目录，**不得偏离**。
 >
 > 🔴 **根 `package.json` 存在且是版本单一来源**：`npm run test`（转发 cargo）、`npm run test:prefs`（面板偏好单测）、`npm run test:manifest`（更新清单单测）、`npm run test:updater-key`（签名注入包装器单测）、`npm run lint`、`npm run vite:build`、`npm run build`（= `vite:build && tauri:build && make:dmg`；`tauri:build` 是 `node scripts/with-updater-key.mjs tauri build` 的签名注入包装器）、`npm run make:dmg`（hdiutil 生成 macOS 的 `.dmg`，非 mac 平台自动跳过）、`npm run tauri:dev|build`、`npm run version:set|check`、`npm run gen:latest`（更新清单）。Rust 侧命令一律 `--manifest-path src-tauri/core/Cargo.toml` 或进 `src-tauri/`；全部 Rust 代码在 `src-tauri/` 下（壳 = `src-tauri/src/`，核心 = `src-tauri/core/`）。**不存在** Node 版的 `src/core/` 与根级 `core/`（那是已归档的 JS 核心），严禁臆造不存在的脚本、命令与路径。
 >
@@ -108,11 +108,11 @@ WB Bridge 是一个**跨平台托盘工具**，通过**隔离的 OpenCode 技术
 | 健康检查 | `curl --oauth2-bearer "$(cat "<数据目录>/api-key")" http://127.0.0.1:41980/health` | 任意 | `/health` **同样需要 Bearer 鉴权**（无 key 返回 401；`--oauth2-bearer` 即发送 Bearer 头） |
 | 列出已发布模型 | `curl --oauth2-bearer "<api-key 文件内容>" http://127.0.0.1:41980/v1/models` | 任意 | 返回客户端可见模型（id 形如 `OC · 名称`）；发布集非空时**末位**多一条合成路由 `WB · auto`（池空即不列） |
 
-> ⚠ `<数据目录>` 取决于运行方式：**壳运行时**是 Tauri 的 `app_data_dir`（macOS `~/Library/Application Support/app.wbbridge.desktop`，identifier `app.wbbridge.desktop`）；**独立进程运行时**是平台默认目录（macOS `~/Library/Application Support/Buddy Bridge`，见下）。两套目录不要混为一谈。
+> ⚠ `<数据目录>` 取决于运行方式：**壳运行时**是 Tauri 的 `app_data_dir`（macOS `~/Library/Application Support/cn.hzdamei.wbbridge`，identifier `cn.hzdamei.wbbridge`）；**独立进程运行时**是平台默认目录（macOS `~/Library/Application Support/Buddy Bridge`，见下）。两套目录不要混为一谈。
 
 ### 签名与发布
 
-- **自动更新已接线**：`src-tauri/Cargo.toml` 依赖 `tauri-plugin-updater` + `tauri-plugin-process`，`lib.rs` 的 builder 链注册两者，`tauri.conf.json` 有 `bundle.createUpdaterArtifacts: true` 与 `plugins.updater`（`pubkey` 内联公钥串 + `endpoints` 指向 `https://github.com/trexwb/wbBridge/releases/latest/download/latest.json`）。因此**本地构建必须给出签名私钥**，否则打包在生成 updater 产物那一步失败并报「A public key has been found, but no private key」。构建入口 `npm run tauri:build` = `node scripts/with-updater-key.mjs tauri build`（2026-10-03 完全对齐参考项目 fastenerTradeWorkbench / lockPass 后的写法）：包装器**只做注入**——按「进程环境 → 仓库 `.env.local` / `.env` → `~/.tauri/wbBridge.env`、`~/.tauri/wbBridge-updater.env` → 兜底 `~/.tauri/wbBridge-updater.key`」汇齐私钥与口令，把 `.key` 路径（含 `~/…`，Node 与 tauri 都不展开 `~`）读成内联全文并 trim，删掉与内联值互斥的 `TAURI_SIGNING_PRIVATE_KEY_PATH`，明文钥**显式**置空口令，然后 exec 目标命令。它**不判形态、不试签、公私钥配对不符也只告警不阻断**；全程只输出来源文件名与公开的 key ID，绝不回显密钥与口令。产物每平台额外得到 `<安装包>.sig`：macOS `*.app.tar.gz`、Windows `*-setup.exe`（MSI 不参与更新）、Linux `*.AppImage`（✅ 2026-10-03 v1.0.2 首跑实测：就是裸 `.AppImage`，bundler **没有**额外产出 `.AppImage.tar.gz`；`.deb` 也带 `.sig` 但不参与更新）。
+- **自动更新已接线**：`src-tauri/Cargo.toml` 依赖 `tauri-plugin-updater` + `tauri-plugin-process`，`lib.rs` 的 builder 链注册两者，`tauri.conf.json` 有 `bundle.createUpdaterArtifacts: true` 与 `plugins.updater`（`pubkey` 内联公钥串 + `endpoints` 指向 `https://github.com/lixitu/wbBridge/releases/latest/download/latest.json`）。因此**本地构建必须给出签名私钥**，否则打包在生成 updater 产物那一步失败并报「A public key has been found, but no private key」。构建入口 `npm run tauri:build` = `node scripts/with-updater-key.mjs tauri build`（2026-10-03 完全对齐参考项目 fastenerTradeWorkbench / lockPass 后的写法）：包装器**只做注入**——按「进程环境 → 仓库 `.env.local` / `.env` → `~/.tauri/wbBridge.env`、`~/.tauri/wbBridge-updater.env` → 兜底 `~/.tauri/wbBridge-updater.key`」汇齐私钥与口令，把 `.key` 路径（含 `~/…`，Node 与 tauri 都不展开 `~`）读成内联全文并 trim，删掉与内联值互斥的 `TAURI_SIGNING_PRIVATE_KEY_PATH`，明文钥**显式**置空口令，然后 exec 目标命令。它**不判形态、不试签、公私钥配对不符也只告警不阻断**；全程只输出来源文件名与公开的 key ID，绝不回显密钥与口令。产物每平台额外得到 `<安装包>.sig`：macOS `*.app.tar.gz`、Windows `*-setup.exe`（MSI 不参与更新）、Linux `*.AppImage`（✅ 2026-10-03 v1.0.2 首跑实测：就是裸 `.AppImage`，bundler **没有**额外产出 `.AppImage.tar.gz`；`.deb` 也带 `.sig` 但不参与更新）。
   - ✅ 本机实测（2026-10-03，当前这把 9-30 钥）：`npm run tauri:build -- --bundles app` 在**不设任何环境变量**的情况下打印「已注入内联签名私钥（来自 wbBridge-updater.key）→ 公钥配对 OK（`2B11F78BEA8A43F`）→ 加密态私钥 + 已提供口令」，构建退出 0，产出 `WB Bridge.app.tar.gz`（3,596,811 B）+ `.sig`（428 B）；把 `.sig` 的 base64 解出来逐字节取签名者 key ID = **`2B11F78BEA8A43F`**，与 `plugins.updater.pubkey` 里那个（唯一、也是唯一生效的）key ID 一致。此前那条 `The updater secret key from TAURI_SIGNING_PRIVATE_KEY does not match the public key from plugins > updater > pubkey` 告警**已消失**（成因见下条）。构建期仍会打 `Warn skipping app notarization, no APPLE_ID & …` ——**预期、无需修**：ad-hoc 签名（`bundle.macOS.signingIdentity: "-"`）、无 Developer ID 证书与公证凭据，两个参考项目同样带着它出货。
   - 🔴 **一条被源码推翻的旧结论（必须知道）**：文档里曾反复写「`plugins.updater.pubkey` 内嵌两条公钥＝minisign 轮换白名单，换钥无需改配置」——**错**。实读 `tauri-plugin-updater` 2.13 的 `verify_signature()` → `minisign-verify` 0.2.5 的 `PublicKey::decode()`：它只读解码文本的**前两行**，后面的公钥框被静默丢弃，所以**只有第一条生效**；`tauri build` 那条 does-not-match 告警比对的也正是同一第一条。当时提交在 `tauri.conf.json` 里的其实**只有** `126D4E208E0F17BA` 一条（属已丢失的 20261001 钥），而签名用的是 `2B11F78BEA8A43F` 那把，于是既告警、签出的 `.sig` 又会被客户端判无效。修复 = 把 `pubkey` 换成**真正签名那把**的公钥（已完成，现配置只有 `2B11F78BEA8A43F`）。
     - ⚠ 因此**换钥必须同步换 `pubkey`**，且老客户端只认它自己内嵌的那条 → 换钥那一次发布必须能让老版本先收到最后一更。
@@ -501,7 +501,7 @@ start_backend
 - **标签纪律（v1.0.1 事故教训，发布必须遵守）**：① 先 `npm run version:set -- <x.y.z>` 改写 5 处落点并**提交**，再**在该提交上**打 `v<x.y.z>` 标签——标签绝不允许指向"不含本次版本推进"的提交；② CI 的 test 作业有闸门：`GITHUB_REF_NAME` 去掉前导 `v` 必须等于 `tauri.conf.json` 的 `version`，不一致 exit 1（`check-version.mjs` 只看同一提交内部一致，抓不到标签指错）；③ 三个 build 作业上传前打印产物名，`update-manifest` 作业汇总六平台安装包名并把「产物版本 = tag 版本」自检结论写进 run summary，**待人工核对项不为 0 时不得点 Publish**；④ 删除/移动**已推送**的标签属共享状态变更，只能用户执行。
 - 一次提交只包含一类改动，禁止把源码改动与大批二进制/图标混在一起。
 - **严禁提交**：`api-key`、`.env.local`、`status.json`、`settings.json`、`node_modules/`、`dist/`、`src-tauri/target/`、`src-tauri/core/target/`、`src-tauri/gen/`、`.zwork/`、任何私钥文件、以及仓库外的 Node 归档目录。
-- 仓库现状（2026-10-01 实读）：分支 `dev`，远端 `origin = https://github.com/trexwb/wbBridge.git`（另有 `main`），`git ls-files` 有 **103** 个被跟踪文件（早期「只有 README.md 被跟踪」的说法已过时）；工作区仍有目录重组留下的删除记录，删除不等于丢数据（原 JS 核心在仓库外归档）。提交前务必 `git status` 复核实际纳入内容。
+- 仓库现状（2026-10-01 实读）：分支 `dev`，远端 `origin = https://github.com/lixitu/wbBridge.git`（另有 `main`），`git ls-files` 有 **103** 个被跟踪文件（早期「只有 README.md 被跟踪」的说法已过时）；工作区仍有目录重组留下的删除记录，删除不等于丢数据（原 JS 核心在仓库外归档）。提交前务必 `git status` 复核实际纳入内容。
 
 ## 红线与限制
 
@@ -546,9 +546,9 @@ start_backend
 
 | 项 | 值 | 来源 |
 |---|---|---|
-| 版本单一来源 | **1.1.15** | 根 `package.json` 的 `version` |
-| 壳工程同步落点 | **1.1.15** | `src-tauri/tauri.conf.json` 与 `src-tauri/Cargo.toml` 的 `[package] version` |
-| 核心 crate 版本 | **1.1.15** | `src-tauri/core/Cargo.toml`（`wbbridge-core --version` 输出；自 2026-10-10 起随产品版本同步，`version:set`/`version:check` 均覆盖） |
+| 版本单一来源 | **1.0.0** | 根 `package.json` 的 `version` |
+| 壳工程同步落点 | **1.0.0** | `src-tauri/tauri.conf.json` 与 `src-tauri/Cargo.toml` 的 `[package] version` |
+| 核心 crate 版本 | **1.0.0** | `src-tauri/core/Cargo.toml`（`wbbridge-core --version` 输出；自 2026-10-10 起随产品版本同步，`version:set`/`version:check` 均覆盖） |
 | 状态内置版本 | `0.2.0` | `src-tauri/core/src/orchestration.rs` 写入 `status.json` 的 `version`（沿自上游参考实现，界面上可见） |
 | 上游调研基线 | `0.2.5` | `docs/research/upstream-architecture.md`（⚠ 2026-10-10 该文件已被并行轮次从工作区删除、尚未提交，git HEAD 里仍有） |
 | 测试基线 | **316 通过 / 0 失败**（lib 294 + js_parity 11 + red_lines 11，约 1.1s）；壳 `cargo test --lib` 9 通过；JS 侧 `test:prefs` 8 + `test:ops` 11 + `test:manifest` 9 + `test:updater-key` 13 通过（合计 41） | `src-tauri/core/` 下 `cargo test`、`src-tauri/` 下 `cargo test --lib`、仓库根四个 `npm run test:*` |

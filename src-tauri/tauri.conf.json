@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "WB Bridge",
-  "version": "1.1.15",
-  "identifier": "app.wbbridge.desktop",
+  "version": "1.0.0",
+  "identifier": "cn.hzdamei.wbbridge",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://127.0.0.1:41990",
@@ -45,7 +45,7 @@
     "resources": [],
     "externalBin": [],
     "createUpdaterArtifacts": true,
-    "copyright": "© 2026 WB Bridge",
+    "copyright": "© 2026 杭州大美科技有限公司",
     "category": "DeveloperTool",
     "shortDescription": "让 WorkBuddy 使用 OpenCode 免费模型",
     "longDescription": "WB Bridge 通过隔离的 OpenCode 运行时为 WorkBuddy 提供免费模型：自动发现与检测免费模型、转换为标准 OpenAI 接口、并把可用模型同步进 WorkBuddy 配置。关闭窗口即退出应用并停止后台服务。",
@@ -63,7 +63,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJCMTFGNzhCRUE4QTQzRgpSV1EvcEtpK2VCK3hBdEl5ZTdKcWxGV3puaHQzaGxCTUVLRVQ2MXdUMFowRXp0czVIK3REdXNaQgo=",
       "endpoints": [
-        "https://github.com/trexwb/wbBridge/releases/latest/download/latest.json"
+        "https://github.com/lixitu/wbBridge/releases/latest/download/latest.json"
       ]
     }
   }
