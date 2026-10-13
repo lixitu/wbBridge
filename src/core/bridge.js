@@ -176,6 +176,27 @@ export async function dataDir() {
   }
 }
 
+// AI 助手模型通道：经壳的 `ai_chat` 命令走回环 HTTP 调核心 `/v1/chat/completions`，
+// 由壳侧用缓存 core_key 加 Bearer 鉴权、模型固定 `WB · auto`（前端不感知端口与密钥）。
+// 返回形状与 `runTurn` 注入的 `chat` 契约严格对齐（见 assistant.js）：
+//   成功 → { ok: true, content }；取消 → { ok: false, canceled: true, error }；失败 → { ok: false, error }。
+// `invoke` 一旦发出就无法从 JS 硬取消在途请求（壳内 ureq 阻塞调用仍在跑），
+// 所以取消语义是「不再等待 + 返回取消态」：调用前后各查一次 aborted，
+// 由 runTurn 在每次 await 后先判 aborted() 再判 response.ok，保证 UI 不悬挂。
+export async function aiChat(messages, { signal } = {}) {
+  ensureBridge()
+  if (signal?.aborted) return { ok: false, canceled: true, error: '已取消' }
+  try {
+    // 壳侧 ai_chat 返回 { content }，这里只取字符串正文，形状与 runTurn 的 chat 契约对齐。
+    const result = await invoke('ai_chat', { messages })
+    if (signal?.aborted) return { ok: false, canceled: true, error: '已取消' }
+    return { ok: true, content: typeof result?.content === 'string' ? result.content : '' }
+  } catch (error) {
+    if (signal?.aborted) return { ok: false, canceled: true, error: '已取消' }
+    return { ok: false, error: String(error) }
+  }
+}
+
 // ── 自动更新：updater / process 插件的封装 ─────────────────────────
 // 两个插件的 JS 绑定来自 @tauri-apps/plugin-* npm 包（权限已在 capabilities/default.json
 // 授予 updater:default / process:allow-restart），不需要任何 window.__TAURI__ 全局对象；

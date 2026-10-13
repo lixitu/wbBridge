@@ -33,6 +33,8 @@ const ICONS = {
   usage: 'M12 4a8 8 0 1 0 8 8h-8V4Z',
   workbuddy: 'M8 8.5h10.5l-3-3M16 15.5H5.5l3 3',
   about: 'M12 4a8 8 0 1 0 0 16 8 8 0 0 0 0-16ZM12 11.2v5M12 8.2v.4',
+  // 助手图标：对话框轮廓 + 中心三点（表示「正在交流」），与其余描边图标同一线宽语言。
+  assistant: 'M12 4.2A7.8 7.8 0 1 0 19.8 12 7.8 7.8 0 0 0 12 4.2ZM8.8 12h.4M11.8 12h.4M14.8 12h.4',
   proxy: 'M12 4.5v7M7.6 6.8a7 7 0 1 0 8.8 0',
 }
 
@@ -59,6 +61,10 @@ const groups = [
   {
     title: '其他',
     items: [{ id: 'about', icon: 'about', label: '关于与更新' }],
+  },
+  {
+    title: '助手',
+    items: [{ id: 'assistant', icon: 'assistant', label: 'AI 助手' }],
   },
 ]
 </script>

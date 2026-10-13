@@ -15,6 +15,7 @@ use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
+use wbbridge_core::auto::AUTO_MODEL_ID;
 use wbbridge_core::orchestration::{self, StartOptions};
 
 /// 进程内运行的核心：专用多线程 tokio 运行时 + 监听端口。
@@ -124,6 +125,58 @@ fn admin_call_with(
         return Err(message);
     }
     Ok(json)
+}
+
+/// AI 助手模型调用的超时上限。核心非流式后端没有完成超时，壳侧是唯一兜底；
+/// 比 `admin_call` 的 60s 更长，覆盖长回答，但不无限等待。
+const AI_CHAT_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// 调核心 `/v1/chat/completions`：模型固定 `WB · auto`（复用 core 的唯一字面量），
+/// 鉴权沿用 `core_key` 的 Bearer 缓存 key。请求不携带 Origin 头（ureq 默认不发），
+/// 因此天然满足核心「浏览器来源 403」的红线；并发 / 8MB 请求体上限由核心既有边界把关，
+/// 本命令不为其放宽。
+///
+/// 错误形状解析与 [`admin_call`] 逐字一致（`{error:{message}}` 是核心统一错误结构），
+/// 成功则只取 `choices[0].message.content`；key 不进入日志、不进入响应。
+fn chat_call(port: u16, key: &str, messages: &[Value]) -> Result<String, String> {
+    let url = format!("http://127.0.0.1:{port}/v1/chat/completions");
+    let body = serde_json::json!({
+        "model": AUTO_MODEL_ID,
+        // 显式序列化消息数组：避免 json! 宏对借用切片的隐式转换依赖。
+        "messages": serde_json::to_value(messages).unwrap_or(Value::Null),
+        "stream": false,
+    });
+    let call = ureq::post(&url)
+        .timeout(AI_CHAT_TIMEOUT)
+        .set("Authorization", &format!("Bearer {key}"))
+        .send_json(body);
+    let response = match call {
+        Ok(response) => response,
+        Err(ureq::Error::Status(_, response)) => response,
+        Err(error) => return Err(format!("模型通道请求失败：{error}")),
+    };
+    let status = response.status();
+    let text = response.into_string().map_err(|e| e.to_string())?;
+    let json = serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text.clone()));
+    if !(200..300).contains(&status) {
+        let message = json
+            .get("error")
+            .and_then(|error| error.get("message"))
+            .and_then(Value::as_str)
+            .unwrap_or("请求失败")
+            .to_string();
+        return Err(message);
+    }
+    let content = json
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    Ok(content)
 }
 
 /// 在壳内启动核心：专用 tokio 运行时 + 显式注入 data_dir/port（同进程改环境变量不安全）。
@@ -602,6 +655,30 @@ async fn core_clear_provider_key(
     .await
 }
 
+/// AI 助手模型通道：前端 `bridge.aiChat` 经此命令调核心，`model` 固定 `WB · auto`。
+/// 与 [`admin_command`] 同纪律：锁作用域只到取出端口，阻塞 HTTP 下沉到 spawn_blocking，
+/// 密钥只在闭包内取用，不进日志与响应。应用自有命令，不经 capability 授权。
+#[tauri::command]
+async fn ai_chat(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    messages: Vec<Value>,
+) -> Result<Value, String> {
+    let port = {
+        let guard = state.core.lock().unwrap();
+        guard.as_ref().map(|core| core.port)
+    };
+    let Some(port) = port else { return Err("核心服务未运行".into()) };
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let key = core_key(&state)?;
+        let content = chat_call(port, &key, &messages)?;
+        Ok(serde_json::json!({ "content": content }))
+    })
+    .await
+    .map_err(|e| format!("模型通道线程已崩溃：{e}"))?
+}
+
 /// 用系统默认浏览器打开外部链接（申请 Key 的官方页等）。
 ///
 /// Tauri WebView 里 `target="_blank"` 默认不调起系统浏览器（点击静默失败），外链必须经壳转发。
@@ -843,6 +920,7 @@ pub fn run() {
             core_provider_status,
             core_set_provider_key,
             core_clear_provider_key,
+            ai_chat,
             restart_core,
             core_running,
             data_dir_path,

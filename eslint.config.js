@@ -10,6 +10,8 @@ export default [
       'dist/**',
       'src-tauri/target/**',
       'src-tauri/gen/**',
+      // 发布产物：deploy 下的 dist 备份是压缩后的构建输出，纳入 lint 只会产生噪声报错。
+      'deploy/**',
     ],
   },
   js.configs.recommended,
@@ -34,6 +36,8 @@ export default [
         AbortController: 'readonly',
         AbortSignal: 'readonly',
         Buffer: 'readonly',
+        structuredClone: 'readonly',
+        queueMicrotask: 'readonly',
       },
     },
     rules: {

@@ -24,9 +24,13 @@ import UsageView from './views/UsageView.vue'
 import IntegrationView from './views/IntegrationView.vue'
 import AboutView from './views/AboutView.vue'
 import ProvidersView from './views/ProvidersView.vue'
+import AssistantView from './views/AssistantView.vue'
 
 const state = ref({})
 const selected = ref(null)
+// AI 助手的会话 transcript：提升到根组件持有，视图切换（v-if 卸载 / 再挂载）不丢内容；
+// AssistantView 通过 v-model:messages 读写，手动清空即回写空数组。会话不落盘（假设 B），跨重启清空。
+const assistantMessages = ref([])
 // 详情无结果时共享同一个空对象：引用稳定，ModelDetails 不被无关状态推送触发更新。
 const EMPTY_RESULT = {}
 // 当前视图：与 SideBar 的 item.id 一一对应（'models' | 'providers' | 'logs' | 'usage' | 'workbuddy' | 'about'）。
@@ -388,6 +392,12 @@ onUnmounted(() => {
         @import="run('import')"
       />
       <AboutView v-if="view === 'about'" :state="state" />
+      <AssistantView
+        v-if="view === 'assistant'"
+        v-model:messages="assistantMessages"
+        :state="state"
+        @navigate="view = $event"
+      />
     </main>
   </div>
 </template>
