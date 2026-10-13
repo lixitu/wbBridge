@@ -4,7 +4,7 @@
 //! 选出该用哪个模型的全限定 id」。选中之后的链路（`prepare` → `backend` → `record`）一字不改，
 //! 因此被选中模型的失败仍走既有判决（`orchestration.rs::record` 的 `validated.remove`）。
 //!
-//! 三条设计约束（详见 `docs/plans/2026-10-10-wb-auto-smart-router.md` §2）：
+//! 三条设计约束：
 //! 1. 返回值必须是**全限定 id**（如 `opencode/glm-4.7-flash-free`），不能是面板用的 client id
 //!    （`OC · 名称`）——记账键与实际模型必须是同一个值，否则失败判决打在假键上。
 //! 2. 能力谓词一律按「缺键即 false」比较（`== Some(&json!(true))`），与

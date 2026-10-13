@@ -1,5 +1,5 @@
 // 前端业务内核：与 Tauri 壳的唯一边界。
-// 契约与 Electron 版 window.buddy 一致（action/onState/onDismiss），
+// 契约仅暴露 action/onState/onDismiss 三个入口，
 // 组件一律经由本模块调用，不直接触碰 window.__TAURI__。
 // Tauri 的 JS 绑定全部按需 import（无 withGlobalTauri 全局注入）：壳只暴露注册过的命令，
 // JS API 由 @tauri-apps/* npm 包提供，插件能力仍受 src-tauri/capabilities/default.json 约束。

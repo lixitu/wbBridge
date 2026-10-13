@@ -1,5 +1,5 @@
 <script setup>
-// 模型列表：可用在前、不可用在后、检测中其次；行内徽章与耗时口径与原版一致。
+// 模型列表：可用在前、不可用在后、检测中其次。
 import { computed } from 'vue'
 import ModelRow from '../components/ModelRow.vue'
 

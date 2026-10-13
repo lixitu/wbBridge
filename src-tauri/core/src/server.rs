@@ -3,7 +3,7 @@
 //! 逐条对齐 Node 版的可见行为：
 //! - 路由集合：`GET /health`、`GET /v1/models`、`POST /v1/chat/completions`、
 //!   8 条 `POST /admin/*`（动作表见 [`ACTION_ROUTES`]，是这张表的唯一真相；壳的
-//!   `src-tauri/src/lib.rs::ADMIN_ROUTES` 由壳侧契约测试逐项对齐，`docs/contract.md` 记录对外口径）；
+//!   `src-tauri/src/lib.rs::ADMIN_ROUTES` 由壳侧契约测试逐项对齐，对外口径以本表为准）；
 //! - 鉴权：`Authorization: Bearer <key>`，缺失/不匹配 → 401 `{message, type}`；
 //! - 浏览器 Origin 一律 403 `{message}`；
 //! - 请求体上限 8 MB → 413，非法 JSON → 400，文案与 Node 版逐字一致；

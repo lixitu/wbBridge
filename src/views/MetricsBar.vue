@@ -1,5 +1,5 @@
 <script setup>
-// 指标卡：已发现 / 可用 / 待检测（与原版排序口径一致）。
+// 指标卡：已发现 / 可用 / 待检测。
 import { computed } from 'vue'
 
 const props = defineProps({

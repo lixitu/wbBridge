@@ -1,6 +1,6 @@
 <script setup>
 // 根组件：布局壳 + 全局状态持有者。
-// 状态经 src/core/bridge.js 订阅（与 Electron 版 window.buddy 契约一致），
+// 状态经 src/core/bridge.js 订阅，
 // 下发给视图组件；跨组件动作也统一走 bridge.action()。
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { action, onState, onDismiss } from './core/bridge.js'
