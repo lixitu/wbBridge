@@ -113,3 +113,6 @@ src-tauri/gen/icons/
 # 核心已内嵌进 Tauri 壳（src-tauri/core 编成静态库），不再有 externalBin sidecar。
 # 这条规则留着只是防止误把历史 sidecar 产物加回仓库。
 src-tauri/binaries/
+
+# Deploy 健构建备份（产物，不入库）
+deploy/backup/
